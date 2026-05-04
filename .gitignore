@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Database files (sqlite default location)
+*.db
+*.db-journal
+redtusk-jobs.db*
+
+# Logs
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local agent state
+.claude/
+CLAUDE.md
+AGENTS.md
+
+# Maven build output
+worker_jvm/target/
+
+# Native build artifacts
+worker_jvm/native/libksm_helper.so

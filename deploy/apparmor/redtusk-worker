@@ -1,0 +1,45 @@
+# AppArmor profile for the RedTusk worker container.
+# Install: sudo apparmor_parser -r deploy/apparmor/redtusk-worker
+# Apply:   docker run --security-opt apparmor=redtusk-worker ...
+
+#include <tunables/global>
+
+profile redtusk-worker flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # JVM runtime
+  /usr/lib/jvm/** mr,
+  /app/redtusk-worker.jar r,
+  /app/redtusk.jsa r,
+  /app/libksm_helper.so mr,
+  /app/libcap_dropper.so mr,
+  /opt/redtusk/** r,
+  /opt/redtusk/libksm_helper.so mr,
+  /opt/redtusk/libcap_dropper.so mr,
+
+  # Scratch dir (bind-mounted per container)
+  /scratch/** rw,
+  /in/** r,
+  /out/** rw,
+  /var/lib/redtusk/** rw,
+  /tmp/** rw,
+
+  # /proc/self/maps for KSM helper
+  /proc/self/maps r,
+  /proc/self/status r,
+
+  # Scanner binaries — Pix (exec under this profile)
+  /usr/bin/tesseract Pix -> redtusk-worker,
+  /usr/bin/zbarimg Pix -> redtusk-worker,
+  /usr/local/bin/ZXingReader Pix -> redtusk-worker,
+  /usr/local/bin/ZXingReader.real Pix -> redtusk-worker,
+  /usr/bin/heif-convert Pix -> redtusk-worker,
+
+  # Tesseract data
+  /usr/share/tesseract-ocr/** r,
+
+  # Deny sensitive files
+  deny /etc/shadow r,
+  deny /root/** rw,
+  deny network,
+}

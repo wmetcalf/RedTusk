@@ -1,0 +1,176 @@
+# RedTusk worker — high-density profile (CRaC checkpoint/restore via Azul Zulu JDK).
+#
+# Build requires elevated capabilities for CRIU:
+#   docker build --security-opt seccomp=unconfined \
+#                --cap-add SYS_PTRACE --cap-add CHECKPOINT_RESTORE \
+#                -f deploy/docker/Dockerfile.high-density -t redtusk-worker:high-density .
+
+# ── Stage 0-a: Build ZXingReader (ZXing-CPP CLI with JSON output) ─────────────
+FROM ubuntu:jammy AS zxing-build
+
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        git cmake build-essential ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# v3.0.x adds -json flag required by the wmetcalf Tika fork's ZXingCPPScanner.
+RUN git clone --depth 1 --branch v3.0.2 --recurse-submodules \
+        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp \
+    || git clone --depth 1 --recurse-submodules \
+        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp
+
+RUN cmake -S /src/zxing-cpp -B /build/zxing \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DZXING_EXAMPLES=ON \
+        -DZXING_PYTHON_MODULE=OFF \
+        -DZXING_BLACKBOX_TESTS=OFF \
+        -DZXING_UNIT_TESTS=OFF \
+    && cmake --build /build/zxing -j$(nproc) \
+    && find /build/zxing -name "ZXingReader" -type f | head -1
+
+# ── Stage 0-b: Build wmetcalf/tika 4.0.0-SNAPSHOT fork ───────────────────────
+FROM eclipse-temurin:25-jdk-jammy AS tika-build
+
+ARG MAVEN_VERSION=3.9.15
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL \
+        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+        | tar -xz -C /opt \
+    && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+
+ARG TIKA_FORK_SHA=b0611c38f582ac3798ac680942ed51588ea9c912
+RUN git clone \
+        --branch 4.0-upstream-office-links \
+        https://github.com/wmetcalf/tika.git \
+        /src/tika \
+    && git -C /src/tika checkout "$TIKA_FORK_SHA"
+
+RUN cd /src/tika && \
+    sed -i '/^[[:space:]]*#/d;/^[[:space:]]*$/d' .mvn/maven.config 2>/dev/null || true && \
+    rm -f .mvn/extensions.xml && \
+    mvn install \
+        -DskipTests \
+        -pl '!tika-grpc' \
+        -q
+
+# ── Stage 1: Build — compile fat JAR and JNI native libraries ─────────────────
+FROM eclipse-temurin:25-jdk-jammy AS builder
+
+ARG MAVEN_VERSION=3.9.15
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc libc-dev curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL \
+        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+        | tar -xz -C /opt \
+    && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+
+# Import Tika 4.0.0-SNAPSHOT JARs from the fork build
+COPY --from=tika-build /root/.m2/repository/org/apache/tika \
+                       /root/.m2/repository/org/apache/tika
+
+WORKDIR /build
+
+# Maven fat JAR
+COPY worker_jvm/ ./worker_jvm/
+RUN cd worker_jvm && mvn package -DskipTests -q
+
+# JNI native helpers
+RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" && \
+    gcc -fPIC -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE \
+        -I"${JDK_HOME}/include" -I"${JDK_HOME}/include/linux" \
+        -shared -o worker_jvm/native/libksm_helper.so \
+        worker_jvm/native/ksm_helper.c && \
+    gcc -fPIC -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE \
+        -I"${JDK_HOME}/include" -I"${JDK_HOME}/include/linux" \
+        -shared -o worker_jvm/native/libcap_dropper.so \
+        worker_jvm/native/cap_dropper.c
+
+# ── Stage 2: Checkpoint — Azul Zulu CRaC JDK takes the process snapshot ───────
+FROM azul/zulu-openjdk:25 AS checkpoint
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        criu tesseract-ocr tesseract-ocr-eng libheif-examples \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install ZXingReader binary and the Type→Format adapter wrapper
+RUN --mount=type=bind,from=zxing-build,source=/build/zxing,target=/zxing-build \
+    find /zxing-build -name "ZXingReader" -type f -exec install -m 755 {} /usr/local/bin/ZXingReader.real \;
+
+RUN printf '#!/bin/sh\n/usr/local/bin/ZXingReader.real "$@" | sed '\''s/"Type":"\\([^"]*\\)"/"Type":"\\1","Format":"\\1"/g'\''\n' \
+    > /usr/local/bin/ZXingReader && chmod 755 /usr/local/bin/ZXingReader
+
+WORKDIR /opt/redtusk
+
+COPY --from=builder /build/worker_jvm/target/redtusk-worker.jar ./redtusk-worker.jar
+COPY --from=builder /build/worker_jvm/native/libksm_helper.so   ./libksm_helper.so
+COPY --from=builder /build/worker_jvm/native/libcap_dropper.so  ./libcap_dropper.so
+COPY deploy/docker/appcds-warmup-corpus/ /opt/redtusk/corpus/
+
+# Build AppCDS archive using Azul Zulu (same JRE as runtime — guarantees checksum match).
+RUN java \
+    -XX:ArchiveClassesAtExit=/opt/redtusk/redtusk.jsa \
+    -Xmx800m \
+    --enable-native-access=ALL-UNNAMED \
+    -Djava.library.path=/opt/redtusk \
+    -jar /opt/redtusk/redtusk-worker.jar \
+    --appcds-warmup /opt/redtusk/corpus && \
+    test -f /opt/redtusk/redtusk.jsa && \
+    echo "AppCDS archive created: $(du -sh /opt/redtusk/redtusk.jsa | cut -f1)"
+
+RUN rm -rf /opt/redtusk/corpus
+
+RUN mkdir -p /opt/redtusk/checkpoint \
+             /opt/redtusk/scratch/checkpoint
+
+# Take the CRaC checkpoint.  Worker starts, warms Tika parsers via the FIFO,
+# calls Core.checkpointRestore() — CRIU snapshots the JVM.  Exit code is
+# non-zero after checkpointing (SIGKILL by CRIU) — hence || true.
+RUN java \
+      -Xshare:on \
+      -XX:SharedArchiveFile=/opt/redtusk/redtusk.jsa \
+      -Xmx800m \
+      --enable-native-access=ALL-UNNAMED \
+      -Djava.library.path=/opt/redtusk \
+      -XX:CRaCCheckpointTo=/opt/redtusk/checkpoint \
+      -jar /opt/redtusk/redtusk-worker.jar \
+      --checkpoint /opt/redtusk/scratch/checkpoint \
+    || true
+
+# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
+FROM azul/zulu-openjdk:25-jre AS runtime
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        criu tesseract-ocr tesseract-ocr-eng libheif-examples \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r -g 10001 redtusk \
+    && useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk
+
+WORKDIR /opt/redtusk
+COPY --from=checkpoint /opt/redtusk/ ./
+COPY --from=checkpoint /usr/local/bin/ZXingReader.real /usr/local/bin/ZXingReader.real
+COPY --from=checkpoint /usr/local/bin/ZXingReader      /usr/local/bin/ZXingReader
+
+# restore.sh: exec criu restore as PID 1.
+# After restore, execution resumes past Core.checkpointRestore() in Main.java:
+# it drops CAP_CHECKPOINT_RESTORE, then blocks on the FIFO waiting for a job.
+RUN printf '#!/bin/sh\nexec criu restore --tcp-established --shell-job -D /opt/redtusk/checkpoint --log-level 1\n' \
+    > /opt/redtusk/restore.sh && chmod +x /opt/redtusk/restore.sh
+
+# /scratch, /in, /out must exist for Docker bind-mount overlays
+RUN mkdir -p /scratch /in /out /var/lib/redtusk && \
+    chown 10001:10001 /scratch /in /out /var/lib/redtusk
+
+USER 10001:10001
+
+ENV REDTUSK_LOG_LEVEL=INFO
+
+ENTRYPOINT ["/opt/redtusk/restore.sh"]
+
+LABEL org.opencontainers.image.title="redtusk-worker-high-density" \
+      org.opencontainers.image.description="Sandboxed Tika worker (CRaC high-density profile)" \
+      org.opencontainers.image.version="0.1.0"

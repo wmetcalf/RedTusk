@@ -1,0 +1,108 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64", "SCMP_ARCH_X32"],
+  "syscalls": [
+    {
+      "comment": "File I/O",
+      "names": [
+        "read", "write", "pread64", "pwrite64", "readv", "writev",
+        "open", "openat", "openat2", "close", "close_range",
+        "stat", "fstat", "lstat", "newfstatat", "statx",
+        "lseek", "llseek", "access", "faccessat", "faccessat2",
+        "readlink", "readlinkat",
+        "dup", "dup2", "dup3",
+        "fcntl", "ioctl",
+        "mkdir", "mkdirat", "rmdir",
+        "unlink", "unlinkat",
+        "rename", "renameat", "renameat2",
+        "chmod", "fchmod", "fchmodat",
+        "chown", "fchown", "lchown", "fchownat",
+        "utimes", "utimensat", "futimesat",
+        "truncate", "ftruncate",
+        "sendfile",
+        "sync", "fsync", "fdatasync", "syncfs",
+        "getdents", "getdents64"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Memory management (madvise allowed broadly — JVM uses many hints; further restriction via BPF arg filter deferred)",
+      "names": [
+        "mmap", "mmap2", "munmap", "mprotect", "mremap",
+        "madvise", "mincore", "mlock", "mlock2", "munlock",
+        "brk", "sbrk"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Process and thread management",
+      "names": [
+        "clone", "clone3", "fork", "vfork",
+        "execve", "execveat",
+        "wait4", "waitpid", "waitid",
+        "exit", "exit_group",
+        "getpid", "getppid", "gettid",
+        "getuid", "geteuid", "getgid", "getegid",
+        "getgroups",
+        "setpgid", "getpgid", "setsid", "getpgrp",
+        "prctl",
+        "arch_prctl"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Signals",
+      "names": [
+        "kill", "tgkill", "tkill",
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "rt_sigsuspend",
+        "rt_sigpending", "rt_sigtimedwait",
+        "sigaltstack",
+        "pause"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Synchronization",
+      "names": [
+        "futex", "futex_waitv",
+        "set_robust_list", "get_robust_list",
+        "set_tid_address"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Time — read-only; settimeofday and clock_settime removed",
+      "names": [
+        "gettimeofday",
+        "clock_gettime", "clock_getres", "clock_nanosleep",
+        "nanosleep",
+        "time", "times"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Pipes and events",
+      "names": [
+        "pipe", "pipe2",
+        "eventfd", "eventfd2",
+        "epoll_create", "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait",
+        "select", "pselect6", "poll", "ppoll",
+        "memfd_create"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "comment": "Misc JVM — capget/capset/seccomp/sched_setscheduler/mknod/setgroups removed",
+      "names": [
+        "uname", "sysinfo",
+        "getrlimit", "setrlimit", "prlimit64",
+        "getrusage",
+        "sched_yield", "sched_getaffinity", "sched_setaffinity",
+        "sched_getscheduler",
+        "getrandom",
+        "rseq"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}

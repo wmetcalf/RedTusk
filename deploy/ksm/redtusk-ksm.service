@@ -1,0 +1,12 @@
+[Unit]
+Description=Enable KSM for RedTusk worker memory dedup
+After=network.target
+ConditionPathExists=/sys/kernel/mm/ksm/run
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/redtusk-enable-ksm.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

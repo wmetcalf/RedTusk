@@ -1,0 +1,479 @@
+package io.redtusk.worker;
+
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.mime.MimeTypes;
+import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.parser.ParseContext;
+import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.mail.RFC822Parser;
+import org.apache.tika.parser.microsoft.OfficeParserConfig;
+import org.apache.tika.parser.ocr.TesseractOCRConfig;
+import org.apache.tika.parser.pdf.PDFParserConfig;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
+
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
+import java.awt.*;
+import java.awt.geom.Dimension2D;
+import java.awt.geom.Rectangle2D;
+import java.awt.image.BufferedImage;
+import java.io.*;
+import java.nio.file.*;
+import java.security.MessageDigest;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Logger;
+
+/**
+ * Second-pass extractor: saves raw embedded file bytes to outDir/embedded/ and
+ * computes SHA-256, MD5, and SHA-1 digests for each file.
+ *
+ * Tika has native digest infrastructure (CommonsDigesterFactory + InputStreamDigester)
+ * but threading it through RecursiveParserWrapper for embedded entries requires
+ * configuring TikaConfig XML. Since we already hold the raw bytes here, computing
+ * digests inline with MessageDigest is simpler and equally correct.
+ *
+ * Non-fatal: per-file errors are logged and skipped.
+ */
+public final class EmbeddedFileExtractor {
+
+    private static final Logger LOG = Logger.getLogger(EmbeddedFileExtractor.class.getName());
+    static final long MAX_FILE_BYTES = 50L * 1024 * 1024; // 50 MB per-file cap
+
+    private final int maxDepth;
+    private final int maxFiles;
+    private final boolean enableThumbnails;
+
+    public EmbeddedFileExtractor(int maxDepth, int maxFiles, boolean enableThumbnails) {
+        this.maxDepth = maxDepth;
+        this.maxFiles = maxFiles;
+        this.enableThumbnails = enableThumbnails;
+    }
+
+    static final int THUMB_MAX_PX  = 256;  // max dimension of thumbnail
+    static final float THUMB_QUALITY = 0.82f; // JPEG quality
+
+    /** SHA-256 / MD5 / SHA-1 digests and thumbnail flag for a saved embedded file. */
+    public record FileHashes(String sha256, String md5, String sha1,
+                             long sizeBytes, boolean hasThumbnail) {}
+
+    /**
+     * Parse {@code inputFile}, write embedded content to {@code outDir/embedded/},
+     * and return a map of (embedded-resource-path → FileHashes).
+     */
+    public Map<String, FileHashes> extract(File inputFile, Path outDir) {
+        Map<String, FileHashes> hashes = new ConcurrentHashMap<>();
+        if (!inputFile.exists() || inputFile.length() == 0) return hashes;
+
+        Path embDir = outDir.resolve("embedded");
+        try {
+            Files.createDirectories(embDir);
+        } catch (IOException e) {
+            LOG.warning("EmbeddedFileExtractor: cannot create dir: " + e.getMessage());
+            return hashes;
+        }
+
+        AutoDetectParser parser = new AutoDetectParser();
+        enableImageHashing(parser);
+
+        ParseContext context = new ParseContext();
+        AtomicInteger fileCount = new AtomicInteger(0);
+        context.set(EmbeddedDocumentExtractor.class,
+                new SavingExtractor(parser, embDir, maxDepth, maxFiles, enableThumbnails, fileCount, hashes));
+        context.set(Parser.class, parser);
+        // OCR already ran in the first pass (ParserRunner). Skip it here to avoid
+        // running Tesseract a second time on every file in the extraction pass.
+        TesseractOCRConfig noOcr = new TesseractOCRConfig();
+        noOcr.setSkipOcr(true);
+        context.set(TesseractOCRConfig.class, noOcr);
+
+        // Carry the same PDF and Office config as the first pass so embedded
+        // PDFs/Office docs get consistent extraction (marked content, missing rows).
+        PDFParserConfig pdfCfg = new PDFParserConfig();
+        pdfCfg.setExtractMarkedContent(true);
+        pdfCfg.setExtractUniqueInlineImagesOnly(false);
+        context.set(PDFParserConfig.class, pdfCfg);
+        OfficeParserConfig officeCfg = new OfficeParserConfig();
+        officeCfg.setIncludeMissingRows(true);
+        context.set(OfficeParserConfig.class, officeCfg);
+        RFC822Parser.Config mailCfg = new RFC822Parser.Config();
+        mailCfg.setExtractAllAlternatives(true);
+        context.set(RFC822Parser.Config.class, mailCfg);
+
+        try (TikaInputStream tis = TikaInputStream.get(inputFile.toPath())) {
+            parser.parse(tis, new DefaultHandler(), new Metadata(), context);
+        } catch (Exception e) {
+            LOG.warning("EmbeddedFileExtractor: parse error on "
+                    + inputFile.getName() + ": " + e.getClass().getSimpleName()
+                    + ": " + e.getMessage());
+        }
+        return hashes;
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────────
+
+    /**
+     * Decode a vector/container image format (EMF, WMF, HEIC/HEIF, SVG) into a
+     * {@link BufferedImage} for thumbnail or hashing purposes.
+     * Returns null if the content type is not supported or decoding fails.
+     */
+    static BufferedImage decodeMetafile(byte[] bytes, String ct) {
+        try {
+            if ("image/emf".equals(ct) || "image/x-emf".equals(ct)) {
+                org.apache.poi.hemf.usermodel.HemfPicture emf =
+                    new org.apache.poi.hemf.usermodel.HemfPicture(new ByteArrayInputStream(bytes));
+                Dimension2D size = emf.getSize();
+                double pw = size.getWidth(), ph = size.getHeight();
+                if (pw <= 0 || ph <= 0) return null;
+                double scale = Math.min(THUMB_MAX_PX / pw, THUMB_MAX_PX / ph);
+                int w = Math.max(1, (int)(pw * scale)), h = Math.max(1, (int)(ph * scale));
+                BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D g = img.createGraphics();
+                g.setColor(Color.WHITE);
+                g.fillRect(0, 0, w, h);
+                emf.draw(g, new Rectangle2D.Double(0, 0, w, h));
+                g.dispose();
+                return img;
+            } else if ("image/wmf".equals(ct) || "image/x-wmf".equals(ct)) {
+                org.apache.poi.hwmf.usermodel.HwmfPicture wmf =
+                    new org.apache.poi.hwmf.usermodel.HwmfPicture(new ByteArrayInputStream(bytes));
+                Dimension2D size = wmf.getSize();
+                double pw = size.getWidth(), ph = size.getHeight();
+                if (pw <= 0 || ph <= 0) return null;
+                double scale = Math.min(THUMB_MAX_PX / pw, THUMB_MAX_PX / ph);
+                int w = Math.max(1, (int)(pw * scale)), h = Math.max(1, (int)(ph * scale));
+                BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D g = img.createGraphics();
+                g.setColor(Color.WHITE);
+                g.fillRect(0, 0, w, h);
+                wmf.draw(g, new Rectangle2D.Double(0, 0, w, h));
+                g.dispose();
+                return img;
+            } else if ("image/heic".equals(ct) || "image/heif".equals(ct) ||
+                       "image/heic-sequence".equals(ct) || "image/heif-sequence".equals(ct)) {
+                java.nio.file.Path tmpIn  = java.nio.file.Files.createTempFile("redtusk-heif-in-",  ".heic");
+                java.nio.file.Path tmpOut = java.nio.file.Files.createTempFile("redtusk-heif-out-", ".png");
+                try {
+                    java.nio.file.Files.write(tmpIn, bytes);
+                    Process proc = new ProcessBuilder(
+                            "heif-convert", "-q", "90", tmpIn.toString(), tmpOut.toString())
+                        .redirectErrorStream(true).start();
+                    boolean done = proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
+                    if (!done) { proc.destroyForcibly(); return null; }
+                    // heif-convert may produce numbered output for multi-frame files
+                    java.nio.file.Path actual = tmpOut;
+                    if (!java.nio.file.Files.exists(tmpOut) || java.nio.file.Files.size(tmpOut) == 0) {
+                        String base = tmpOut.toString().replaceFirst("\\.png$", "");
+                        actual = java.nio.file.Path.of(base + "-1.png");
+                    }
+                    if (java.nio.file.Files.exists(actual) && java.nio.file.Files.size(actual) > 0) {
+                        return ImageIO.read(actual.toFile());
+                    }
+                } finally {
+                    java.nio.file.Files.deleteIfExists(tmpIn);
+                    java.nio.file.Files.deleteIfExists(tmpOut);
+                    String base = tmpOut.toString().replaceFirst("\\.png$", "");
+                    for (int i = 1; i <= 10; i++)
+                        java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(base + "-" + i + ".png"));
+                }
+            } else if ("image/svg+xml".equals(ct)) {
+                org.apache.batik.transcoder.image.PNGTranscoder transcoder =
+                    new org.apache.batik.transcoder.image.PNGTranscoder();
+                transcoder.addTranscodingHint(
+                    org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_WIDTH, (float) THUMB_MAX_PX);
+                transcoder.addTranscodingHint(
+                    org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_HEIGHT, (float) THUMB_MAX_PX);
+                java.io.ByteArrayOutputStream pngOut = new java.io.ByteArrayOutputStream();
+                // Write bytes to temp file so Batik can read as URI
+                java.nio.file.Path tmp = java.nio.file.Files.createTempFile("redtusk-svg-", ".svg");
+                try {
+                    java.nio.file.Files.write(tmp, bytes);
+                    transcoder.transcode(
+                        new org.apache.batik.transcoder.TranscoderInput(tmp.toUri().toString()),
+                        new org.apache.batik.transcoder.TranscoderOutput(pngOut));
+                } finally {
+                    java.nio.file.Files.deleteIfExists(tmp);
+                }
+                byte[] pngBytes = pngOut.toByteArray();
+                if (pngBytes.length > 0) {
+                    return javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(pngBytes));
+                }
+            }
+        } catch (Exception e) {
+            LOG.fine("EmbeddedFileExtractor: metafile decode failed (" + ct + "): " + e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Scale {@code src} to at most {@link #THUMB_MAX_PX} on the longest side and
+     * write as a JPEG to {@code destPath}.  Returns true on success.
+     */
+    static boolean writeImageAsJpeg(BufferedImage src, Path destPath) {
+        try {
+            int w = src.getWidth(), h = src.getHeight();
+            double scale = Math.min((double) THUMB_MAX_PX / w, (double) THUMB_MAX_PX / h);
+            int tw = Math.max(1, (int) (w * scale));
+            int th = Math.max(1, (int) (h * scale));
+
+            BufferedImage thumb = new BufferedImage(tw, th, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g = thumb.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            g.setColor(Color.WHITE);
+            g.fillRect(0, 0, tw, th);
+            g.drawImage(src, 0, 0, tw, th, null);
+            g.dispose();
+
+            Files.createDirectories(destPath.getParent());
+            Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
+            if (!writers.hasNext()) return false;
+            ImageWriter writer = writers.next();
+            ImageWriteParam param = writer.getDefaultWriteParam();
+            param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+            param.setCompressionQuality(THUMB_QUALITY);
+            try (OutputStream os = Files.newOutputStream(destPath);
+                 MemoryCacheImageOutputStream ios = new MemoryCacheImageOutputStream(os)) {
+                writer.setOutput(ios);
+                writer.write(null, new IIOImage(thumb, null, null), param);
+            } finally {
+                writer.dispose();
+            }
+            return true;
+        } catch (Exception e) {
+            LOG.fine("EmbeddedFileExtractor: writeImageAsJpeg failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Write a JPEG thumbnail of {@code bytes} to {@code root/thumbnails/<rel-to-root>.jpg}.
+     * Returns true if the thumbnail was written successfully.
+     * Supports JPEG/PNG/GIF/BMP via ImageIO, plus EMF/WMF via Apache POI scratchpad.
+     */
+    static boolean writeThumbnail(byte[] bytes, String contentType, Path root, Path originalFile) {
+        try {
+            BufferedImage src = ImageIO.read(new ByteArrayInputStream(bytes));
+            if (src == null) src = decodeMetafile(bytes, contentType);
+            if (src == null) return false;
+
+            // Scale proportionally, longest side → THUMB_MAX_PX
+            int w = src.getWidth(), h = src.getHeight();
+            double scale = Math.min((double) THUMB_MAX_PX / w, (double) THUMB_MAX_PX / h);
+            int tw = Math.max(1, (int) (w * scale));
+            int th = Math.max(1, (int) (h * scale));
+
+            BufferedImage thumb = new BufferedImage(tw, th, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g = thumb.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            g.setColor(Color.WHITE);
+            g.fillRect(0, 0, tw, th);
+            g.drawImage(src, 0, 0, tw, th, null);
+            g.dispose();
+
+            // Mirror the relative path under thumbnails/, append .jpg
+            Path rel = root.relativize(originalFile);
+            Path thumbPath = root.resolve("thumbnails").resolve(rel + ".jpg");
+            Files.createDirectories(thumbPath.getParent());
+
+            // Write JPEG at configured quality
+            Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
+            if (!writers.hasNext()) return false;
+            ImageWriter writer = writers.next();
+            ImageWriteParam param = writer.getDefaultWriteParam();
+            param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+            param.setCompressionQuality(THUMB_QUALITY);
+            try (OutputStream os = Files.newOutputStream(thumbPath);
+                 MemoryCacheImageOutputStream ios = new MemoryCacheImageOutputStream(os)) {
+                writer.setOutput(ios);
+                writer.write(null, new IIOImage(thumb, null, null), param);
+            } finally {
+                writer.dispose();
+            }
+            return true;
+        } catch (Exception e) {
+            LOG.fine("EmbeddedFileExtractor: thumbnail failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private static String hex(byte[] b) {
+        StringBuilder sb = new StringBuilder(b.length * 2);
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+
+    private static void enableImageHashing(Parser root) {
+        java.util.Set<Parser> seen = new java.util.HashSet<>();
+        java.util.Deque<Parser> queue = new java.util.ArrayDeque<>();
+        queue.add(root);
+        while (!queue.isEmpty()) {
+            Parser p = queue.poll();
+            if (!seen.add(p)) continue;
+            if (p instanceof org.apache.tika.parser.image.AbstractImageParser aip)
+                enableImageHashingIfAvailable(aip);
+            else if (p instanceof org.apache.tika.parser.CompositeParser cp)
+                queue.addAll(cp.getParsers().values());
+        }
+    }
+
+    private static void enableImageHashingIfAvailable(org.apache.tika.parser.image.AbstractImageParser parser) {
+        try {
+            parser.getClass().getMethod("setImageHashingEnabled", boolean.class).invoke(parser, true);
+        } catch (NoSuchMethodException e) {
+            // Upstream Tika snapshots do not expose the fork-only image hashing toggle.
+        } catch (ReflectiveOperationException e) {
+            LOG.fine("EmbeddedFileExtractor: image hashing unavailable: " + e.getMessage());
+        }
+    }
+
+    // ── per-entry saver ───────────────────────────────────────────────────
+
+    private static final class SavingExtractor implements EmbeddedDocumentExtractor {
+
+        private final AutoDetectParser parser;
+        private final Path root;
+        private final int maxDepth;
+        private final int maxFiles;
+        private final boolean enableThumbnails;
+        private final AtomicInteger fileCount;
+        private final Map<String, FileHashes> hashes;
+
+        SavingExtractor(AutoDetectParser parser, Path root, int maxDepth,
+                        int maxFiles, boolean enableThumbnails,
+                        AtomicInteger fileCount, Map<String, FileHashes> hashes) {
+            this.parser           = parser;
+            this.root             = root;
+            this.maxDepth         = maxDepth;
+            this.maxFiles         = maxFiles;
+            this.enableThumbnails = enableThumbnails;
+            this.fileCount        = fileCount;
+            this.hashes           = hashes;
+        }
+
+        @Override
+        public boolean shouldParseEmbedded(Metadata metadata) {
+            if (fileCount.get() >= maxFiles) return false;
+            String p = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+            return p == null || countSlashes(p) < maxDepth;
+        }
+
+        @Override
+        public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
+                                   Metadata metadata, ParseContext context, boolean outputHtml)
+                throws SAXException, IOException {
+
+            if (fileCount.get() >= maxFiles) return;
+
+            // Buffer bytes with size cap
+            byte[] bytes = stream.readNBytes((int) Math.min(MAX_FILE_BYTES, Integer.MAX_VALUE));
+            if (bytes.length == 0) {
+                LOG.warning("EmbeddedFileExtractor: empty stream for embedded entry, path="
+                        + metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH)
+                        + " name=" + metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY));
+                return;
+            }
+
+            // Determine output path
+            String embPath = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+            Path outFile = resolveOutFile(root, embPath, metadata);
+            if (outFile == null) return;
+
+            // Save file
+            try {
+                Files.createDirectories(outFile.getParent());
+                Files.write(outFile, bytes,
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                fileCount.incrementAndGet();
+            } catch (IOException e) {
+                LOG.warning("EmbeddedFileExtractor: write failed " + outFile + ": " + e.getMessage());
+                return;
+            }
+
+            // Compute SHA-256, MD5, SHA-1 from the same byte array.
+            // Key must match the EMBEDDED_RESOURCE_PATH format from RecursiveParserWrapper
+            // (e.g. "/image-0.png").  In the second pass, embPath is null because
+            // AutoDetectParser doesn't set it — use the resource name with a leading /.
+            String hashKey;
+            if (embPath != null && !embPath.isEmpty()) {
+                hashKey = embPath;
+            } else {
+                String rname = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                hashKey = "/" + (rname != null && !rname.isEmpty()
+                                 ? rname : outFile.getFileName().toString());
+            }
+            boolean thumb = false;
+            String ct = metadata.get(Metadata.CONTENT_TYPE);
+            try {
+                // Single-pass digest: update all three from the same byte array
+                MessageDigest dSha256 = MessageDigest.getInstance("SHA-256");
+                MessageDigest dMd5    = MessageDigest.getInstance("MD5");
+                MessageDigest dSha1   = MessageDigest.getInstance("SHA-1");
+                dSha256.update(bytes);
+                dMd5.update(bytes);
+                dSha1.update(bytes);
+                String sha256 = hex(dSha256.digest());
+                String md5    = hex(dMd5.digest());
+                String sha1   = hex(dSha1.digest());
+                if (enableThumbnails && ct != null && ct.startsWith("image/")) {
+                    thumb = writeThumbnail(bytes, ct, root, outFile);
+                }
+                hashes.put(hashKey, new FileHashes(sha256, md5, sha1, bytes.length, thumb));
+            } catch (Exception ex) {
+                LOG.warning("EmbeddedFileExtractor: hash/thumb failed: " + ex.getMessage());
+                hashes.put(hashKey, new FileHashes(null, null, null, bytes.length, false));
+            }
+
+            // Recurse into nested embedded content
+            if (countSlashes(embPath) < maxDepth - 1) {
+                ParseContext nested = new ParseContext();
+                nested.set(EmbeddedDocumentExtractor.class,
+                        new SavingExtractor(parser, root, maxDepth, maxFiles, enableThumbnails, fileCount, hashes));
+                nested.set(Parser.class, parser);
+                TesseractOCRConfig noOcr = new TesseractOCRConfig();
+                noOcr.setSkipOcr(true);
+                nested.set(TesseractOCRConfig.class, noOcr);
+                try (TikaInputStream tis = TikaInputStream.get(bytes)) {
+                    parser.parse(tis, new DefaultHandler(), new Metadata(), nested);
+                } catch (Exception e) {
+                    // non-fatal — nested parse errors are common for binary blobs
+                }
+            }
+        }
+
+        private static Path resolveOutFile(Path root, String embPath, Metadata metadata) {
+            String rel;
+            if (embPath != null && !embPath.isEmpty()) {
+                rel = embPath.startsWith("/") ? embPath.substring(1) : embPath;
+            } else {
+                String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                if (name == null || name.isEmpty()) return null;
+                rel = name;
+            }
+            Path result = root;
+            for (String part : rel.split("/")) {
+                part = part.replaceAll("[^a-zA-Z0-9._+\\- ]", "_").trim();
+                if (part.isEmpty() || part.equals(".") || part.equals("..")) part = "_";
+                result = result.resolve(part);
+            }
+            if (!result.normalize().startsWith(root.normalize())) return null;
+            return result;
+        }
+
+        private static int countSlashes(String s) {
+            if (s == null || s.isEmpty() || s.equals("/")) return 0;
+            int n = 0;
+            for (char c : s.toCharArray()) if (c == '/') n++;
+            return n;
+        }
+    }
+}

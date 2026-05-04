@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Wrapper for `docker compose` that auto-detects the host's docker-socket
+# GID and writes it to deploy/docker/.env so the api container's
+# group_add matches the host socket's group. Without this, the api
+# (running as UID 10001) can't read /var/run/docker.sock and fails to
+# launch worker containers.
+#
+# Usage — same as `docker compose`:
+#   ./deploy/docker/redtusk-compose up --build -d
+#   ./deploy/docker/redtusk-compose logs -f api
+#   ./deploy/docker/redtusk-compose down
+#
+# The DOCKER_GID is detected from the actual socket rather than using a
+# distro default (Ubuntu=110, Debian=999, RHEL=984) because the right
+# value varies per host.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+DOCKER_SOCK="${DOCKER_SOCK:-/var/run/docker.sock}"
+if [ -S "$DOCKER_SOCK" ]; then
+    SOCKET_GID="$(stat -c '%g' "$DOCKER_SOCK")"
+elif [ -n "${DOCKER_GID:-}" ]; then
+    echo "note: $DOCKER_SOCK not found; using DOCKER_GID=$DOCKER_GID from env" >&2
+    SOCKET_GID="$DOCKER_GID"
+else
+    echo "error: $DOCKER_SOCK not found and DOCKER_GID env is unset" >&2
+    echo "       point DOCKER_SOCK at the real socket or export DOCKER_GID" >&2
+    exit 1
+fi
+
+touch .env
+grep -v '^DOCKER_GID=' .env > .env.tmp || true
+mv .env.tmp .env
+echo "DOCKER_GID=$SOCKET_GID" >> .env
+
+exec docker compose --project-name redtusk "$@"

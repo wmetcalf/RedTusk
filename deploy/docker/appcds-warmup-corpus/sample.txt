@@ -1,0 +1,2 @@
+Hello RedTusk AppCDS warmup corpus.
+This file is parsed during image build to warm the JVM class hierarchy.

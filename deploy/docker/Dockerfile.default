@@ -1,0 +1,166 @@
+# RedTusk worker — default profile (AppCDS + KSM, no CRaC).
+
+# ── Stage 0-a: Build ZXingReader (ZXing-CPP CLI with JSON output) ─────────────
+FROM ubuntu:jammy AS zxing-build
+
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        git cmake build-essential ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# v3.0.x adds -json flag required by the wmetcalf Tika fork's ZXingCPPScanner.
+# --recurse-submodules needed for the bundled libzint writer dependency.
+RUN git clone --depth 1 --branch v3.0.2 --recurse-submodules \
+        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp \
+    || git clone --depth 1 --recurse-submodules \
+        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp
+
+# v3.x renames BUILD_* → ZXING_*; ZXING_EXAMPLES=ON builds ZXingReader CLI.
+RUN cmake -S /src/zxing-cpp -B /build/zxing \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DZXING_EXAMPLES=ON \
+        -DZXING_PYTHON_MODULE=OFF \
+        -DZXING_BLACKBOX_TESTS=OFF \
+        -DZXING_UNIT_TESTS=OFF \
+    && cmake --build /build/zxing -j$(nproc) \
+    && find /build/zxing -name "ZXingReader" -type f | head -1
+# Static binary — no runtime libZXing.so dependency
+
+# ── Stage 0-b: Build wmetcalf/tika 4.0.0-SNAPSHOT fork ───────────────────────
+FROM eclipse-temurin:25-jdk-jammy AS tika-build
+
+# Tika 4.x requires Maven >= 3.9; the apt package on jammy is 3.6.3.
+ARG MAVEN_VERSION=3.9.15
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL \
+        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+        | tar -xz -C /opt \
+    && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+
+# Clone Tika fork pinned to a specific commit for supply-chain integrity.
+# Update TIKA_FORK_SHA when intentionally pulling new commits.
+ARG TIKA_FORK_SHA=b0611c38f582ac3798ac680942ed51588ea9c912
+RUN git clone \
+        --branch 4.0-upstream-office-links \
+        https://github.com/wmetcalf/tika.git \
+        /src/tika \
+    && git -C /src/tika checkout "$TIKA_FORK_SHA"
+
+# Build all modules except gRPC (which needs protoc; not needed for worker).
+# Pre-flight: strip '#' comments from maven.config (apt Maven rejects them),
+# and remove .mvn/extensions.xml (nisse extension is incompatible with apt Maven).
+RUN cd /src/tika && \
+    sed -i '/^[[:space:]]*#/d;/^[[:space:]]*$/d' .mvn/maven.config 2>/dev/null || true && \
+    rm -f .mvn/extensions.xml && \
+    mvn install \
+        -DskipTests \
+        -pl '!tika-grpc' \
+        -q
+# JARs installed to /root/.m2/repository/org/apache/tika/
+
+# --------------------------------------------------------------------------
+# Stage 1: build — compile fat JAR and JNI native libraries
+# --------------------------------------------------------------------------
+FROM eclipse-temurin:25-jdk-jammy AS build
+
+ARG MAVEN_VERSION=3.9.15
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc libc-dev curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL \
+        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+        | tar -xz -C /opt \
+    && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+
+# Import Tika 4.0.0-SNAPSHOT JARs from the fork build
+COPY --from=tika-build /root/.m2/repository/org/apache/tika \
+                       /root/.m2/repository/org/apache/tika
+
+WORKDIR /build
+
+# Maven fat JAR
+COPY worker_jvm/ ./worker_jvm/
+RUN cd worker_jvm && mvn package -DskipTests -q
+
+# JNI native helpers (KSM + CapDropper)
+RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" && \
+    gcc -fPIC -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE \
+        -I"${JDK_HOME}/include" -I"${JDK_HOME}/include/linux" \
+        -shared -o worker_jvm/native/libksm_helper.so \
+        worker_jvm/native/ksm_helper.c && \
+    gcc -fPIC -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE \
+        -I"${JDK_HOME}/include" -I"${JDK_HOME}/include/linux" \
+        -shared -o worker_jvm/native/libcap_dropper.so \
+        worker_jvm/native/cap_dropper.c
+
+# --------------------------------------------------------------------------
+# Stage 2: runtime — JRE with JAR + native libs + scanners + AppCDS archive
+# AppCDS is dumped here using the SAME JRE that will run at runtime, so the
+# archive is compatible (avoids JDK/JRE checksum mismatch with -Xshare:on).
+# --------------------------------------------------------------------------
+FROM eclipse-temurin:25-jre-jammy AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        libheif-examples \
+    && rm -rf /var/lib/apt/lists/*
+
+# ZXingReader may be under /build/zxing/ or /build/zxing/example/ depending on version.
+# Install as ZXingReader.real; the wrapper below adapts v3.x JSON (Type→Format) for the Tika fork.
+RUN --mount=type=bind,from=zxing-build,source=/build/zxing,target=/zxing-build \
+    find /zxing-build -name "ZXingReader" -type f -exec install -m 755 {} /usr/local/bin/ZXingReader.real \;
+
+# Tika's ZXingCPPScanner expects a "Format" field but ZXing-CPP v3.x emits "Type".
+# This sed wrapper adds Format:<Type-value> so the Tika JSON parser succeeds.
+RUN printf '#!/bin/sh\n/usr/local/bin/ZXingReader.real "$@" | sed '\''s/"Type":"\\([^"]*\\)"/"Type":"\\1","Format":"\\1"/g'\''\n' \
+    > /usr/local/bin/ZXingReader && chmod 755 /usr/local/bin/ZXingReader
+
+RUN groupadd -r -g 10001 redtusk && \
+    useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk
+
+WORKDIR /app
+
+COPY --from=build /build/worker_jvm/target/redtusk-worker.jar  /app/redtusk-worker.jar
+COPY --from=build /build/worker_jvm/native/libksm_helper.so    /app/libksm_helper.so
+COPY --from=build /build/worker_jvm/native/libcap_dropper.so   /app/libcap_dropper.so
+COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
+
+# Build AppCDS archive using the runtime JRE (guarantees checksum match at startup).
+# Uses -Xshare:on in ENTRYPOINT for a hard fail if the archive is missing/corrupt.
+RUN java \
+    -XX:ArchiveClassesAtExit=/app/redtusk.jsa \
+    -Xmx800m \
+    --enable-native-access=ALL-UNNAMED \
+    -Djava.library.path=/app \
+    -jar /app/redtusk-worker.jar \
+    --appcds-warmup /app/corpus && \
+    test -f /app/redtusk.jsa && \
+    echo "AppCDS archive created: $(du -sh /app/redtusk.jsa | cut -f1)"
+
+RUN rm -rf /app/corpus
+
+# /scratch, /in, /out must exist in the image for Docker bind-mount overlays
+RUN mkdir -p /scratch /in /out /var/lib/redtusk && \
+    chown 10001:10001 /scratch /in /out /var/lib/redtusk
+
+USER 10001:10001
+
+ENV REDTUSK_LOG_LEVEL=INFO
+
+ENTRYPOINT ["java", \
+    "-Xshare:on", \
+    "-XX:SharedArchiveFile=/app/redtusk.jsa", \
+    "-Xmx800m", \
+    "-Djava.library.path=/app", \
+    "--enable-native-access=ALL-UNNAMED", \
+    "-jar", "/app/redtusk-worker.jar"]
+
+# /scratch is bind-mounted by the dispatcher for per-slot IPC
+CMD ["--run", "/scratch"]
+
+LABEL org.opencontainers.image.title="redtusk-worker" \
+      org.opencontainers.image.description="Sandboxed Tika worker (default profile)" \
+      org.opencontainers.image.version="0.1.0"
