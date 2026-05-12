@@ -291,7 +291,11 @@ public final class ParserRunner {
                 int ocrMs = (int) Math.min(
                     parseLong(m.get("X-Tika-OCR-Duration-Ms"), 0L), Integer.MAX_VALUE);
                 String ocrSkippedReason = m.get("X-Tika-OCR-Skipped-Reason");
-                ocr = new EntryResult.OcrResult(text, language, ocrMs, ocrSkippedReason);
+                // When OCR was skipped, use empty text — TIKA_CONTENT for image entries
+                // can contain the embedded resource path written by the container parser
+                // (e.g. "/docProps/thumbnail.jpeg"), not actual OCR output.
+                String ocrText = ocrSkippedReason != null ? "" : text;
+                ocr = new EntryResult.OcrResult(ocrText, language, ocrMs, ocrSkippedReason);
             }
 
             results.add(new EntryResult(
