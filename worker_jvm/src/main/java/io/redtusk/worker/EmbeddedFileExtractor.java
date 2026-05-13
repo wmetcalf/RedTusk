@@ -429,22 +429,14 @@ public final class EmbeddedFileExtractor {
             boolean thumb = false;
             String ct = metadata.get(Metadata.CONTENT_TYPE);
 
-            // Re-detect content type from raw bytes + filename hint. Tika's Pass-1 type
-            // for OLE-embedded objects is often the outer wrapper (application/x-tika-msoffice)
-            // rather than the actual inner payload. Running the detector here on the saved
-            // bytes (with filename hint) gives a more accurate MIME type.
+            // Re-detect content type from raw bytes only (no filename hint).
+            // Passing the resource name would let NameDetector override magic=octet-stream
+            // with the extension type, misclassifying unknown binaries as document types.
             String detectedMagicType = null;
-            try {
-                Metadata detectMeta = new Metadata();
-                String rname = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-                if (rname != null && !rname.isBlank()) {
-                    detectMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, rname);
-                }
-                try (TikaInputStream detectStream = TikaInputStream.get(bytes)) {
-                    MediaType mt = parser.getDetector().detect(detectStream, detectMeta, new ParseContext());
-                    if (mt != null && !MediaType.OCTET_STREAM.equals(mt)) {
-                        detectedMagicType = mt.toString();
-                    }
+            try (TikaInputStream detectStream = TikaInputStream.get(bytes)) {
+                MediaType mt = parser.getDetector().detect(detectStream, new Metadata(), new ParseContext());
+                if (mt != null && !MediaType.OCTET_STREAM.equals(mt)) {
+                    detectedMagicType = mt.toString();
                 }
             } catch (Exception ignore) {}
 
@@ -471,7 +463,7 @@ public final class EmbeddedFileExtractor {
             }
 
             // Recurse into nested embedded content
-            if (countSlashes(embPath) < maxDepth - 1) {
+            if (embPath != null && countSlashes(embPath) < maxDepth - 1) {
                 ParseContext nested = new ParseContext();
                 nested.set(EmbeddedDocumentExtractor.class,
                         new SavingExtractor(parser, root, maxDepth, maxFiles, enableThumbnails, fileCount, hashes));

@@ -160,7 +160,9 @@ public final class Main {
                     // the actual inner payload type (e.g. PE, XML, image) for OLE-wrapped objects.
                     String contentType = e.contentType();
                     String magic = fh.detectedMagicType();
-                    java.util.Map<String, Object> meta = e.metadata();
+                    // Defensive copy: errorEntry() uses Map.of() (immutable); direct mutation
+                    // would throw UnsupportedOperationException if fh ever matched such an entry.
+                    java.util.Map<String, Object> meta = new java.util.LinkedHashMap<>(e.metadata());
                     if (magic != null) {
                         meta.put("Content-Type-Magic-Detected", magic);
                         if (contentType == null
