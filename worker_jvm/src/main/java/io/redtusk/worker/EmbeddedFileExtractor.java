@@ -65,7 +65,8 @@ public final class EmbeddedFileExtractor {
 
     /** SHA-256 / MD5 / SHA-1 digests and thumbnail flag for a saved embedded file. */
     public record FileHashes(String sha256, String md5, String sha1,
-                             long sizeBytes, boolean hasThumbnail) {}
+                             long sizeBytes, boolean hasThumbnail,
+                             String thumbnailSkipped) {}
 
     /**
      * Parse {@code inputFile}, write embedded content to {@code outDir/embedded/},
@@ -377,14 +378,27 @@ public final class EmbeddedFileExtractor {
             // Buffer bytes with size cap
             byte[] bytes = stream.readNBytes((int) Math.min(MAX_FILE_BYTES, Integer.MAX_VALUE));
             if (bytes.length == 0) {
-                LOG.warning("EmbeddedFileExtractor: empty stream for embedded entry, path="
-                        + metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH)
-                        + " name=" + metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY));
+                String embPath0 = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+                String hashKey0;
+                if (embPath0 != null && !embPath0.isEmpty()) {
+                    hashKey0 = embPath0;
+                } else {
+                    String rname = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                    hashKey0 = "/" + (rname != null && !rname.isEmpty() ? rname : "unknown");
+                }
+                hashes.put(hashKey0, new FileHashes(null, null, null, 0, false, "zero_byte_stream"));
                 return;
             }
 
-            // Determine output path
+            // Determine output path — prefer RESOURCE_NAME_KEY over synthetic embedded-N paths.
             String embPath = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+            if (embPath != null && embPath.matches(".*/embedded-\\d+(\\..*)?$")) {
+                String rname = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                if (rname != null && !rname.isBlank()) {
+                    String parent = embPath.substring(0, embPath.lastIndexOf('/'));
+                    embPath = parent + "/" + rname;
+                }
+            }
             Path outFile = resolveOutFile(root, embPath, metadata);
             if (outFile == null) return;
 
@@ -427,10 +441,10 @@ public final class EmbeddedFileExtractor {
                 if (enableThumbnails && ct != null && ct.startsWith("image/")) {
                     thumb = writeThumbnail(bytes, ct, root, outFile);
                 }
-                hashes.put(hashKey, new FileHashes(sha256, md5, sha1, bytes.length, thumb));
+                hashes.put(hashKey, new FileHashes(sha256, md5, sha1, bytes.length, thumb, null));
             } catch (Exception ex) {
                 LOG.warning("EmbeddedFileExtractor: hash/thumb failed: " + ex.getMessage());
-                hashes.put(hashKey, new FileHashes(null, null, null, bytes.length, false));
+                hashes.put(hashKey, new FileHashes(null, null, null, bytes.length, false, null));
             }
 
             // Recurse into nested embedded content

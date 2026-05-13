@@ -35,7 +35,7 @@ class RmetaWriterTest {
     private static EntryResult rootEntry() {
         return new EntryResult(
             "/", null, 0, "text/plain", 13L,
-            "ae1c" + "0".repeat(60), null, null, false, null, null, Map.of(), "Hello RedTusk.", "en",
+            "ae1c" + "0".repeat(60), null, null, false, null, null, null, Map.of(), "Hello RedTusk.", "en",
             new EntryResult.QrResult(List.of(), "no_images"),
             new EntryResult.OcrResult("", null, 0, "no_images"),
             null
@@ -89,7 +89,7 @@ class RmetaWriterTest {
         EntryResult embedded = new EntryResult(
             "/embedded/img.png", "/", 1, "image/png", 512L,
             "b".repeat(64), "d41d8cd98f00b204e9800998ecf8427e", "da39a3ee5e6b4b0d3255bfef95601890afd80709",
-            true, "a1b2c3d4e5f6a7b8", "1f0e0310000000",
+            true, null, "a1b2c3d4e5f6a7b8", "1f0e0310000000",
             Map.of("Image-Width", "100"), "", null,
             new EntryResult.QrResult(
                 List.of(new EntryResult.QrCode(

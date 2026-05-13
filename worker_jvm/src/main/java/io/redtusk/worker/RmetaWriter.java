@@ -101,6 +101,8 @@ public final class RmetaWriter {
         if (e.md5()    != null) n.put("md5",    e.md5());    else n.putNull("md5");
         if (e.sha1()   != null) n.put("sha1",   e.sha1());   else n.putNull("sha1");
         n.put("has_thumbnail", e.hasThumbnail());
+        if (e.thumbnailSkipped() != null) n.put("thumbnail_skipped", e.thumbnailSkipped());
+        else n.putNull("thumbnail_skipped");
         if (e.phash()    != null) n.put("phash",    e.phash());    else n.putNull("phash");
         if (e.colorhash() != null) n.put("colorhash", e.colorhash()); else n.putNull("colorhash");
 

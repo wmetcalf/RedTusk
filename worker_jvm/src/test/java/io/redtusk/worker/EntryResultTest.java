@@ -12,7 +12,7 @@ class EntryResultTest {
     void rootEntryHasNullParent() {
         EntryResult root = new EntryResult(
             "/", null, 0, "text/plain", 13L,
-            "a".repeat(64), null, null, false, null, null, Map.of(), "hello", "en",
+            "a".repeat(64), null, null, false, null, null, null, Map.of(), "hello", "en",
             new EntryResult.QrResult(List.of(), null),
             new EntryResult.OcrResult("", null, 0, "no_images"),
             null
@@ -27,7 +27,7 @@ class EntryResultTest {
         EntryResult embedded = new EntryResult(
             "/embedded/img.png", "/", 1, "image/png", 1024L,
             "b".repeat(64), "d41d8cd98f00b204e9800998ecf8427e", "da39a3ee5e6b4b0d3255bfef95601890afd80709",
-            true, "a1b2c3d4e5f6a7b8", "1f0e0310000000",
+            true, null, "a1b2c3d4e5f6a7b8", "1f0e0310000000",
             Map.of("Image-Width", "200"), "", null,
             new EntryResult.QrResult(List.of(), null),
             new EntryResult.OcrResult("click here", "eng", 120, null),
@@ -43,7 +43,7 @@ class EntryResultTest {
     void errorEntryHasErrorField() {
         EntryResult bad = new EntryResult(
             "/embedded/broken.bin", "/", 1, "application/octet-stream", 0L,
-            "c".repeat(64), null, null, false, null, null, Map.of(), "", null,
+            "c".repeat(64), null, null, false, null, null, null, Map.of(), "", null,
             new EntryResult.QrResult(List.of(), "error"),
             new EntryResult.OcrResult("", null, 0, "error"),
             "parse failed: unexpected EOF"

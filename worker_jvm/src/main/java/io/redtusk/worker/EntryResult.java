@@ -13,6 +13,7 @@ public record EntryResult(
     String md5,
     String sha1,
     boolean hasThumbnail,
+    String thumbnailSkipped,
     String phash,
     String colorhash,
     Map<String, Object> metadata,

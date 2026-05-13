@@ -150,11 +150,17 @@ public final class Main {
             for (EntryResult e : result.entries()) {
                 var fh = fileHashes.get(e.path());
                 if (fh != null) {
+                    // Propagate thumbnail skip reason. "zero_byte_stream" from EmbeddedFileExtractor
+                    // means Pass 2 received 0 bytes for this entry (common for deeply nested images
+                    // or VBA modules whose source was stripped). If Pass 1 still produced a phash
+                    // or OCR text the entry is marked so the UI can explain the missing thumbnail.
+                    String thumbSkipped = fh.thumbnailSkipped();
                     updated.add(new EntryResult(
                         e.path(), e.parentPath(), e.depth(), e.contentType(),
                         fh.sizeBytes(),           // actual byte count from saved file
                         fh.sha256(), fh.md5(), fh.sha1(),
                         fh.hasThumbnail(),
+                        thumbSkipped,
                         e.phash(), e.colorhash(),
                         e.metadata(), e.text(), e.language(),
                         e.qr(), e.ocr(), e.error()
@@ -228,6 +234,7 @@ public final class Main {
                 rootEntry.path(), rootEntry.parentPath(), rootEntry.depth(), rootEntry.contentType(),
                 rootEntry.sizeBytes(), rootEntry.sha256(), rootEntry.md5(), rootEntry.sha1(),
                 true,   // hasThumbnail
+                null,   // thumbnailSkipped
                 rootEntry.phash(), rootEntry.colorhash(),
                 rootEntry.metadata(), rootEntry.text(), rootEntry.language(),
                 rootEntry.qr(), rootEntry.ocr(), rootEntry.error()

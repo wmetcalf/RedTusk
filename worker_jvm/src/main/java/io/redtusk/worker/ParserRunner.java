@@ -165,6 +165,16 @@ public final class ParserRunner {
         for (int i = 0; i < metaList.size(); i++) {
             Metadata m = metaList.get(i);
             String embPath = m.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+            // When Tika generates a synthetic path like "/embedded-1.cls", prefer the
+            // RESOURCE_NAME_KEY (actual filename from VBAMacroReader, OLE, ZIP, etc.)
+            // if it's present and distinct from the synthetic basename.
+            if (embPath != null && embPath.matches(".*/embedded-\\d+(\\..*)?$")) {
+                String rname = m.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                if (rname != null && !rname.isBlank()) {
+                    String parent = embPath.substring(0, embPath.lastIndexOf('/'));
+                    embPath = parent + "/" + rname;
+                }
+            }
             String path = (embPath == null || embPath.isEmpty()) ? "/" : embPath;
             String parentPath = deriveParentPath(path);
             int depth = countDepth(path);
@@ -300,7 +310,7 @@ public final class ParserRunner {
 
             results.add(new EntryResult(
                 path, parentPath, depth, contentType, sizeBytes,
-                sha256, md5, sha1, false, phash, colorhash, metadata, text, language, qr, ocr, null
+                sha256, md5, sha1, false, null, phash, colorhash, metadata, text, language, qr, ocr, null
             ));
         }
 
@@ -327,7 +337,7 @@ public final class ParserRunner {
             results.add(new EntryResult(
                 "/", null, 0,
                 guessContentType(rootMeta), inputFile.length(),
-                rootSha256, null, null, false, null, null, Map.of(), "", null,
+                rootSha256, null, null, false, null, null, null, Map.of(), "", null,
                 new EntryResult.QrResult(List.of(), "disabled"),
                 new EntryResult.OcrResult("", null, 0, "disabled"),
                 null
@@ -364,6 +374,7 @@ public final class ParserRunner {
             capped.add(new EntryResult(
                 e.path(), e.parentPath(), e.depth(), e.contentType(),
                 e.sizeBytes(), e.sha256(), e.md5(), e.sha1(), e.hasThumbnail(),
+                e.thumbnailSkipped(),
                 e.phash(), e.colorhash(), e.metadata(), nextText, e.language(),
                 e.qr(), e.ocr(), e.error()
             ));
@@ -499,7 +510,7 @@ public final class ParserRunner {
             String path, String parentPath, int depth,
             String contentType, long sizeBytes, String sha256, String errorMsg) {
         return new EntryResult(
-            path, parentPath, depth, contentType, sizeBytes, sha256, null, null, false, null, null,
+            path, parentPath, depth, contentType, sizeBytes, sha256, null, null, false, null, null, null,
             Map.of(), "", null,
             new EntryResult.QrResult(List.of(), "error"),
             new EntryResult.OcrResult("", null, 0, "error"),

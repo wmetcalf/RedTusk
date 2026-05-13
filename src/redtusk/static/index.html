@@ -401,6 +401,7 @@
         // Show OCR badge when OCR produced output; not for SVG (that's text extraction, not OCR)
         if (e.ocr?.text && !isSvg) html += ' <span class="tree-tag">OCR</span>';
         if (e.ocr?.skipped === 'blank_image') html += ' <span class="tree-blank" title="OCR skipped — blank/uniform image (phash/colorhash)">BLANK</span>';
+        if (e.thumbnail_skipped === 'zero_byte_stream') html += ' <span class="tree-blank" title="Thumbnail unavailable — Pass 2 received zero bytes (deeply nested or VBA source-stripped entry)">NO-THUMB</span>';
         if (e.error) html += ' <span class="tree-err">ERR</span>';
         html += '</div>';
 
