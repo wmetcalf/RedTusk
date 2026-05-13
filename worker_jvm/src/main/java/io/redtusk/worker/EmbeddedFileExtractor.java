@@ -1,6 +1,5 @@
 package io.redtusk.worker;
 
-import org.apache.tika.detect.Detector;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
@@ -442,7 +441,7 @@ public final class EmbeddedFileExtractor {
                     detectMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, rname);
                 }
                 try (TikaInputStream detectStream = TikaInputStream.get(bytes)) {
-                    MediaType mt = parser.getDetector().detect(detectStream, detectMeta);
+                    MediaType mt = parser.getDetector().detect(detectStream, detectMeta, new ParseContext());
                     if (mt != null && !MediaType.OCTET_STREAM.equals(mt)) {
                         detectedMagicType = mt.toString();
                     }
