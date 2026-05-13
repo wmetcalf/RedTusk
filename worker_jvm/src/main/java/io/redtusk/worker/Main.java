@@ -155,14 +155,28 @@ public final class Main {
                     // or VBA modules whose source was stripped). If Pass 1 still produced a phash
                     // or OCR text the entry is marked so the UI can explain the missing thumbnail.
                     String thumbSkipped = fh.thumbnailSkipped();
+                    // Use Pass-2 magic-detected type when Pass-1 returned a generic type
+                    // (application/x-tika-msoffice or application/octet-stream). This surfaces
+                    // the actual inner payload type (e.g. PE, XML, image) for OLE-wrapped objects.
+                    String contentType = e.contentType();
+                    String magic = fh.detectedMagicType();
+                    java.util.Map<String, Object> meta = e.metadata();
+                    if (magic != null) {
+                        meta.put("Content-Type-Magic-Detected", magic);
+                        if (contentType == null
+                                || "application/octet-stream".equals(contentType)
+                                || "application/x-tika-msoffice".equals(contentType)) {
+                            contentType = magic;
+                        }
+                    }
                     updated.add(new EntryResult(
-                        e.path(), e.parentPath(), e.depth(), e.contentType(),
+                        e.path(), e.parentPath(), e.depth(), contentType,
                         fh.sizeBytes(),           // actual byte count from saved file
                         fh.sha256(), fh.md5(), fh.sha1(),
                         fh.hasThumbnail(),
                         thumbSkipped,
                         e.phash(), e.colorhash(),
-                        e.metadata(), e.text(), e.language(),
+                        meta, e.text(), e.language(),
                         e.qr(), e.ocr(), e.error()
                     ));
                 } else {

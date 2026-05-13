@@ -1,9 +1,11 @@
 package io.redtusk.worker;
 
+import org.apache.tika.detect.Detector;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.mime.MediaType;
 import org.apache.tika.mime.MimeTypes;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
@@ -63,10 +65,10 @@ public final class EmbeddedFileExtractor {
     static final int THUMB_MAX_PX  = 256;  // max dimension of thumbnail
     static final float THUMB_QUALITY = 0.82f; // JPEG quality
 
-    /** SHA-256 / MD5 / SHA-1 digests and thumbnail flag for a saved embedded file. */
+    /** SHA-256 / MD5 / SHA-1 digests, thumbnail flag, and magic-detected type for a saved embedded file. */
     public record FileHashes(String sha256, String md5, String sha1,
                              long sizeBytes, boolean hasThumbnail,
-                             String thumbnailSkipped) {}
+                             String thumbnailSkipped, String detectedMagicType) {}
 
     /**
      * Parse {@code inputFile}, write embedded content to {@code outDir/embedded/},
@@ -386,7 +388,7 @@ public final class EmbeddedFileExtractor {
                     String rname = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
                     hashKey0 = "/" + (rname != null && !rname.isEmpty() ? rname : "unknown");
                 }
-                hashes.put(hashKey0, new FileHashes(null, null, null, 0, false, "zero_byte_stream"));
+                hashes.put(hashKey0, new FileHashes(null, null, null, 0, false, "zero_byte_stream", null));
                 return;
             }
 
@@ -427,6 +429,26 @@ public final class EmbeddedFileExtractor {
             }
             boolean thumb = false;
             String ct = metadata.get(Metadata.CONTENT_TYPE);
+
+            // Re-detect content type from raw bytes + filename hint. Tika's Pass-1 type
+            // for OLE-embedded objects is often the outer wrapper (application/x-tika-msoffice)
+            // rather than the actual inner payload. Running the detector here on the saved
+            // bytes (with filename hint) gives a more accurate MIME type.
+            String detectedMagicType = null;
+            try {
+                Metadata detectMeta = new Metadata();
+                String rname = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                if (rname != null && !rname.isBlank()) {
+                    detectMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, rname);
+                }
+                try (TikaInputStream detectStream = TikaInputStream.get(bytes)) {
+                    MediaType mt = parser.getDetector().detect(detectStream, detectMeta);
+                    if (mt != null && !MediaType.OCTET_STREAM.equals(mt)) {
+                        detectedMagicType = mt.toString();
+                    }
+                }
+            } catch (Exception ignore) {}
+
             try {
                 // Single-pass digest: update all three from the same byte array
                 MessageDigest dSha256 = MessageDigest.getInstance("SHA-256");
@@ -438,13 +460,15 @@ public final class EmbeddedFileExtractor {
                 String sha256 = hex(dSha256.digest());
                 String md5    = hex(dMd5.digest());
                 String sha1   = hex(dSha1.digest());
-                if (enableThumbnails && ct != null && ct.startsWith("image/")) {
-                    thumb = writeThumbnail(bytes, ct, root, outFile);
+                // Use detected type for thumbnail check when Pass-1 reported a generic type
+                String thumbCt = isGenericType(ct) && detectedMagicType != null ? detectedMagicType : ct;
+                if (enableThumbnails && thumbCt != null && thumbCt.startsWith("image/")) {
+                    thumb = writeThumbnail(bytes, thumbCt, root, outFile);
                 }
-                hashes.put(hashKey, new FileHashes(sha256, md5, sha1, bytes.length, thumb, null));
+                hashes.put(hashKey, new FileHashes(sha256, md5, sha1, bytes.length, thumb, null, detectedMagicType));
             } catch (Exception ex) {
                 LOG.warning("EmbeddedFileExtractor: hash/thumb failed: " + ex.getMessage());
-                hashes.put(hashKey, new FileHashes(null, null, null, bytes.length, false, null));
+                hashes.put(hashKey, new FileHashes(null, null, null, bytes.length, false, null, detectedMagicType));
             }
 
             // Recurse into nested embedded content
@@ -488,6 +512,12 @@ public final class EmbeddedFileExtractor {
             int n = 0;
             for (char c : s.toCharArray()) if (c == '/') n++;
             return n;
+        }
+
+        private static boolean isGenericType(String ct) {
+            return ct == null
+                || "application/octet-stream".equals(ct)
+                || "application/x-tika-msoffice".equals(ct);
         }
     }
 }
