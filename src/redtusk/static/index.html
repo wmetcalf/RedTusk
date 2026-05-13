@@ -114,6 +114,13 @@
     .tree-body { padding: 0.3rem 0.4rem 0.4rem 1.6rem; border-left: 1px solid #333; margin-left: 0.4rem; }
     .tree-meta { color: #888; font-size: 0.78rem; margin-top: 0.25rem; overflow-wrap: break-word; word-break: break-all; }
     .tree-meta .mono { font-family: 'Courier New', monospace; font-size: 0.72rem; color: #aaa; }
+    .meta-table { margin-top: 0.4rem; border-top: 1px solid #2a2a2a; padding-top: 0.3rem; }
+    .meta-row { display: flex; gap: 0.5rem; font-size: 0.72rem; line-height: 1.4; padding: 0.05rem 0; border-bottom: 1px solid #1e1e1e; }
+    .meta-row:hover { background: #1a1a1a; }
+    .meta-key { color: #555; flex: 0 0 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Courier New', monospace; }
+    .meta-val { color: #999; flex: 1; overflow-wrap: break-word; word-break: break-all; font-family: 'Courier New', monospace; }
+    .meta-sec .meta-key { color: #ffb74d; }
+    .meta-sec .meta-val { color: #ffe082; }
 
     /* Pool status */
     .pool-bar { display: flex; gap: 0.4rem; align-items: center; font-size: 0.78rem; color: #666; margin-top: 0.35rem; flex-wrap: wrap; }
@@ -381,11 +388,45 @@
         const meta = e.metadata || {};
         const uid = 'e-'+(Math.random().toString(36).slice(2));
 
-        // Key metadata to surface
+        // Key metadata to surface in the header row summary (brief)
         const metaHighlights = [];
         for (const k of ['Image Width','Image Height','xmpTPg:NPages','meta:word-count',
                           'dc:creator','dc:title','dcterms:created','img:Quality','Content-Length']) {
           if (meta[k]) metaHighlights.push(k.split(':').pop().split(/(?=[A-Z])/).join(' ')+': '+meta[k]);
+        }
+
+        // Full metadata table: group all keys by namespace prefix.
+        // Security-relevant keys (RTF IOC, OLE obfuscation, CLSID) highlighted in amber.
+        const SECURITY_KEYS = new Set([
+          'rtf_meta:emb_ole2link_url','rtf_meta:emb_source_path','rtf_meta:emb_label',
+          'rtf_meta:emb_class','rtf_meta:emb_class_obfuscated','rtf_meta:emb_clsid',
+          'rtf_meta:emb_topic','rtf_meta:emb_item','rtf_meta:objdata_decoy_count',
+          'rtf_meta:hex_escape_in_objdata','rtf_meta:unicode_in_objdata',
+          'rtf_meta:malformed_rtf_header','rtf_meta:template_url',
+          'rtf_meta:unc_path','rtf_meta:url','rtf_meta:ip',
+          'dc:title','dc:description','extended-properties:Template',
+        ]);
+        function renderMetaTable(meta) {
+          const keys = Object.keys(meta).sort();
+          if (!keys.length) return '';
+          // Group by prefix (before first colon), or 'other'
+          const groups = {};
+          for (const k of keys) {
+            const grp = k.includes(':') ? k.split(':')[0] : 'other';
+            (groups[grp] = groups[grp]||[]).push(k);
+          }
+          let out = '<div class="meta-table">';
+          for (const grp of Object.keys(groups).sort()) {
+            for (const k of groups[grp]) {
+              const v = String(meta[k]);
+              const isSec = SECURITY_KEYS.has(k);
+              const vDisp = v.length > 200 ? v.slice(0,200)+'…' : v;
+              out += '<div class="meta-row'+(isSec?' meta-sec':'')+'"><span class="meta-key">'+esc(k)+'</span>'
+                   + '<span class="meta-val">'+esc(vDisp)+'</span></div>';
+            }
+          }
+          out += '</div>';
+          return out;
         }
 
         html += '<div class="tree-node" style="margin-left:'+(depth*16)+'px">';
@@ -425,6 +466,7 @@
         if (e.md5)        html += '<div class="tree-meta">md5: <span class="mono">'+esc(e.md5)+'</span> &nbsp; sha1: <span class="mono">'+esc(e.sha1||'—')+'</span></div>';
         if (e.phash)      html += '<div class="tree-meta">phash: <span class="mono">'+esc(e.phash)+'</span> &nbsp; colorhash: <span class="mono">'+esc(e.colorhash||'—')+'</span></div>';
         if (metaHighlights.length) html += '<div class="tree-meta">'+esc(metaHighlights.join(' · '))+'</div>';
+        html += renderMetaTable(meta);
 
         if (qrCodes.length) {
           html += '<div class="tree-meta" style="color:#4fc3f7">';
