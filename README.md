@@ -254,6 +254,90 @@ docker build -f deploy/docker/Dockerfile.default -t redtusk-worker:default .
 The `redtusk-compose` wrapper auto-detects the host's Docker socket GID and
 passes everything else straight through to `docker compose`.
 
+### Production deployment (nginx + Let's Encrypt)
+
+Clone the repo on the server, write a `.env` file, build the worker image, then start the stack:
+
+```sh
+git clone https://github.com/wmetcalf/RedTusk.git /home/coz/redtusk
+cd /home/coz/redtusk
+
+# Worker image (takes ~15–20 min — compiles Tika from the wmetcalf fork)
+docker build -f deploy/docker/Dockerfile.default -t redtusk-worker:default .
+
+# Production .env — adjust to taste
+cat > deploy/docker/.env << 'EOF'
+DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+REDTUSK_PORT=8002
+POSTGRES_PASSWORD=<strong-random-password>
+REDTUSK_WORKER_IMAGE=redtusk-worker:default
+REDTUSK_PROFILE=default
+REDTUSK_ENABLE_OCR=true
+REDTUSK_POOL_SIZE=4
+REDTUSK_JOB_TIMEOUT_S=120
+REDTUSK_WORKER_WARMUP_TIMEOUT_S=180
+EOF
+
+# Start API + dispatcher + postgres
+./deploy/docker/redtusk-compose up -d
+```
+
+**nginx reverse proxy** — create `/etc/nginx/sites-available/redtusk`:
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name redtusk.example.com;
+
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name redtusk.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/redtusk.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/redtusk.example.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    client_max_body_size 500m;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_connect_timeout 30s;
+
+    location = /v1/healthz {
+        proxy_pass http://<backend-ip>:8002;
+    }
+    location / {
+        proxy_pass http://<backend-ip>:8002/;
+    }
+}
+```
+
+```sh
+sudo ln -sf /etc/nginx/sites-available/redtusk /etc/nginx/sites-enabled/redtusk
+sudo nginx -t && sudo systemctl reload nginx
+
+# Enroll Let's Encrypt certificate
+sudo certbot --nginx -d redtusk.example.com --non-interactive --agree-tos -m you@example.com
+```
+
 ### Local dev (no Docker required)
 
 ```sh
