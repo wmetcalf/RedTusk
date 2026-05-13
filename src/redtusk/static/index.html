@@ -273,6 +273,38 @@
     }
     function setStatus(m) { document.getElementById('upload-status').textContent=m; }
 
+    // ── shared metadata rendering ─────────────────────────────────
+    const SECURITY_KEYS = new Set([
+      'rtf_meta:emb_ole2link_url','rtf_meta:emb_source_path','rtf_meta:emb_label',
+      'rtf_meta:emb_class','rtf_meta:emb_class_obfuscated','rtf_meta:emb_clsid',
+      'rtf_meta:emb_topic','rtf_meta:emb_item','rtf_meta:objdata_decoy_count',
+      'rtf_meta:hex_escape_in_objdata','rtf_meta:unicode_in_objdata',
+      'rtf_meta:malformed_rtf_header','rtf_meta:template_url',
+      'rtf_meta:unc_path','rtf_meta:url','rtf_meta:ip',
+      'dc:title','dc:description','extended-properties:Template',
+    ]);
+    function renderMetaTable(meta) {
+      const keys = Object.keys(meta).sort();
+      if (!keys.length) return '';
+      const groups = {};
+      for (const k of keys) {
+        const grp = k.includes(':') ? k.split(':')[0] : 'other';
+        (groups[grp] = groups[grp]||[]).push(k);
+      }
+      let out = '<div class="meta-table">';
+      for (const grp of Object.keys(groups).sort()) {
+        for (const k of groups[grp]) {
+          const v = String(meta[k]);
+          const isSec = SECURITY_KEYS.has(k);
+          const vDisp = v.length > 200 ? v.slice(0,200)+'…' : v;
+          out += '<div class="meta-row'+(isSec?' meta-sec':'')+'"><span class="meta-key">'+esc(k)+'</span>'
+               + '<span class="meta-val">'+esc(vDisp)+'</span></div>';
+        }
+      }
+      out += '</div>';
+      return out;
+    }
+
     // ── structured job view ───────────────────────────────────────
     function buildJobView(result, jobId) {
       if (!result) return '<span style="color:#666">No result</span>';
@@ -314,6 +346,14 @@
       }
       html += kv('Sandbox',     sandbox.profile+' / '+sandbox.runtime+(sandbox.appcds?' + AppCDS':''));
       html += '</div></div></div>';
+
+      // ── Root Metadata ──
+      const rootEntry = entries.find(e => e.path === '/');
+      if (rootEntry && Object.keys(rootEntry.metadata||{}).length) {
+        html += '<div class="job-section"><div class="job-section-hdr">Root Metadata</div><div class="job-section-body">';
+        html += renderMetaTable(rootEntry.metadata);
+        html += '</div></div>';
+      }
 
       // ── QR codes ──
       if (allQr.length) {
@@ -393,40 +433,6 @@
         for (const k of ['Image Width','Image Height','xmpTPg:NPages','meta:word-count',
                           'dc:creator','dc:title','dcterms:created','img:Quality','Content-Length']) {
           if (meta[k]) metaHighlights.push(k.split(':').pop().split(/(?=[A-Z])/).join(' ')+': '+meta[k]);
-        }
-
-        // Full metadata table: group all keys by namespace prefix.
-        // Security-relevant keys (RTF IOC, OLE obfuscation, CLSID) highlighted in amber.
-        const SECURITY_KEYS = new Set([
-          'rtf_meta:emb_ole2link_url','rtf_meta:emb_source_path','rtf_meta:emb_label',
-          'rtf_meta:emb_class','rtf_meta:emb_class_obfuscated','rtf_meta:emb_clsid',
-          'rtf_meta:emb_topic','rtf_meta:emb_item','rtf_meta:objdata_decoy_count',
-          'rtf_meta:hex_escape_in_objdata','rtf_meta:unicode_in_objdata',
-          'rtf_meta:malformed_rtf_header','rtf_meta:template_url',
-          'rtf_meta:unc_path','rtf_meta:url','rtf_meta:ip',
-          'dc:title','dc:description','extended-properties:Template',
-        ]);
-        function renderMetaTable(meta) {
-          const keys = Object.keys(meta).sort();
-          if (!keys.length) return '';
-          // Group by prefix (before first colon), or 'other'
-          const groups = {};
-          for (const k of keys) {
-            const grp = k.includes(':') ? k.split(':')[0] : 'other';
-            (groups[grp] = groups[grp]||[]).push(k);
-          }
-          let out = '<div class="meta-table">';
-          for (const grp of Object.keys(groups).sort()) {
-            for (const k of groups[grp]) {
-              const v = String(meta[k]);
-              const isSec = SECURITY_KEYS.has(k);
-              const vDisp = v.length > 200 ? v.slice(0,200)+'…' : v;
-              out += '<div class="meta-row'+(isSec?' meta-sec':'')+'"><span class="meta-key">'+esc(k)+'</span>'
-                   + '<span class="meta-val">'+esc(vDisp)+'</span></div>';
-            }
-          }
-          out += '</div>';
-          return out;
         }
 
         html += '<div class="tree-node" style="margin-left:'+(depth*16)+'px">';
