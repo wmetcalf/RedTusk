@@ -304,7 +304,10 @@ public final class ParserRunner {
                 // When OCR was skipped, use empty text — TIKA_CONTENT for image entries
                 // can contain the embedded resource path written by the container parser
                 // (e.g. "/docProps/thumbnail.jpeg"), not actual OCR output.
-                String ocrText = ocrSkippedReason != null ? "" : text;
+                // When OCR ran but the only content is the container-injected path prefix
+                // (starts with '/' and looks like a file path), strip it — Tesseract
+                // produced no real words, just the path token from the enclosing parser.
+                String ocrText = ocrSkippedReason != null ? "" : stripContainerPathPrefix(text, path);
                 ocr = new EntryResult.OcrResult(ocrText, language, ocrMs, ocrSkippedReason);
             }
 
@@ -494,6 +497,41 @@ public final class ParserRunner {
     private static long parseLong(String s, long defaultVal) {
         if (s == null) return defaultVal;
         try { return Long.parseLong(s.trim()); } catch (NumberFormatException e) { return defaultVal; }
+    }
+
+    /**
+     * Strip a container-injected path prefix from OCR text.
+     * OOXML/ODF parsers write the zip entry path (e.g. "/docProps/thumbnail.jpeg")
+     * into the content handler before Tesseract runs. When Tesseract finds no real
+     * words in the image, that path string is the entire TIKA_CONTENT. Detect this
+     * by checking whether the text, stripped of whitespace, is a single path token
+     * that shares a basename with the entry path — if so, return empty string.
+     */
+    private static String stripContainerPathPrefix(String text, String entryPath) {
+        if (text == null || text.isBlank()) return "";
+        // Quick path: if there's substantial content beyond path-like characters, keep it.
+        String trimmed = text.strip();
+        if (trimmed.isEmpty()) return "";
+        // Extract the first non-whitespace token
+        int end = 0;
+        while (end < trimmed.length() && !Character.isWhitespace(trimmed.charAt(end))) {
+            end++;
+        }
+        String firstToken = trimmed.substring(0, end);
+        // If the first token looks like a file path (starts with '/', contains '.')
+        // and shares a basename with the entry path, strip it.
+        if (firstToken.startsWith("/") && firstToken.contains(".")) {
+            String tokenBase = firstToken.substring(firstToken.lastIndexOf('/') + 1);
+            String entryBase = (entryPath != null && entryPath.contains("/"))
+                    ? entryPath.substring(entryPath.lastIndexOf('/') + 1)
+                    : (entryPath != null ? entryPath : "");
+            if (!entryBase.isEmpty() && tokenBase.equalsIgnoreCase(entryBase)) {
+                // The remaining text after the path token
+                String rest = trimmed.substring(end).strip();
+                return rest;
+            }
+        }
+        return text;
     }
 
     private static Map<String, Object> extractMetadata(Metadata m) {
