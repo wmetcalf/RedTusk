@@ -319,7 +319,11 @@
     }
 
     // ── structured job view ───────────────────────────────────────
-    function buildJobView(result, jobId) {
+    function buildJobView(jobOrResult, jobId) {
+      // Accept either a full job record or a bare result object.
+      const isFullJob = jobOrResult && ('state' in jobOrResult || 'queue_ms' in jobOrResult);
+      const job    = isFullJob ? jobOrResult : null;
+      const result = isFullJob ? jobOrResult.result : jobOrResult;
       if (!result) return '<span style="color:#666">No result</span>';
       const ext = result.extraction || {};
       const entries = ext.entries || [];
@@ -688,7 +692,7 @@
         html += '<div style="color:#ef5350;font-size:0.85rem;margin-bottom:0.75rem">'+esc(job.error_detail||'Worker error')+'</div>';
       }
       if (job.result) {
-        html += buildJobView(job.result, id);
+        html += buildJobView(job, id);
       } else if (job.state==='queued'||job.state==='running') {
         html += '<span style="color:#888">'+job.state+'… (auto-refreshing)</span>';
       }

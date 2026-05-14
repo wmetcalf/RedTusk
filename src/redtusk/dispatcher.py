@@ -48,7 +48,7 @@ class Dispatcher:
     async def start(self) -> None:
         sync_dir = Path(self._limits.scratch_root) / "_sync"
         try:
-            await asyncio.to_thread(shutil.rmtree, sync_dir, ignore_errors=True)
+            shutil.rmtree(sync_dir, ignore_errors=True)
         except Exception as exc:
             _logger.warning("dispatcher.cleanup_sync_error", error=str(exc))
 
@@ -70,9 +70,20 @@ class Dispatcher:
         return self._pool.is_healthy()
 
     async def _claim_loop(self) -> None:
-        """Continuously claim queued jobs and dispatch them."""
+        """Continuously claim queued jobs and dispatch them.
+
+        Backpressure: never hold more in-flight dispatches than the pool's
+        max capacity (pool_size + pool_burst_size).  Without this cap the
+        claim loop drains the entire queue in seconds, all dispatch coroutines
+        pile up waiting for a slot, and the majority time out before they are
+        served.
+        """
+        max_in_flight = self._limits.pool_size + self._limits.pool_burst_size
         while True:
             try:
+                if len(self._in_flight) >= max_in_flight:
+                    await asyncio.sleep(0.1)
+                    continue
                 job = await self._store.claim_next_queued()
                 if job is None or job.id in self._in_flight:
                     await asyncio.sleep(0.1)
@@ -132,9 +143,9 @@ class Dispatcher:
             slot.assigned_job_id = job.id
             filename = job.filename_hint or "input"
             dest = Path(slot.scratch_dir) / "in" / filename  # type: ignore[arg-type]
-            await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
+            dest.parent.mkdir(parents=True, exist_ok=True)
             if job.input_path:
-                await asyncio.to_thread(_hardlink_or_copy, job.input_path, str(dest))
+                _hardlink_or_copy(job.input_path, str(dest))
 
             await self._runtime.signal_job(slot, job, self._limits)
             exit_code = await self._runtime.wait(
@@ -169,9 +180,7 @@ class Dispatcher:
 
         # 1. Read metadata.json with size cap
         try:
-            raw = await asyncio.to_thread(
-                _read_capped, metadata_path, self._limits.max_metadata_bytes
-            )
+            raw = _read_capped(metadata_path, self._limits.max_metadata_bytes)
         except (FileNotFoundError, OSError) as exc:
             await self._fail_job(job, code="metadata_missing", detail=str(exc))
             return
@@ -207,7 +216,7 @@ class Dispatcher:
 
         # 6. Copy artifacts to persistent tree
         adir = artifact_dir(self._limits.artifact_root, job.id)
-        await asyncio.to_thread(_copy_artifacts, out_dir, adir)
+        _copy_artifacts(out_dir, adir, max_bytes=self._limits.max_artifact_bytes)
 
         # 7. Update job record
         job.state = JobState.SUCCEEDED
@@ -246,7 +255,7 @@ class Dispatcher:
         """
         # Write body to a temp file in scratch_root
         tmp_dir = Path(limits.scratch_root) / "_sync"
-        await asyncio.to_thread(_mkdir_p, tmp_dir)
+        _mkdir_p(tmp_dir)
         tmp_path: str | None = None
         with tempfile.NamedTemporaryFile(
             dir=tmp_dir, delete=False, suffix=f"_{filename}"
@@ -283,8 +292,8 @@ class Dispatcher:
 
             # Hardlink/copy to scratch
             dest = Path(slot.scratch_dir) / "in" / filename  # type: ignore[arg-type]
-            await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(_hardlink_or_copy, tmp_path, str(dest))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _hardlink_or_copy(tmp_path, str(dest))
 
             await self._runtime.signal_job(slot, job, limits)
             exit_code = await self._runtime.wait(
@@ -298,9 +307,7 @@ class Dispatcher:
             # Read + validate result (reuse ingest logic but return result directly)
             out_dir = Path(slot.scratch_dir) / "out"  # type: ignore[arg-type]
             metadata_path = out_dir / "metadata.json"
-            raw = await asyncio.to_thread(
-                _read_capped, metadata_path, limits.max_metadata_bytes
-            )
+            raw = _read_capped(metadata_path, limits.max_metadata_bytes)
             doc = json.loads(raw)
             validate_rmeta(doc)
             root_sha256 = doc.get("input", {}).get("sha256", "")
@@ -316,7 +323,7 @@ class Dispatcher:
             if slot is not None:
                 await self._pool.release(slot, success=success)
             if tmp_path is not None:
-                await asyncio.to_thread(_rm_ignore, tmp_path)
+                _rm_ignore(tmp_path)
 
 
 def artifact_dir(artifact_root: str, job_id: str) -> Path:
@@ -337,15 +344,20 @@ def _read_capped(path: Path, max_bytes: int) -> bytes:
     return path.read_bytes()
 
 
-def _copy_artifacts(src_dir: Path, dst_dir: Path) -> None:
+def _copy_artifacts(src_dir: Path, dst_dir: Path, *, max_bytes: int) -> None:
     dst_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
     for src_path in src_dir.rglob("*"):
         if not src_path.is_file() or src_path.is_symlink():
             continue
+        size = src_path.stat().st_size
+        if copied + size > max_bytes:
+            raise ValueError(f"artifacts too large: {copied + size} > {max_bytes}")
         rel = src_path.relative_to(src_dir)
         dst_path = dst_dir / rel
         dst_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src_path, dst_path)
+        copied += size
 
 
 def _mkdir_p(p: Path) -> None:
