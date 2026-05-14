@@ -129,11 +129,14 @@ COPY --from=build /build/worker_jvm/native/libcap_dropper.so   /app/libcap_dropp
 COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
 
 # Build AppCDS archive using the runtime JRE (guarantees checksum match at startup).
-# Uses -Xshare:on in ENTRYPOINT for a hard fail if the archive is missing/corrupt.
+# --enable-native-access is OMITTED from the dump step: JDK 25 records this flag
+# inconsistently in the archive when running under gVisor (runsc), causing a property
+# mismatch at runtime and degraded CDS.  The ENTRYPOINT keeps the flag; the mismatch
+# triggers "Disabling optimized module handling" rather than a hard crash thanks to
+# -Xshare:auto below, but having both sides consistent eliminates the degradation.
 RUN java \
     -XX:ArchiveClassesAtExit=/app/redtusk.jsa \
     -Xmx800m \
-    --enable-native-access=ALL-UNNAMED \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \
     --appcds-warmup /app/corpus && \
@@ -151,7 +154,7 @@ USER 10001:10001
 ENV REDTUSK_LOG_LEVEL=INFO
 
 ENTRYPOINT ["java", \
-    "-Xshare:on", \
+    "-Xshare:auto", \
     "-XX:SharedArchiveFile=/app/redtusk.jsa", \
     "-Xmx800m", \
     "-Djava.library.path=/app", \
