@@ -392,12 +392,20 @@ class JobRecord:
     error_detail: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        queue_ms: int | None = None
+        processing_ms: int | None = None
+        if self.started_at is not None:
+            queue_ms = int((self.started_at - self.submitted_at).total_seconds() * 1000)
+        if self.started_at is not None and self.completed_at is not None:
+            processing_ms = int((self.completed_at - self.started_at).total_seconds() * 1000)
         return {
             "id": self.id,
             "state": self.state.value,
             "submitted_at": self.submitted_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "queue_ms": queue_ms,
+            "processing_ms": processing_ms,
             "input_sha256": self.input_sha256,
             "input_size_bytes": self.input_size_bytes,
             "filename_hint": self.filename_hint,

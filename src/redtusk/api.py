@@ -6,6 +6,8 @@ import asyncio
 import dataclasses
 import hashlib
 import io
+import os
+import tempfile
 import re
 import unicodedata
 from contextlib import asynccontextmanager
@@ -16,8 +18,9 @@ from uuid import uuid4
 
 import pyzipper
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from redtusk._version import __version__
 from redtusk.dispatcher import Dispatcher, artifact_dir
@@ -300,6 +303,7 @@ def _job_summary(record: JobRecord) -> dict[str, Any]:
     d["qr_count"] = qr_count
     d["entry_count"] = entry_count
     d["has_ocr"] = has_ocr
+    # queue_ms and processing_ms are already computed in to_dict(); keep them.
     return d
 
 
@@ -367,7 +371,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/version")
     async def get_version() -> PlainTextResponse:
-        return PlainTextResponse(f"RedTusk {__version__}")
+        return PlainTextResponse(f"Apache Tika - RedTusk {__version__}")
 
     @app.get("/mime-types")
     async def get_mime_types() -> JSONResponse:
@@ -503,10 +507,10 @@ def _register_routes(app: FastAPI) -> None:
 
         art_dir = artifact_dir(limits.artifact_root, job_id)
 
-        def _build_zip() -> bytes:
-            buf = io.BytesIO()
+        def _build_zip(tmp_path: str) -> None:
+            source_bytes = 0
             with pyzipper.AESZipFile(
-                buf,
+                tmp_path,
                 "w",
                 compression=pyzipper.ZIP_DEFLATED,
                 encryption=pyzipper.WZ_AES,
@@ -514,16 +518,49 @@ def _register_routes(app: FastAPI) -> None:
                 zf.setpassword(b"infected")
                 for p in sorted(art_dir.rglob("*")):
                     if p.is_file() and "pending" not in p.parts:
+                        source_bytes += p.stat().st_size
+                        if source_bytes > limits.max_infected_zip_source_bytes:
+                            raise ValueError(
+                                "infected zip source artifacts too large: "
+                                f"{source_bytes} > {limits.max_infected_zip_source_bytes}"
+                            )
                         arcname = p.relative_to(art_dir)
                         zf.write(p, arcname)
-            return buf.getvalue()
 
-        zip_bytes = await asyncio.to_thread(_build_zip)
+        tmp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+                tmp_path = tmp.name
+            import asyncio
+            await asyncio.to_thread(_build_zip, tmp_path)
+        except ValueError as exc:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except Exception as exc:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise HTTPException(status_code=500, detail="Failed to build zip") from exc
+
         filename = f"redtusk-{job_id[:8]}.zip"
-        return Response(
-            content=zip_bytes,
+        
+        def _cleanup() -> None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        return FileResponse(
+            path=tmp_path,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            filename=filename,
+            background=BackgroundTask(_cleanup)
         )
 
     # ── Ops ───────────────────────────────────────────────────────

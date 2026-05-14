@@ -203,11 +203,24 @@
       if (d < 86400)return Math.floor(d/3600) + 'h ago';
       return Math.floor(d/86400) + 'd ago';
     }
-    function duration(job) {
-      if (!job.started_at) return '—';
-      const end = job.completed_at ? new Date(job.completed_at) : new Date();
-      const s = (end - new Date(job.started_at)) / 1000;
+    function fmtMs(ms) {
+      if (ms == null) return '—';
+      const s = ms / 1000;
       return s < 60 ? s.toFixed(1)+'s' : Math.floor(s/60)+'m '+Math.floor(s%60)+'s';
+    }
+    function duration(job) {
+      const proc = job.processing_ms != null ? job.processing_ms : null;
+      const queue = job.queue_ms != null ? job.queue_ms : null;
+      if (proc == null && !job.started_at) return '—';
+      // Fallback: compute from timestamps when pre-computed fields absent (old records)
+      const procMs = proc != null ? proc : (() => {
+        const end = job.completed_at ? new Date(job.completed_at) : new Date();
+        return end - new Date(job.started_at);
+      })();
+      const qMs = queue != null ? queue : 0;
+      const procStr = fmtMs(procMs);
+      const qStr = qMs > 500 ? ' (q:'+fmtMs(qMs)+')' : '';
+      return procStr + qStr;
     }
     function esc(s) {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -329,7 +342,9 @@
       html += kv('Content-Type', ext.root_content_type||'—');
       html += kv('Language',     ext.root_language||'—');
       html += kv('Entries',      entries.length);
-      html += kv('Duration',    (ext.duration_ms||0)+'ms');
+      html += kv('Parse time',  (ext.duration_ms||0)+'ms');
+      if (job.queue_ms != null)      html += kv('Queue time',  fmtMs(job.queue_ms));
+      if (job.processing_ms != null) html += kv('Worker time', fmtMs(job.processing_ms));
       if (result.truncated) html += kv('Truncated', result.truncated.reason+' ('+result.truncated.observed+'/'+result.truncated.limit+')');
       if ((result.warnings||[]).length) html += kv('Warnings', result.warnings.length);
       html += '</div></div></div>';

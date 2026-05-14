@@ -16,8 +16,8 @@ import org.apache.tika.parser.RecursiveParserWrapper;
 import org.apache.tika.parser.image.AbstractImageParser;
 import org.apache.tika.parser.image.ZXingCPPConfig;
 import org.apache.tika.parser.mail.RFC822Parser;
+import org.apache.tika.parser.html.JSoupParser;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
-import org.apache.tika.parser.ocr.OcrResultCache;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
 import org.apache.tika.parser.pdf.PDFParserConfig;
 import org.apache.tika.sax.AbstractRecursiveParserWrapperHandler;
@@ -123,7 +123,7 @@ public final class ParserRunner {
         // Per-job OCR dedup cache: TesseractOCRParser checks this before invoking
         // Tesseract so duplicate image bytes (same logo/scan repeated in a doc) are
         // only OCR'd once per parse job.
-        context.set(OcrResultCache.class, new OcrResultCache(ocrMaxImageDim, ocrSkipBlank));
+        enableOcrResultCacheIfAvailable(context, ocrMaxImageDim, ocrSkipBlank);
 
         // PDF: extract tagged/marked-content structure (headings, tables, lists in
         // accessibility-compliant PDFs) and all image instances, not just unique hashes
@@ -143,6 +143,13 @@ public final class ParserRunner {
         RFC822Parser.Config mailCfg = new RFC822Parser.Config();
         mailCfg.setExtractAllAlternatives(true);
         context.set(RFC822Parser.Config.class, mailCfg);
+
+        // HTML/HTA: extract <script> and <style> element text — malware (HTA, phishing pages)
+        // embeds obfuscated VBScript/JScript payloads exclusively in <script> blocks.
+        // Tika's default suppresses script content; enabling it surfaces the payload text.
+        JSoupParser.Config htmlCfg = new JSoupParser.Config();
+        htmlCfg.extractScripts = true;
+        context.set(JSoupParser.Config.class, htmlCfg);
 
         Metadata rootMeta = new Metadata();
         if (filenameHint != null) {
@@ -426,6 +433,22 @@ public final class ParserRunner {
             } else if (p instanceof CompositeParser cp) {
                 queue.addAll(cp.getParsers().values());
             }
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void enableOcrResultCacheIfAvailable(
+            ParseContext context, int maxImageDim, boolean skipBlank) {
+        try {
+            Class cacheClass = Class.forName("org.apache.tika.parser.ocr.OcrResultCache");
+            Object cache = cacheClass
+                .getConstructor(int.class, boolean.class)
+                .newInstance(maxImageDim, skipBlank);
+            context.set(cacheClass, cache);
+        } catch (ClassNotFoundException | NoSuchMethodException e) {
+            // Upstream Tika snapshots do not expose the fork-only OCR cache.
+        } catch (ReflectiveOperationException e) {
+            LOG.fine("OCR cache unavailable: " + e.getMessage());
         }
     }
 
