@@ -209,6 +209,7 @@
       return s < 60 ? s.toFixed(1)+'s' : Math.floor(s/60)+'m '+Math.floor(s%60)+'s';
     }
     function duration(job) {
+      if (!job) return '—';
       const proc = job.processing_ms != null ? job.processing_ms : null;
       const queue = job.queue_ms != null ? job.queue_ms : null;
       if (proc == null && !job.started_at) return '—';
