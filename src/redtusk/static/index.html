@@ -347,8 +347,8 @@
       html += kv('Language',     ext.root_language||'—');
       html += kv('Entries',      entries.length);
       html += kv('Parse time',  (ext.duration_ms||0)+'ms');
-      if (job.queue_ms != null)      html += kv('Queue time',  fmtMs(job.queue_ms));
-      if (job.processing_ms != null) html += kv('Worker time', fmtMs(job.processing_ms));
+      if (job && job.queue_ms != null)      html += kv('Queue time',  fmtMs(job.queue_ms));
+      if (job && job.processing_ms != null) html += kv('Worker time', fmtMs(job.processing_ms));
       if (result.truncated) html += kv('Truncated', result.truncated.reason+' ('+result.truncated.observed+'/'+result.truncated.limit+')');
       if ((result.warnings||[]).length) html += kv('Warnings', result.warnings.length);
       html += '</div></div></div>';
