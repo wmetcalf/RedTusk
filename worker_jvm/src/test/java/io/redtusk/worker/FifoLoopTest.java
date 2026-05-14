@@ -13,7 +13,7 @@ class FifoLoopTest {
 
     @Test
     void fifoCreatedAtExpectedPath(@TempDir Path scratchDir) throws Exception {
-        File readyFile = scratchDir.resolve("control.ready").toFile();
+        File readyFile = scratchDir.resolve("control/control.ready").toFile();
         assertFalse(readyFile.exists());
 
         ExecutorService exec = Executors.newSingleThreadExecutor();
@@ -22,14 +22,14 @@ class FifoLoopTest {
             return null;
         });
         task.get(5, TimeUnit.SECONDS);
-        assertTrue(readyFile.exists(), "control.ready must exist after createFifo()");
+        assertTrue(readyFile.exists(), "control/control.ready must exist after createFifo()");
         exec.shutdownNow();
     }
 
     @Test
     void waitForSignalReceivesGoLine(@TempDir Path scratchDir) throws Exception {
         FifoLoop.createFifo(scratchDir.toFile());
-        File goFile = scratchDir.resolve("control.go").toFile();
+        File goFile = scratchDir.resolve("control/control.go").toFile();
 
         ExecutorService exec = Executors.newSingleThreadExecutor();
         exec.submit(() -> {

@@ -108,7 +108,7 @@ public final class Main {
         String signal = FifoLoop.waitForSignal(scratchDir);
         LOG.info("Received signal: " + signal.trim());
 
-        File jobFile = new File(scratchDir, "job.json");
+        File jobFile = new File(new File(scratchDir, FifoLoop.CONTROL_DIR), "job.json");
         if (!jobFile.exists()) {
             LOG.severe("job.json not found at: " + jobFile);
             System.exit(2);
