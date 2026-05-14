@@ -158,6 +158,7 @@ ENTRYPOINT ["java", \
     "-XX:SharedArchiveFile=/app/redtusk.jsa", \
     "-Xmx800m", \
     "-Djava.library.path=/app", \
+    "--enable-native-access=ALL-UNNAMED", \
     "-jar", "/app/redtusk-worker.jar"]
 
 # /scratch is bind-mounted by the dispatcher for per-slot IPC
