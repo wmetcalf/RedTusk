@@ -564,6 +564,9 @@
       return '<span class="kv-key">'+esc(k)+'</span><span class="kv-val hash">'+esc(String(v??'—'))+'</span>';
     }
 
+    // All text display uses esc() before innerHTML injection or textContent assignment.
+    // Never use innerHTML with raw document text — malware (HTA/phishing) payloads
+    // contain VBScript/JS that must render as inert text, not execute in the browser.
     function toggleText(btn) {
       const uid = btn.getAttribute('data-uid');
       const el = document.getElementById(uid);
