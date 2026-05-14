@@ -90,6 +90,9 @@ public final class ParserRunner {
         // AutoDetectParser wraps DefaultParser (itself a CompositeParser) — recurse to find
         // the actual AbstractImageParser instances and enable perceptual hashing on each.
         enableImageHashing(auto);
+        // JSoupParser.Config in ParseContext is ignored (parser reads instance field, not
+        // ParseContext).  Walk the tree to set extractScripts=true on the actual instance.
+        enableHtmlScriptExtraction(auto);
         RecursiveParserWrapperHandler handler = new RecursiveParserWrapperHandler(
             new BasicContentHandlerFactory(
                 BasicContentHandlerFactory.HANDLER_TYPE.TEXT, CHARS_PER_ENTRY)
@@ -144,12 +147,6 @@ public final class ParserRunner {
         mailCfg.setExtractAllAlternatives(true);
         context.set(RFC822Parser.Config.class, mailCfg);
 
-        // HTML/HTA: extract <script> and <style> element text — malware (HTA, phishing pages)
-        // embeds obfuscated VBScript/JScript payloads exclusively in <script> blocks.
-        // Tika's default suppresses script content; enabling it surfaces the payload text.
-        JSoupParser.Config htmlCfg = new JSoupParser.Config();
-        htmlCfg.extractScripts = true;
-        context.set(JSoupParser.Config.class, htmlCfg);
 
         Metadata rootMeta = new Metadata();
         if (filenameHint != null) {
@@ -419,6 +416,23 @@ public final class ParserRunner {
             offset += Character.charCount(cp);
         }
         return out.toString();
+    }
+
+    private static void enableHtmlScriptExtraction(Parser root) {
+        Set<Parser> seen = new java.util.HashSet<>();
+        java.util.Deque<Parser> queue = new java.util.ArrayDeque<>();
+        queue.add(root);
+        while (!queue.isEmpty()) {
+            Parser p = queue.poll();
+            if (!seen.add(p)) {
+                continue;
+            }
+            if (p instanceof JSoupParser jsp) {
+                jsp.setExtractScripts(true);
+            } else if (p instanceof CompositeParser cp) {
+                queue.addAll(cp.getParsers().values());
+            }
+        }
     }
 
     private static void enableImageHashing(Parser root) {
