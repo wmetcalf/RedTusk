@@ -156,7 +156,8 @@ public final class ParserRunner {
         try (TikaInputStream stream = TikaInputStream.get(inputFile.toPath())) {
             wrapper.parse(stream, handler, rootMeta, context);
         } catch (Exception e) {
-            LOG.warning("Tika parse threw: " + e.getMessage());
+            LOG.warning("Tika parse threw [" + e.getClass().getName() + "]: " + e.getMessage()
+                    + (e.getCause() != null ? " caused by " + e.getCause().getClass().getName() + ": " + e.getCause().getMessage() : ""));
             return new ParseResult(List.of(errorEntry("/", null, 0,
                 guessContentType(rootMeta), inputFile.length(),
                 rootSha256, e.getMessage())), List.of(), null);
