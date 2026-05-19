@@ -295,10 +295,10 @@ public final class ParserRunner {
             } else if (zxingPath == null || zxingPath.isEmpty()) {
                 // QR enabled but no ZXingReader binary configured — treat as disabled
                 qr = new EntryResult.QrResult(List.of(), "disabled");
-            } else if (!isImage) {
-                qr = new EntryResult.QrResult(List.of(), "no_images");
             } else {
-                // ZXing ran via Tika: read Barcode.* metadata keys populated by ZXingCPPConfig
+                // Harvest Barcode.* metadata regardless of content type — the
+                // Tika fork populates these for color-aware (PDF/DOCX/PPTX/
+                // XLSX/HTML) and Unicode-art QRs as well as image scans.
                 String[] values    = m.getValues(Barcode.BARCODE_VALUE);
                 String[] formats   = m.getValues(Barcode.BARCODE_FORMAT);
                 String[] rawBytes  = m.getValues(Barcode.BARCODE_RAW_BYTES);
@@ -314,7 +314,11 @@ public final class ParserRunner {
                         ));
                     }
                 }
-                qr = new EntryResult.QrResult(codes, null);
+                if (codes.isEmpty() && !isImage) {
+                    qr = new EntryResult.QrResult(List.of(), "no_images");
+                } else {
+                    qr = new EntryResult.QrResult(codes, null);
+                }
             }
 
             // ----- Unicode-block-art QR codes embedded in extracted text --------------
@@ -335,13 +339,20 @@ public final class ParserRunner {
                         if (decoded == null) {
                             ZXingCPPConfig zcfgLocal = context.get(ZXingCPPConfig.class);
                             ZXingCPPScanner uqScanner = new ZXingCPPScanner();
-                            decoded = UnicodeQRExtractor.extractAndDecode(
-                                    text, uqScanner, zcfgLocal, context);
+                            java.util.List<org.apache.tika.parser.image.ZXingCPPScanner.Result>
+                                    results = UnicodeQRExtractor.extractAndDecode(
+                                            text, uqScanner, zcfgLocal, context);
+                            decoded = new java.util.ArrayList<>(results.size());
+                            for (org.apache.tika.parser.image.ZXingCPPScanner.Result r
+                                    : results) {
+                                String t = r.getText();
+                                if (t != null && !t.isEmpty()) {
+                                    decoded.add(t);
+                                }
+                            }
                             uqCache.put(textHash, decoded);
                         }
                         if (!decoded.isEmpty()) {
-                            metadata.put("unicode_qr:decoded",
-                                    decoded.size() == 1 ? decoded.get(0) : decoded);
                             metadata.put("ExploitClass",
                                     "Decoded " + decoded.size()
                                   + " Unicode-art QR code(s) from extracted text "
@@ -349,15 +360,21 @@ public final class ParserRunner {
                             // Promote Unicode-art decodes to first-class QrCode
                             // entries so the UI's QR section, metrics, and any
                             // downstream consumer iterating qr.codes sees them
-                            // the same way as image-based QRs.
-                            // Position string flags the source (unicode-art) so
-                            // a consumer that cares about the rendering origin
-                            // can still tell them apart.
+                            // the same way as image-based QRs. Skip URLs that
+                            // are already in qr.codes from Barcode.* harvest
+                            // (Tika's UnicodeQRContentHandler also emits them
+                            // via the standard channel).
+                            java.util.Set<String> existing = new java.util.HashSet<>();
+                            for (EntryResult.QrCode c : qr.codes()) {
+                                existing.add(c.data());
+                            }
                             java.util.List<EntryResult.QrCode> merged =
                                     new java.util.ArrayList<>(qr.codes());
                             for (String t : decoded) {
-                                merged.add(new EntryResult.QrCode(
-                                        t, "QR_CODE", null, "unicode-art"));
+                                if (existing.add(t)) {
+                                    merged.add(new EntryResult.QrCode(
+                                            t, "QR_CODE", null, "unicode-art"));
+                                }
                             }
                             qr = new EntryResult.QrResult(merged, null);
                         }

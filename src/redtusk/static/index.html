@@ -343,7 +343,9 @@
     let metaSeq = 0;
 
     function metaExpand(ev) {
-      const ell = ev.currentTarget;
+      // Event is delegated from document, so currentTarget == document.
+      // The clicked .meta-ellipsis is in ev.target.
+      const ell = ev.target;
       const id = ell.dataset.metaId;
       if (!id) return;
       const cell = ell.closest('.meta-val');
