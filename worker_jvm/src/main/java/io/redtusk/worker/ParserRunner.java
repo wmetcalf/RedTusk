@@ -177,6 +177,12 @@ public final class ParserRunner {
         List<Metadata> metaList = handler.getMetadataList();
         List<EntryResult> results = new ArrayList<>(metaList.size());
         List<ParseResult.WorkerWarning> warnings = new ArrayList<>();
+        // Per-job dedup cache for the Unicode-QR scan. Multipart EML with
+        // matching plaintext+HTML alternatives, OOXML containers that emit
+        // the same body twice through different relationships, etc. all
+        // produce duplicate text bodies. Hashing once per job avoids the
+        // ZXing subprocess fork for each duplicate.
+        java.util.Map<String, java.util.List<String>> uqCache = new java.util.HashMap<>();
 
         for (int i = 0; i < metaList.size(); i++) {
             Metadata m = metaList.get(i);
@@ -316,16 +322,23 @@ public final class ParserRunner {
                     int glyphCount = UnicodeQRExtractor.countQrGlyphs(text);
                     if (glyphCount >= 100) {
                         metadata.put("unicode_qr:glyph_count", Integer.toString(glyphCount));
-                        ZXingCPPConfig zcfgLocal = context.get(ZXingCPPConfig.class);
-                        ZXingCPPScanner uqScanner = new ZXingCPPScanner();
-                        List<String> decoded = UnicodeQRExtractor.extractAndDecode(
-                                text, uqScanner, zcfgLocal, context);
+                        // SHA-256 of the text body keys the dedup cache. Cheap
+                        // vs an extra ZXing subprocess fork for duplicate bodies.
+                        String textHash = sha256Hex(text);
+                        java.util.List<String> decoded = uqCache.get(textHash);
+                        if (decoded == null) {
+                            ZXingCPPConfig zcfgLocal = context.get(ZXingCPPConfig.class);
+                            ZXingCPPScanner uqScanner = new ZXingCPPScanner();
+                            decoded = UnicodeQRExtractor.extractAndDecode(
+                                    text, uqScanner, zcfgLocal, context);
+                            uqCache.put(textHash, decoded);
+                        }
                         if (!decoded.isEmpty()) {
                             metadata.put("unicode_qr:decoded",
                                     decoded.size() == 1 ? decoded.get(0) : decoded);
                             metadata.put("ExploitClass",
                                     "Decoded " + decoded.size()
-                                  + " Unicode-block-art QR code(s) from extracted text "
+                                  + " Unicode-art QR code(s) from extracted text "
                                   + "— invisible-to-image-scanner phishing payload");
                         }
                     }
@@ -397,6 +410,25 @@ public final class ParserRunner {
             limits.maxExtractedBytes()
         );
         return capped;
+    }
+
+    /** SHA-256 of a UTF-8 string as lowercase hex. Used to dedupe Unicode-QR
+     *  scans across entries that carry the same text body (e.g. multipart EML
+     *  with matching plaintext+HTML alternatives). */
+    private static String sha256Hex(String s) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(String.format(java.util.Locale.ROOT, "%02x", b & 0xff));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            // SHA-256 is part of the JDK contract — fall back to identity to
+            // disable the cache without crashing the entry processing.
+            return s;
+        }
     }
 
     private static ParseResult enforceMaxExtractedBytes(ParseResult result, long maxBytes) {
