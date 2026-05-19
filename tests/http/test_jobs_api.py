@@ -113,3 +113,38 @@ def test_get_artifact_path_traversal_blocked(client, mock_store):
     mock_store.get = AsyncMock(return_value=job)
     resp = client.get("/v1/jobs/abc123/artifacts/../../etc/passwd")
     assert resp.status_code == 404
+
+
+def test_infected_zip_rejects_oversized_artifacts(tmp_path):
+    from redtusk.api import create_app
+    from redtusk.dispatcher import artifact_dir
+    from redtusk.limits import Limits
+
+    job_id = str(uuid4())
+    result = minimal_extract_result()
+    job = minimal_job_record(job_id=job_id, state=JobState.SUCCEEDED, result=result)
+
+    store = MagicMock()
+    store.get = AsyncMock(return_value=job)
+    store.create = AsyncMock()
+    store.list_recent = AsyncMock(return_value=[])
+    store.count_by_state = AsyncMock(return_value=0)
+
+    test_limits = Limits(
+        artifact_root=str(tmp_path),
+        max_infected_zip_source_bytes=3,
+    )
+    art_dir = artifact_dir(str(tmp_path), job_id)
+    art_dir.mkdir(parents=True, exist_ok=True)
+    (art_dir / "metadata.json").write_bytes(b"abcd")
+
+    mock_d = MagicMock()
+    mock_d.start = AsyncMock()
+    mock_d.stop = AsyncMock()
+    mock_d.is_healthy.return_value = True
+
+    app = create_app(dispatcher=mock_d, store=store, limits=test_limits)
+    with TestClient(app) as c:
+        resp = c.get(f"/v1/jobs/{job_id}/infected-zip")
+
+    assert resp.status_code == 413

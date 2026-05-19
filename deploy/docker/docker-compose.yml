@@ -44,11 +44,11 @@ services:
       - REDTUSK_POOL_SIZE=${REDTUSK_POOL_SIZE:-8}
       - REDTUSK_JOB_TIMEOUT_S=${REDTUSK_JOB_TIMEOUT_S:-90}
       - REDTUSK_WORKER_WARMUP_TIMEOUT_S=${REDTUSK_WORKER_WARMUP_TIMEOUT_S:-120}
-      # Use /tmp for scratch (tmpfs, UID 10001 writable, ephemeral per restart).
-      # Artifacts also in /tmp for dev; for production persistence mount a volume
-      # and set REDTUSK_ARTIFACT_ROOT to a path owned by UID 10001.
-      - REDTUSK_ARTIFACT_ROOT=/tmp/redtusk/artifacts
-      - REDTUSK_SCRATCH_ROOT=/tmp/redtusk/scratch
+      # Persistent state outside /tmp. The path must be identical on host and in
+      # the API container so the dispatcher's docker-run bind mounts resolve on
+      # the host. Override REDTUSK_STATE_DIR in .env to relocate.
+      - REDTUSK_ARTIFACT_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}/artifacts
+      - REDTUSK_SCRATCH_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}/scratch
     ports:
       - "${REDTUSK_PORT:-8000}:8000"
     read_only: true
@@ -65,10 +65,10 @@ services:
     tmpfs:
       - /tmp:rw,exec,nosuid,size=128m
     volumes:
-      # Bind-mount host /tmp/redtusk so scratch dirs are visible to the Docker daemon
-      # when it creates bind mounts for worker containers. The daemon resolves
-      # source paths on the HOST, not inside this container's tmpfs.
-      - /tmp/redtusk:/tmp/redtusk
+      # Bind-mount host state dir at the SAME path inside the API container so the
+      # dispatcher's docker-run bind mounts (which docker resolves on the host)
+      # see the directories the API creates. Override REDTUSK_STATE_DIR in .env.
+      - ${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}:${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:

@@ -14,7 +14,9 @@ import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.RecursiveParserWrapper;
 import org.apache.tika.parser.image.AbstractImageParser;
+import org.apache.tika.parser.image.UnicodeQRExtractor;
 import org.apache.tika.parser.image.ZXingCPPConfig;
+import org.apache.tika.parser.image.ZXingCPPScanner;
 import org.apache.tika.parser.mail.RFC822Parser;
 import org.apache.tika.parser.html.JSoupParser;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
@@ -146,6 +148,15 @@ public final class ParserRunner {
         RFC822Parser.Config mailCfg = new RFC822Parser.Config();
         mailCfg.setExtractAllAlternatives(true);
         context.set(RFC822Parser.Config.class, mailCfg);
+
+        // Legacy MS Works (.wps) — POI has no extractor; enable wps2text from
+        // libwps-tools (installed in the worker image) to extract body text so
+        // downstream URL/QR/IOC scanners can see it.
+        org.apache.tika.parser.microsoft.WorksConfig worksCfg =
+                new org.apache.tika.parser.microsoft.WorksConfig();
+        worksCfg.setEnabled(true);
+        worksCfg.setTimeoutSeconds(Math.max(5, limits.ocrTimeoutS()));
+        context.set(org.apache.tika.parser.microsoft.WorksConfig.class, worksCfg);
 
 
         Metadata rootMeta = new Metadata();
@@ -292,6 +303,36 @@ public final class ParserRunner {
                     }
                 }
                 qr = new EntryResult.QrResult(codes, null);
+            }
+
+            // ----- Unicode-block-art QR codes embedded in extracted text --------------
+            // Runs on EVERY entry's text body (post-parse) so Office docs, PDFs, ICS,
+            // EML, MSG, HTML, RTF and plain text all get scanned with one hook.
+            // Cheap pre-filter via UnicodeQRExtractor.countQrGlyphs() avoids the
+            // bitmap-render cost when no QR-art glyphs are present.
+            if (enableQr && zxingPath != null && !zxingPath.isEmpty()
+                    && text != null && text.length() > 0) {
+                try {
+                    int glyphCount = UnicodeQRExtractor.countQrGlyphs(text);
+                    if (glyphCount >= 100) {
+                        metadata.put("unicode_qr:glyph_count", Integer.toString(glyphCount));
+                        ZXingCPPConfig zcfgLocal = context.get(ZXingCPPConfig.class);
+                        ZXingCPPScanner uqScanner = new ZXingCPPScanner();
+                        List<String> decoded = UnicodeQRExtractor.extractAndDecode(
+                                text, uqScanner, zcfgLocal, context);
+                        if (!decoded.isEmpty()) {
+                            metadata.put("unicode_qr:decoded",
+                                    decoded.size() == 1 ? decoded.get(0) : decoded);
+                            metadata.put("ExploitClass",
+                                    "Decoded " + decoded.size()
+                                  + " Unicode-block-art QR code(s) from extracted text "
+                                  + "— invisible-to-image-scanner phishing payload");
+                        }
+                    }
+                } catch (Exception e) {
+                    LOG.warning("Unicode-QR scan error on entry " + path + ": "
+                            + e.getMessage());
+                }
             }
 
             // ----- OCR (Tika-native via TesseractOCRConfig) ----------------------------

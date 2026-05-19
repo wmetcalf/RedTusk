@@ -74,6 +74,11 @@ class Limits:
     worker_seccomp_profile: str = ""
     worker_apparmor_profile: str = ""
 
+    # Artifact persistence/download caps. The worker has per-file embedded caps;
+    # these bound aggregate host-side copy and zip creation.
+    max_artifact_bytes: int = 1024 * 1024 * 1024
+    max_infected_zip_source_bytes: int = 1024 * 1024 * 1024
+
     # Job retention (TTL)
     job_retention_seconds: int = 86400
 

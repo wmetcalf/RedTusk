@@ -33,6 +33,11 @@ class JobDescriptorTest {
               "ksm": true,
               "crac": false,
               "redtusk_version": "0.1.0",
+              "zxing_path": "/usr/local/bin/ZXingReader",
+              "tesseract_path": "tesseract",
+              "ocr_max_image_dim": 2000,
+              "ocr_skip_blank": true,
+              "enable_thumbnails": true
             }
             """;
         JobDescriptor jd = OM.readValue(json, JobDescriptor.class);
@@ -71,6 +76,11 @@ class JobDescriptorTest {
               "ksm": false,
               "crac": false,
               "redtusk_version": "0.1.0",
+              "zxing_path": "/usr/local/bin/ZXingReader",
+              "tesseract_path": "tesseract",
+              "ocr_max_image_dim": 2000,
+              "ocr_skip_blank": true,
+              "enable_thumbnails": true
             }
             """;
         JobDescriptor jd = OM.readValue(json, JobDescriptor.class);

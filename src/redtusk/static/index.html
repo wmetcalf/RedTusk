@@ -121,6 +121,10 @@
     .meta-val { color: #999; flex: 1; overflow-wrap: break-word; word-break: break-all; font-family: 'Courier New', monospace; }
     .meta-sec .meta-key { color: #ffb74d; }
     .meta-sec .meta-val { color: #ffe082; }
+    /* Truncated metadata values — click ellipsis to lazy-expand from JS memory. */
+    .meta-ellipsis { color: #64b5f6; cursor: pointer; user-select: none; padding-left: 0.15rem; }
+    .meta-ellipsis:hover { color: #90caf9; text-decoration: underline; }
+    .meta-val.expanded .meta-truncated { white-space: pre-wrap; }
 
     /* Pool status */
     .pool-bar { display: flex; gap: 0.4rem; align-items: center; font-size: 0.78rem; color: #666; margin-top: 0.35rem; flex-wrap: wrap; }
@@ -297,6 +301,40 @@
       'rtf_meta:unc_path','rtf_meta:url','rtf_meta:ip',
       'dc:title','dc:description','extended-properties:Template',
     ]);
+    // Lazy expand: full values are kept here in JS memory (where they already
+    // live in the parsed job JSON via jobCache), NOT eagerly serialized into
+    // the DOM. On click, swap the truncated text for the full value — single
+    // O(1) lookup, no round-trip, no DOM bloat per-render.
+    const metaFullValues = new Map(); // dom-id -> full string
+    let metaSeq = 0;
+
+    function metaExpand(ev) {
+      const ell = ev.currentTarget;
+      const id = ell.dataset.metaId;
+      if (!id) return;
+      const cell = ell.closest('.meta-val');
+      const full = metaFullValues.get(id);
+      if (cell && full != null) {
+        const node = cell.querySelector('.meta-truncated');
+        if (node) {
+          node.textContent = full;     // textContent handles XSS-safe insertion
+        }
+        cell.classList.add('expanded');
+        ell.style.display = 'none';
+        // Free the cached string once revealed — the DOM owns it now.
+        metaFullValues.delete(id);
+      }
+      ev.stopPropagation();
+    }
+
+    // Event delegation: works for any dynamically-inserted meta table.
+    document.addEventListener('click', (ev) => {
+      const t = ev.target;
+      if (t && t.classList && t.classList.contains('meta-ellipsis')) {
+        metaExpand(ev);
+      }
+    });
+
     function renderMetaTable(meta) {
       const keys = Object.keys(meta).sort();
       if (!keys.length) return '';
@@ -305,14 +343,31 @@
         const grp = k.includes(':') ? k.split(':')[0] : 'other';
         (groups[grp] = groups[grp]||[]).push(k);
       }
+      const TRUNC = 200;
       let out = '<div class="meta-table">';
       for (const grp of Object.keys(groups).sort()) {
         for (const k of groups[grp]) {
-          const v = String(meta[k]);
+          const raw = meta[k];
+          // Multi-valued metadata arrives as a JS array — stringify uniformly.
+          const v = Array.isArray(raw) ? raw.join('\n') : String(raw);
           const isSec = SECURITY_KEYS.has(k);
-          const vDisp = v.length > 200 ? v.slice(0,200)+'…' : v;
-          out += '<div class="meta-row'+(isSec?' meta-sec':'')+'"><span class="meta-key">'+esc(k)+'</span>'
-               + '<span class="meta-val">'+esc(vDisp)+'</span></div>';
+          if (v.length > TRUNC) {
+            // Stash the full value in JS memory, NOT in the DOM.
+            const id = 'm' + (++metaSeq);
+            metaFullValues.set(id, v);
+            const head = esc(v.slice(0, TRUNC));
+            out += '<div class="meta-row'+(isSec?' meta-sec':'')+'">' +
+                   '<span class="meta-key">'+esc(k)+'</span>' +
+                   '<span class="meta-val truncatable">' +
+                     '<span class="meta-truncated">'+head+'</span>' +
+                     '<span class="meta-ellipsis" data-meta-id="'+id+'" ' +
+                           'title="Click to expand ('+v.length+' chars)">…</span>' +
+                   '</span></div>';
+          } else {
+            out += '<div class="meta-row'+(isSec?' meta-sec':'')+'">' +
+                   '<span class="meta-key">'+esc(k)+'</span>' +
+                   '<span class="meta-val">'+esc(v)+'</span></div>';
+          }
         }
       }
       out += '</div>';
@@ -321,6 +376,10 @@
 
     // ── structured job view ───────────────────────────────────────
     function buildJobView(jobOrResult, jobId) {
+      // Each new job view starts with a fresh lazy-expand cache so values
+      // belonging to a previously-viewed job don't accumulate in memory.
+      metaFullValues.clear();
+
       // Accept either a full job record or a bare result object.
       const isFullJob = jobOrResult && ('state' in jobOrResult || 'queue_ms' in jobOrResult);
       const job    = isFullJob ? jobOrResult : null;

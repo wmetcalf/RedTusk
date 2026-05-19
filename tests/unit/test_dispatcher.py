@@ -25,7 +25,6 @@ _SHA256 = "a" * 64
 def make_metadata(sha256: str, job_id: str = "test-job") -> dict:
     return {
         "redtusk_version": "0.1.0",
-        "tika_version": "3.3.0",
         "input": {
             "sha256": sha256,
             "size_bytes": 100,
@@ -111,6 +110,7 @@ def make_dispatcher(pool: MagicMock, store: MagicMock, runtime: MagicMock) -> Di
         artifact_root="/tmp/artifacts",
         scratch_root="/tmp/scratch",
         max_metadata_bytes=64 * 1024 * 1024,
+        max_artifact_bytes=1024 * 1024,
     )
     return Dispatcher(pool=pool, store=store, worker_runtime=runtime, limits=limits)
 
@@ -321,6 +321,19 @@ def test_is_healthy() -> None:
 
     pool.is_healthy.return_value = False
     assert dispatcher.is_healthy() is False
+
+
+def test_copy_artifacts_enforces_total_size_cap(tmp_path: Path) -> None:
+    from redtusk.dispatcher import _copy_artifacts
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    (src / "metadata.json").write_bytes(b"abcd")
+    (src / "embedded.bin").write_bytes(b"efgh")
+
+    with pytest.raises(ValueError, match="artifacts too large"):
+        _copy_artifacts(src, dst, max_bytes=7)
 
 
 # ---------------------------------------------------------------------------

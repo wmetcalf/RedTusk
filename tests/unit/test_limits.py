@@ -28,7 +28,7 @@ def test_defaults_are_sensible() -> None:
     assert limits.enable_ocr is False
     assert limits.ocr_lang == "eng"
     assert limits.ocr_psm == 3
-    assert limits.ocr_timeout_s == 60
+    assert limits.ocr_timeout_s == 15
     assert limits.ocr_per_call_timeout_s == 30
     assert limits.ocr_all is False
 
@@ -49,6 +49,8 @@ def test_defaults_are_sensible() -> None:
     assert limits.profile == "default"
     assert limits.worker_seccomp_profile == ""
     assert limits.worker_apparmor_profile == ""
+    assert limits.max_artifact_bytes == 1024 * 1024 * 1024
+    assert limits.max_infected_zip_source_bytes == 1024 * 1024 * 1024
 
     # Job retention
     assert limits.job_retention_seconds == 86400

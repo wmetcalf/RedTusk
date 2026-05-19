@@ -57,7 +57,11 @@ class MainIntegrationTest {
             Map.entry("ksm", true),
             Map.entry("crac", false),
             Map.entry("redtusk_version", "0.1.0"),
-            Map.entry("tika_version", "3.3.0")
+            Map.entry("zxing_path", "/usr/local/bin/ZXingReader"),
+            Map.entry("tesseract_path", "tesseract"),
+            Map.entry("ocr_max_image_dim", 2000),
+            Map.entry("ocr_skip_blank", true),
+            Map.entry("enable_thumbnails", true)
         );
         OM.writeValue(scratchDir.resolve("job.json").toFile(), jobMap);
 
@@ -82,7 +86,7 @@ class MainIntegrationTest {
         JsonNode root = OM.readTree(metaFile);
 
         Set<String> expectedKeys = Set.of(
-            "redtusk_version", "tika_version", "input", "extraction",
+            "redtusk_version", "input", "extraction",
             "limits", "truncated", "warnings", "sandbox"
         );
         Set<String> actualKeys = new HashSet<>();
@@ -90,7 +94,6 @@ class MainIntegrationTest {
         assertEquals(expectedKeys, actualKeys);
 
         assertEquals("0.1.0", root.get("redtusk_version").asText());
-        assertEquals("3.3.0", root.get("tika_version").asText());
         assertEquals("ae1c" + "0".repeat(60), root.get("input").get("sha256").asText());
         assertEquals("test-document.txt", root.get("input").get("filename_hint").asText());
 

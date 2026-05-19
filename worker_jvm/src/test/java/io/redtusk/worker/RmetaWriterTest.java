@@ -56,7 +56,6 @@ class RmetaWriterTest {
 
         JsonNode root = OM.readTree(metaFile);
         assertEquals("0.1.0", root.get("redtusk_version").asText());
-        assertEquals("3.3.0", root.get("tika_version").asText());
         assertEquals("ae1c" + "0".repeat(60), root.get("input").get("sha256").asText());
         assertEquals("text/plain", root.get("extraction").get("root_content_type").asText());
         assertEquals(42L, root.get("extraction").get("duration_ms").asLong());
@@ -74,7 +73,7 @@ class RmetaWriterTest {
 
         JsonNode root = OM.readTree(outDir.resolve("metadata.json").toFile());
         var expected = Set.of(
-            "redtusk_version", "tika_version", "input", "extraction",
+            "redtusk_version", "input", "extraction",
             "limits", "truncated", "warnings", "sandbox"
         );
         var actual = new HashSet<String>();

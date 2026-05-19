@@ -40,3 +40,19 @@ worker_jvm/target/
 
 # Native build artifacts
 worker_jvm/native/libksm_helper.so
+
+# Sample fixtures / corpus — NEVER ship real or synthetic malware/phishing.
+# Keep generator scripts here in-repo (under tests/fixtures/) but ignore the
+# generated artifacts. Run `python3 tests/fixtures/unicode_qr/generate.py`
+# locally to regenerate.
+tests/fixtures/**/qr_fixture*
+tests/fixtures/**/*.lnk
+tests/fixtures/**/*.url
+tests/fixtures/**/*.ppkg
+tests/fixtures/**/*.msc
+tests/fixtures/**/*.rdp
+tests/fixtures/**/*.eml
+tests/fixtures/**/*.msg
+tests/fixtures/**/*.chm
+tests/fixtures/**/*.wps
+tests/fixtures/**/corpus/

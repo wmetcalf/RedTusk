@@ -74,23 +74,23 @@ def run_worker(input_text: str, filename_hint: str = "test.txt") -> dict:
             "ksm": False,
             "crac": False,
             "redtusk_version": "0.1.0",
-            "tika_version": "3.3.0",
+            "zxing_path": "/usr/local/bin/ZXingReader",
+            "tesseract_path": "tesseract",
+            "ocr_max_image_dim": 2000,
+            "ocr_skip_blank": True,
+            "enable_thumbnails": True,
         }
         (scratch / "job.json").write_text(json.dumps(job))
 
-        # Create host-side FIFO
-        fifo_path = scratch / "control.fifo"
-        subprocess.run(["mkfifo", str(fifo_path)], check=True)
-
-        # Background thread: signal the fifo 2 seconds after container starts
-        def signal_fifo():
+        # Background thread: signal the file-based handshake after container starts.
+        def signal_worker():
             time.sleep(2)
             try:
-                fifo_path.write_text("go\n")
+                (scratch / "control.go").touch()
             except Exception:
                 pass
 
-        t = threading.Thread(target=signal_fifo, daemon=True)
+        t = threading.Thread(target=signal_worker, daemon=True)
         t.start()
 
         result = subprocess.run(
@@ -125,7 +125,6 @@ def test_worker_produces_metadata_for_text_file():
     meta = run_worker("Hello from the Docker image test.\n", "test.txt")
 
     assert meta["redtusk_version"] == "0.1.0"
-    assert meta["tika_version"] == "3.3.0"
 
     entries = meta["extraction"]["entries"]
     assert len(entries) >= 1
@@ -140,7 +139,7 @@ def test_worker_produces_metadata_for_text_file():
 
     # Exact top-level key set from the JSON Schema
     assert set(meta.keys()) == {
-        "redtusk_version", "tika_version", "input", "extraction",
+        "redtusk_version", "input", "extraction",
         "limits", "truncated", "warnings", "sandbox",
     }
 

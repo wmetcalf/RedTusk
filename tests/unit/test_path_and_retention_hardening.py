@@ -56,7 +56,6 @@ def test_unpack_tar_sanitizes_windows_traversal_names() -> None:
     )
     result = ExtractResult(
         redtusk_version="0.1.0",
-        tika_version="4.0.0",
         input=InputInfo("a" * 64, 4, "x.txt", datetime.now(UTC)),
         extraction=ExtractionInfo("text/plain", None, 1, [entry]),
         limits=LimitsInfo(10, 5000, 100, 60),

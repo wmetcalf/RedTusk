@@ -52,7 +52,6 @@ def minimal_extract_result(
     )
     return ExtractResult(
         redtusk_version="0.1.0",
-        tika_version="3.3.0",
         input=InputInfo(
             sha256=sha256,
             size_bytes=len(text.encode()),

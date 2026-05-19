@@ -31,7 +31,7 @@ RUN cmake -S /src/zxing-cpp -B /build/zxing \
 # ── Stage 0-b: Build wmetcalf/tika 4.0.0-SNAPSHOT fork ───────────────────────
 FROM eclipse-temurin:25-jdk-jammy AS tika-build
 
-ARG MAVEN_VERSION=3.9.15
+ARG MAVEN_VERSION=3.9.16
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
@@ -40,7 +40,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         | tar -xz -C /opt \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-ARG TIKA_FORK_SHA=e5e3e822ed3fe91d09dd8e9b50331a87ad05854f
+ARG TIKA_FORK_SHA=709ee6cc6d355610ab1370d8bd377157224df9e2
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
@@ -58,7 +58,7 @@ RUN cd /src/tika && \
 # ── Stage 1: Build — compile fat JAR and JNI native libraries ─────────────────
 FROM eclipse-temurin:25-jdk-jammy AS builder
 
-ARG MAVEN_VERSION=3.9.15
+ARG MAVEN_VERSION=3.9.16
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc libc-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

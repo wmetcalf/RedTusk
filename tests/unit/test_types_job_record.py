@@ -26,7 +26,6 @@ def _ts(s: str) -> datetime:
 def _result() -> ExtractResult:
     return ExtractResult(
         redtusk_version="0.1.0",
-        tika_version="3.0.0",
         input=InputInfo(
             sha256="ae1c" + "0" * 60,
             size_bytes=10,

@@ -10,7 +10,6 @@ from redtusk.schema import RMETA_SCHEMA, validate_rmeta
 def _good_rmeta() -> dict:
     return {
         "redtusk_version": "0.1.0",
-        "tika_version": "3.0.0",
         "input": {
             "sha256": "ae" + "0" * 62,
             "size_bytes": 10,

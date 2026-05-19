@@ -44,7 +44,6 @@ def _root_entry() -> EmbeddedEntry:
 def _result(**overrides) -> ExtractResult:
     base = ExtractResult(
         redtusk_version="0.1.0",
-        tika_version="3.0.0",
         input=InputInfo(
             sha256="ae1c" + "0" * 60,
             size_bytes=1024,
@@ -201,7 +200,6 @@ def test_extract_result_top_level_keys_match_spec() -> None:
     d = _result().to_dict()
     assert set(d.keys()) == {
         "redtusk_version",
-        "tika_version",
         "input",
         "extraction",
         "limits",

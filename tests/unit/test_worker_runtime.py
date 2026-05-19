@@ -4,12 +4,11 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
-from redtusk.errors import WorkerError
 from redtusk.limits import Limits
 from redtusk.runtime.docker_runtime import DockerRuntime
 from redtusk.types import JobRecord, JobState, Slot, SlotState
@@ -118,8 +117,9 @@ async def test_poll_fifo_returns_true_when_fifo_exists(
 ) -> None:
     rt = DockerWorkerRuntime(docker=mock_docker, limits=limits, image="redtusk:dev")
     (tmp_path / "in").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "control").mkdir(parents=True, exist_ok=True)
     # Java creates control.ready (regular file) — works through gVisor 9p unlike named pipes
-    ready = tmp_path / "control.ready"
+    ready = tmp_path / "control" / "control.ready"
     ready.write_bytes(b"")
 
     slot = make_slot(tmp_path)
@@ -161,12 +161,13 @@ async def test_signal_job_writes_job_json(
     job = make_job(filename_hint="test.docx", input_sha256="deadbeef")
     (tmp_path / "in").mkdir(parents=True, exist_ok=True)
 
+    (tmp_path / "control").mkdir(parents=True, exist_ok=True)
     await rt.signal_job(slot, job, limits)
 
     # control.go is created (file-based signal, no FIFO)
-    assert (tmp_path / "control.go").exists()
+    assert (tmp_path / "control" / "control.go").exists()
 
-    job_json = json.loads((tmp_path / "job.json").read_bytes())  # job.json at scratch root
+    job_json = json.loads((tmp_path / "control" / "job.json").read_bytes())  # job.json at scratch root
     assert job_json["sha256"] == "deadbeef"
     assert job_json["limits"]["max_recursion_depth"] == limits.max_recursion_depth
     assert job_json["limits"]["max_embedded_entries"] == limits.max_embedded_entries
@@ -184,7 +185,23 @@ async def test_signal_job_writes_job_json(
     assert job_json["sandbox_runtime"] == "runc"
     assert job_json["appcds"] is True
     assert "redtusk_version" in job_json
-    assert job_json["tika_version"] == "4.0.0-SNAPSHOT"
+
+
+@pytest.mark.asyncio
+async def test_signal_job_reports_effective_runtime_override(
+    tmp_path: Path, mock_docker: DockerRuntime, limits: Limits
+) -> None:
+    overridden_limits = Limits(scratch_root=str(tmp_path), worker_runtime="runsc")
+    rt = DockerWorkerRuntime(docker=mock_docker, limits=overridden_limits, image="redtusk:dev")
+    slot = make_slot(tmp_path)
+    job = make_job(filename_hint="test.docx", input_sha256="deadbeef")
+    (tmp_path / "in").mkdir(parents=True, exist_ok=True)
+
+    (tmp_path / "control").mkdir(parents=True, exist_ok=True)
+    await rt.signal_job(slot, job, overridden_limits)
+
+    job_json = json.loads((tmp_path / "control" / "job.json").read_bytes())
+    assert job_json["sandbox_runtime"] == "runsc"
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +281,9 @@ async def test_signal_job_creates_control_go(
     slot = make_slot(tmp_path)
     job = make_job(filename_hint="test.docx", input_sha256="deadbeef")
     (tmp_path / "in").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "control").mkdir(parents=True, exist_ok=True)
 
-    assert not (tmp_path / "control.go").exists()
+    assert not (tmp_path / "control" / "control.go").exists()
     await rt.signal_job(slot, job, limits)
     # control.go must exist so Java's polling loop detects it
-    assert (tmp_path / "control.go").exists()
+    assert (tmp_path / "control" / "control.go").exists()

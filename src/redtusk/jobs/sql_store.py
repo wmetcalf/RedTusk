@@ -16,17 +16,17 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from redtusk.errors import JobNotFoundError, StorageError
+from redtusk.types import JobRecord, JobState
 
-def _serialize(record: "JobRecord") -> str:
+
+def _serialize(record: JobRecord) -> str:
     """Serialize a JobRecord to JSON, stripping U+0000 which Postgres JSONB rejects.
 
     json.dumps encodes Python null bytes as the 6-char JSON escape \\u0000; Postgres
     JSONB rejects both the raw null byte and the escape sequence. Strip both forms.
     """
     return json.dumps(record.to_dict()).replace("\\u0000", "").replace("\x00", "")
-
-from redtusk.errors import JobNotFoundError, StorageError
-from redtusk.types import JobRecord, JobState
 
 _SCHEMA_SQLITE = """
 CREATE TABLE IF NOT EXISTS jobs (

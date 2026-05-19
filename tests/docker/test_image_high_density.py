@@ -77,7 +77,11 @@ def test_high_density_job_processes_txt(tmp_path):
         "ksm": False,
         "crac": True,
         "redtusk_version": "0.1.0",
-        "tika_version": "3.3.0",
+        "zxing_path": "/usr/local/bin/ZXingReader",
+        "tesseract_path": "tesseract",
+        "ocr_max_image_dim": 2000,
+        "ocr_skip_blank": True,
+        "enable_thumbnails": True,
     }
     (in_dir / "job.json").write_text(json.dumps(job))
 
@@ -100,19 +104,18 @@ def test_high_density_job_processes_txt(tmp_path):
         text=True,
     ).strip()
 
-    # Wait for the FIFO (worker ready after CRaC restore)
-    fifo = in_dir / "control.fifo"
+    # Wait for the ready file (worker ready after CRaC restore)
+    ready = in_dir / "control.ready"
     deadline = time.monotonic() + 10.0  # CRaC restore should be fast
     while time.monotonic() < deadline:
-        if fifo.exists():
+        if ready.exists():
             break
         time.sleep(0.25)
-    assert fifo.exists(), "FIFO not created — CRaC restore may have failed"
+    assert ready.exists(), "ready file not created — CRaC restore may have failed"
 
     # Signal the worker
     def _signal():
-        with open(fifo, "w") as f:
-            f.write("go\n")
+        (in_dir / "control.go").touch()
 
     t = threading.Thread(target=_signal, daemon=True)
     t.start()
