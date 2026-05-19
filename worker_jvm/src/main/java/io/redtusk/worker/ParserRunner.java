@@ -340,6 +340,20 @@ public final class ParserRunner {
                                     "Decoded " + decoded.size()
                                   + " Unicode-art QR code(s) from extracted text "
                                   + "— invisible-to-image-scanner phishing payload");
+                            // Promote Unicode-art decodes to first-class QrCode
+                            // entries so the UI's QR section, metrics, and any
+                            // downstream consumer iterating qr.codes sees them
+                            // the same way as image-based QRs.
+                            // Position string flags the source (unicode-art) so
+                            // a consumer that cares about the rendering origin
+                            // can still tell them apart.
+                            java.util.List<EntryResult.QrCode> merged =
+                                    new java.util.ArrayList<>(qr.codes());
+                            for (String t : decoded) {
+                                merged.add(new EntryResult.QrCode(
+                                        t, "QR_CODE", null, "unicode-art"));
+                            }
+                            qr = new EntryResult.QrResult(merged, null);
                         }
                     }
                 } catch (Exception e) {
