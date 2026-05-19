@@ -7,7 +7,7 @@ Each field maps to the env var ``REDTUSK_<UPPERCASE_FIELD_NAME>``.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from redtusk.errors import ConfigurationError
@@ -44,12 +44,19 @@ class Limits:
     # Skip OCR on blank/uniform images detected via phash + colorhash.
     ocr_skip_blank: bool = True
 
-    # Pool
-    pool_size: int = 10
+    # Pool. Default is half of available logical cores (min 2) — sized to
+    # keep half the host free for everything else. Override with the
+    # REDTUSK_POOL_SIZE env var or an explicit constructor argument.
+    pool_size: int = field(
+        default_factory=lambda: max(2, (os.cpu_count() or 4) // 2))
     pool_burst_size: int = 5
     pool_burst_trigger_s: int = 3
     pool_burst_drain_s: int = 60
-    pool_max_size: int = 32
+    # Default cap = full host (cpu_count). Lifted from the old hardcoded 32
+    # so big-iron hosts can scale up without surgery. Bursting still respects
+    # pool_burst_size on top of pool_size.
+    pool_max_size: int = field(
+        default_factory=lambda: max(8, os.cpu_count() or 8))
     pool_spawn_rate_limit: float = 4.0
     pool_spawn_retry_max: int = 5
 
