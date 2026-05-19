@@ -126,6 +126,29 @@
     .meta-ellipsis:hover { color: #90caf9; text-decoration: underline; }
     .meta-val.expanded .meta-truncated { white-space: pre-wrap; }
 
+    /* Hash links and similarity panel — modeled after clippyshot. */
+    .hash-link { color: #64b5f6; cursor: pointer; font-family: 'Courier New', monospace; text-decoration: none; }
+    .hash-link:hover { color: #90caf9; text-decoration: underline; }
+    .similar-panel { position: fixed; top: 0; right: 0; width: min(560px, 92vw); height: 100vh; background: #0d1117; border-left: 1px solid #30363d; z-index: 1020; display: none; flex-direction: column; box-shadow: -12px 0 32px rgba(0,0,0,.6); }
+    .similar-panel.show { display: flex; }
+    .similar-panel header { background: #161b22; padding: 14px 18px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+    .similar-panel header h3 { font-size: 0.95rem; font-weight: 600; color: #c9d1d9; margin: 0; }
+    .similar-panel .close-sim { background: none; border: none; color: #8b949e; font-size: 1.5rem; line-height: 1; cursor: pointer; padding: 0 4px; }
+    .similar-panel .close-sim:hover { color: #f85149; }
+    .similar-panel .sim-body { flex: 1; overflow-y: auto; padding: 12px; }
+    .similar-controls { display: flex; gap: 0.5rem; padding: 8px 12px; border-bottom: 1px solid #1e1e1e; align-items: center; font-size: 0.78rem; color: #8b949e; }
+    .similar-controls label { display: flex; align-items: center; gap: 0.3rem; }
+    .similar-controls input { width: 4rem; background: #161b22; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 6px; border-radius: 3px; font-size: 0.78rem; }
+    .similar-tile { background: #161b22; border: 1px solid #30363d; border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; font-size: 0.76rem; color: #8b949e; }
+    .similar-tile:hover { border-color: #58a6ff; }
+    .similar-tile .top { display: flex; justify-content: space-between; gap: 0.5rem; margin-bottom: 4px; }
+    .similar-tile .fname { color: #c9d1d9; font-weight: 500; word-break: break-all; }
+    .similar-tile .dist { background: rgba(63,185,113,.12); color: #3fb950; padding: 1px 6px; border-radius: 3px; font-size: 0.7rem; align-self: flex-start; white-space: nowrap; }
+    .similar-tile .meta { display: flex; flex-direction: column; gap: 2px; word-break: break-all; }
+    .similar-tile .meta a { color: #58a6ff; text-decoration: none; font-family: 'Courier New', monospace; }
+    .similar-tile .meta a:hover { text-decoration: underline; }
+    .similar-empty { color: #6e7681; padding: 1rem; text-align: center; font-size: 0.8rem; }
+
     /* Pool status */
     .pool-bar { display: flex; gap: 0.4rem; align-items: center; font-size: 0.78rem; color: #666; margin-top: 0.35rem; flex-wrap: wrap; }
     .pool-slot { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
@@ -138,6 +161,17 @@
   </style>
 </head>
 <body>
+  <aside class="similar-panel" id="similar-panel" aria-hidden="true">
+    <header>
+      <h3 id="similar-title">Similar entries</h3>
+      <button class="close-sim" id="similar-close" type="button" aria-label="Close">✕</button>
+    </header>
+    <div class="similar-controls" id="similar-controls">
+      <label>max hamming <input type="number" id="similar-max-hamming" min="0" max="64" value="5"></label>
+      <button type="button" id="similar-refetch" style="background:#1f6feb;color:#fff;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:0.78rem">Refetch</button>
+    </div>
+    <div class="sim-body" id="similar-body"></div>
+  </aside>
   <h1>
     <picture>
       <source srcset="/static/logo.webp" type="image/webp">
@@ -332,6 +366,90 @@
       const t = ev.target;
       if (t && t.classList && t.classList.contains('meta-ellipsis')) {
         metaExpand(ev);
+      } else if (t && t.classList && t.classList.contains('hash-link')) {
+        ev.preventDefault();
+        openSimilarPanel(t.dataset.hash, t.dataset.val);
+      }
+    });
+
+    // ── similarity panel ─────────────────────────────────────────────
+    let _simCurrent = { kind: null, value: null };
+
+    function openSimilarPanel(kind, value) {
+      _simCurrent = { kind, value };
+      const panel = document.getElementById('similar-panel');
+      const title = document.getElementById('similar-title');
+      const controls = document.getElementById('similar-controls');
+      controls.style.display = (kind === 'phash') ? 'flex' : 'none';
+      title.textContent = 'Similar by ' + kind + ': ' + value.slice(0, 16) + (value.length > 16 ? '…' : '');
+      document.getElementById('similar-body').innerHTML = '<div class="similar-empty">Loading…</div>';
+      panel.classList.add('show');
+      panel.setAttribute('aria-hidden', 'false');
+      fetchSimilar();
+    }
+
+    async function fetchSimilar() {
+      const { kind, value } = _simCurrent;
+      if (!kind || !value) return;
+      const body = document.getElementById('similar-body');
+      const params = new URLSearchParams({ [kind]: value, limit: '50' });
+      if (kind === 'phash') {
+        const mh = document.getElementById('similar-max-hamming').value || '5';
+        params.set('max_hamming', mh);
+      }
+      try {
+        const r = await fetch('/v1/similar?' + params.toString());
+        if (!r.ok) {
+          const err = await r.text();
+          body.innerHTML = '<div class="similar-empty" style="color:#ef5350">' + esc(err) + '</div>';
+          return;
+        }
+        const d = await r.json();
+        renderSimilarMatches(d.matches || []);
+      } catch (e) {
+        body.innerHTML = '<div class="similar-empty" style="color:#ef5350">Network error: ' + esc(e.message) + '</div>';
+      }
+    }
+
+    function renderSimilarMatches(matches) {
+      const body = document.getElementById('similar-body');
+      if (!matches.length) {
+        body.innerHTML = '<div class="similar-empty">No matches.</div>';
+        return;
+      }
+      let html = '';
+      for (const m of matches) {
+        html += '<div class="similar-tile">';
+        html += '<div class="top">';
+        html += '<span class="fname">' + esc(m.filename || m.entry_path || '—') + '</span>';
+        if (m.distance != null) html += '<span class="dist">Δ ' + m.distance + '</span>';
+        html += '</div>';
+        html += '<div class="meta">';
+        html += '<div>entry: <span style="color:#c9d1d9">' + esc(m.entry_path || '/') + '</span></div>';
+        if (m.content_type) html += '<div>ct: <span style="color:#c9d1d9">' + esc(m.content_type) + '</span></div>';
+        if (m.phash)        html += '<div>phash: ' + esc(m.phash) + '</div>';
+        if (m.colorhash)    html += '<div>colorhash: ' + esc(m.colorhash) + '</div>';
+        if (m.sha256)       html += '<div>sha256: ' + esc(m.sha256) + '</div>';
+        html += '<div><a href="/?job=' + esc(m.job_id) + '" target="_blank">Open job ' + esc(m.job_id.slice(0, 12)) + '…</a></div>';
+        html += '</div></div>';
+      }
+      body.innerHTML = html;
+    }
+
+    document.getElementById('similar-close').addEventListener('click', () => {
+      const panel = document.getElementById('similar-panel');
+      panel.classList.remove('show');
+      panel.setAttribute('aria-hidden', 'true');
+    });
+    document.getElementById('similar-refetch').addEventListener('click', fetchSimilar);
+    // Escape closes the panel.
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        const p = document.getElementById('similar-panel');
+        if (p.classList.contains('show')) {
+          p.classList.remove('show');
+          p.setAttribute('aria-hidden', 'true');
+        }
       }
     });
 
@@ -549,9 +667,9 @@
           // data-src: deferred until the tree node is opened (set by treeToggle)
           html += '<img data-src="'+esc(thumbUrl)+'" alt="" style="max-width:256px;max-height:256px;display:block;margin:0.4rem 0;border:1px solid #333;border-radius:3px" onerror="thumbErr(this)">';
         }
-        if (sha)          html += '<div class="tree-meta">sha256: <span class="mono">'+esc(sha)+'</span></div>';
+        if (sha)          html += '<div class="tree-meta">sha256: <a class="hash-link" data-hash="sha256" data-val="'+esc(sha)+'" title="Find entries with this exact SHA-256">'+esc(sha)+'</a></div>';
         if (e.md5)        html += '<div class="tree-meta">md5: <span class="mono">'+esc(e.md5)+'</span> &nbsp; sha1: <span class="mono">'+esc(e.sha1||'—')+'</span></div>';
-        if (e.phash)      html += '<div class="tree-meta">phash: <span class="mono">'+esc(e.phash)+'</span> &nbsp; colorhash: <span class="mono">'+esc(e.colorhash||'—')+'</span></div>';
+        if (e.phash)      html += '<div class="tree-meta">phash: <a class="hash-link" data-hash="phash" data-val="'+esc(e.phash)+'" title="Find perceptually-similar entries">'+esc(e.phash)+'</a> &nbsp; colorhash: '+(e.colorhash ? '<a class="hash-link" data-hash="colorhash" data-val="'+esc(e.colorhash)+'" title="Find entries with this exact colorhash">'+esc(e.colorhash)+'</a>' : '<span class="mono">—</span>')+'</div>';
         if (metaHighlights.length) html += '<div class="tree-meta">'+esc(metaHighlights.join(' · '))+'</div>';
         html += renderMetaTable(meta);
 
