@@ -303,14 +303,15 @@ class Pool:
     # ------------------------------------------------------------------
 
     async def _health_check_loop(self) -> None:
-        """Every 10 s verify that every IDLE slot's container is still running.
+        """Every 2 s verify that every IDLE slot's container is still running.
 
         Slots whose containers have exited (e.g. killed by OOM, SIGKILL on a
-        previous stack restart, or any other external event) are evicted and
-        replaced so they don't silently absorb jobs and fail immediately.
+        previous stack restart, or the worker's self-timeout firing while
+        idle) are evicted and replaced so they don't silently absorb jobs
+        and fail immediately with exit-2.
         """
         while True:
-            await asyncio.sleep(10)
+            await asyncio.sleep(2)
             try:
                 await self._check_idle_slots()
             except asyncio.CancelledError:

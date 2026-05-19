@@ -23,7 +23,14 @@ public final class FifoLoop {
     static final String GO_FILE     = "control.go";
 
     private static final long POLL_INTERVAL_MS      = 100L;
-    private static final long JOB_SIGNAL_TIMEOUT_MS = 120_000L; // 2 min max wait
+    // 10 min max wait. A warmed pool slot sits idle until the dispatcher
+    // hands it a job. 2 min was too tight: at low load the worker would
+    // self-terminate while still IDLE, the pool's 10 s health-check hadn't
+    // run yet, and the dispatcher would claim the slot and send go-signal
+    // to an exited process — surfacing as exit-2 within milliseconds of
+    // dispatch_start. 10 min lets the pool's natural eviction handle truly
+    // stuck workers without losing live ones to a startup race.
+    private static final long JOB_SIGNAL_TIMEOUT_MS = 600_000L;
 
     private FifoLoop() {}
 
