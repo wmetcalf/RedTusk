@@ -116,6 +116,12 @@ public final class ParserRunner {
             zcfg.setTimeoutSeconds(Math.max(1, limits.ocrTimeoutS()));
             zcfg.setFormats("");  // empty = all formats
             context.set(ZXingCPPConfig.class, zcfg);
+            // Enable color-aware parsing — currently honored by HTML
+            // (HtmlColorQRExtractor) and PDF (PDF2XHTMLColorAware). OOXML
+            // wiring is queued. Lets parsers decode CSS-color / PDF-color
+            // QR codes that Tika's normal text extraction would flatten.
+            context.set(org.apache.tika.parser.ColorAwareConfig.class,
+                    new org.apache.tika.parser.ColorAwareConfig().setEnabled(true));
         }
 
         // Tesseract OCR. Always set the config so we can explicitly skip when disabled.
