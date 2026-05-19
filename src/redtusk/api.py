@@ -469,6 +469,81 @@ def _register_routes(app: FastAPI) -> None:
         has_more = len(records) == capped_limit
         return JSONResponse({"jobs": [_job_summary(r) for r in records], "has_more": has_more})
 
+    # Similarity gate — same idea as clippyshot. Fuzzy phash queries with
+    # large max_hamming can sequentially scan entry_hashes; cap concurrency
+    # so an unauthenticated burst can't pin Postgres.
+    _similar_gate = asyncio.Semaphore(3)
+
+    @app.get("/v1/similar")
+    async def find_similar(
+        request: Request,
+        phash: str | None = None,
+        colorhash: str | None = None,
+        sha256: str | None = None,
+        max_hamming: int = 5,
+        limit: int = 50,
+    ) -> JSONResponse:
+        """Find entries with similar perceptual/cryptographic hashes.
+
+        - phash: 16-char hex. Returns entries within ``max_hamming`` Hamming
+          bits (0-64; default 5).
+        - colorhash: 14-char hex; exact match.
+        - sha256: 64-char hex; exact match.
+
+        Exactly one of phash / colorhash / sha256 must be provided.
+        """
+        provided = [p for p in (phash, colorhash, sha256) if p]
+        if len(provided) != 1:
+            raise HTTPException(400, "provide exactly one of phash, colorhash, sha256")
+        if limit < 1 or limit > 500:
+            raise HTTPException(400, "limit must be in [1, 500]")
+        store: JobStore = request.app.state.store
+        if phash:
+            if not re.fullmatch(r"[0-9a-fA-F]{16}", phash):
+                raise HTTPException(400, "phash must be 16 hex chars")
+            if not (0 <= max_hamming <= 64):
+                raise HTTPException(400, "max_hamming must be in [0, 64]")
+            method = getattr(store, "find_similar_phash", None)
+            if method is None:
+                raise HTTPException(
+                    501, "current store does not support similarity search"
+                )
+            # Local helper — mirrors SqlJobStore._phash_hex_to_int8.
+            val = int(phash, 16)
+            target_int8 = val - (1 << 64) if val >= (1 << 63) else val
+            async with _similar_gate:
+                rows = await method(target_int8, max_hamming, limit=limit)
+        elif colorhash:
+            if not re.fullmatch(r"[0-9a-fA-F]{14}", colorhash):
+                raise HTTPException(400, "colorhash must be 14 hex chars")
+            method = getattr(store, "find_by_colorhash", None)
+            if method is None:
+                raise HTTPException(
+                    501, "current store does not support colorhash lookup"
+                )
+            async with _similar_gate:
+                rows = await method(colorhash, limit=limit)
+        else:
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256 or ""):
+                raise HTTPException(400, "sha256 must be 64 hex chars")
+            method = getattr(store, "find_by_sha256", None)
+            if method is None:
+                raise HTTPException(
+                    501, "current store does not support sha256 lookup"
+                )
+            async with _similar_gate:
+                rows = await method(sha256, limit=limit)
+        # Normalise phash int8 -> hex for the response so clients see the
+        # same string they queried with.
+        out = []
+        for r in rows:
+            ph = r.get("phash")
+            r_out = dict(r)
+            if isinstance(ph, int):
+                r_out["phash"] = f"{ph & ((1 << 64) - 1):016x}"
+            out.append(r_out)
+        return JSONResponse({"matches": out, "count": len(out)})
+
     @app.get("/v1/jobs/{job_id}/artifacts/{artifact_name:path}")
     async def get_artifact(
         job_id: str, artifact_name: str, request: Request

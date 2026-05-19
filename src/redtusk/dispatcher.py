@@ -228,6 +228,20 @@ class Dispatcher:
         job.completed_at = datetime.now(UTC)
         job.result = result
         await self._store.update(job)
+
+        # 8. Index entry hashes for similarity search (best-effort; never
+        #    fails the job). Stores phash/colorhash/sha256 from each entry
+        #    in a queryable table so the UI can pivot on "find pages that
+        #    look like this one" across the corpus.
+        index_method = getattr(self._store, "index_entries", None)
+        if index_method is not None:
+            try:
+                await index_method(job)
+            except Exception as exc:
+                _logger.warning(
+                    "dispatcher.index_entries_failed",
+                    job_id=job.id, error=str(exc),
+                )
         _logger.info("dispatcher.job_succeeded", job_id=job.id)
         fmt = doc.get("extraction", {}).get("root_content_type", "unknown")
         record_extraction_total(outcome="succeeded", fmt=fmt)

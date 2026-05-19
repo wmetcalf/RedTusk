@@ -40,6 +40,25 @@ CREATE INDEX IF NOT EXISTS jobs_state_submitted_idx
     ON jobs(state, submitted_at);
 CREATE INDEX IF NOT EXISTS jobs_completed_at_idx
     ON jobs(completed_at);
+
+-- entry_hashes: per-entry perceptual + cryptographic hashes for similarity
+-- search across the job corpus. Populated by index_entries() after each
+-- successful job. phash is a signed int64 (Hamming-distance friendly);
+-- colorhash is 14-hex (txn-distance friendly); sha256 is 64-hex (exact-only).
+CREATE TABLE IF NOT EXISTS entry_hashes (
+    job_id TEXT NOT NULL,
+    entry_path TEXT NOT NULL,
+    phash INTEGER,
+    colorhash TEXT,
+    sha256 TEXT,
+    filename TEXT,
+    content_type TEXT,
+    indexed_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, entry_path)
+);
+CREATE INDEX IF NOT EXISTS entry_hashes_phash_idx ON entry_hashes(phash);
+CREATE INDEX IF NOT EXISTS entry_hashes_colorhash_idx ON entry_hashes(colorhash);
+CREATE INDEX IF NOT EXISTS entry_hashes_sha256_idx ON entry_hashes(sha256);
 """
 
 _SCHEMA_POSTGRES = """
@@ -54,6 +73,24 @@ CREATE INDEX IF NOT EXISTS jobs_state_submitted_idx
     ON {schema}.jobs(state, submitted_at);
 CREATE INDEX IF NOT EXISTS jobs_completed_at_idx
     ON {schema}.jobs(completed_at);
+
+CREATE TABLE IF NOT EXISTS {schema}.entry_hashes (
+    job_id TEXT NOT NULL REFERENCES {schema}.jobs(id) ON DELETE CASCADE,
+    entry_path TEXT NOT NULL,
+    phash BIGINT,
+    colorhash TEXT,
+    sha256 TEXT,
+    filename TEXT,
+    content_type TEXT,
+    indexed_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (job_id, entry_path)
+);
+CREATE INDEX IF NOT EXISTS entry_hashes_phash_idx
+    ON {schema}.entry_hashes(phash);
+CREATE INDEX IF NOT EXISTS entry_hashes_colorhash_idx
+    ON {schema}.entry_hashes(colorhash);
+CREATE INDEX IF NOT EXISTS entry_hashes_sha256_idx
+    ON {schema}.entry_hashes(sha256);
 """
 
 
@@ -428,3 +465,182 @@ class SqlJobStore:
                     )
                     row = await cur.fetchone()
             return row[0] if row is not None else 0
+
+    # ── similarity index ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _phash_hex_to_int8(hex_str: str) -> int:
+        """Signed int64 cast for a 16-char hex pHash. Mirrors the
+        clippyshot conversion so the same hex string maps to the same
+        int8 across the two projects."""
+        val = int(hex_str, 16)
+        if val >= 1 << 63:
+            val -= 1 << 64
+        return val
+
+    @staticmethod
+    def _int8_to_phash_hex(v: int) -> str:
+        return f"{v & ((1 << 64) - 1):016x}"
+
+    async def index_entries(self, record: JobRecord) -> int:
+        """Populate entry_hashes for a succeeded job. Idempotent — repeat
+        calls upsert. Returns the number of rows indexed."""
+        if record.result is None:
+            return 0
+        rows = []
+        now = datetime.now(UTC).isoformat() if self._dialect == "sqlite" \
+            else datetime.now(UTC)
+        for entry in record.result.extraction.entries:
+            ph_hex = entry.phash
+            ch = entry.colorhash
+            sha = entry.sha256
+            if not (ph_hex or ch or sha):
+                continue
+            try:
+                ph_int = self._phash_hex_to_int8(ph_hex) if ph_hex else None
+            except ValueError:
+                ph_int = None
+            rows.append({
+                "job_id": record.id,
+                "entry_path": entry.path,
+                "phash": ph_int,
+                "colorhash": ch,
+                "sha256": sha,
+                "filename": record.filename_hint,
+                "content_type": entry.content_type,
+                "indexed_at": now,
+            })
+        if not rows:
+            return 0
+        if self._dialect == "sqlite":
+            await self._aiosqlite_conn.executemany(
+                "INSERT INTO entry_hashes "
+                "(job_id, entry_path, phash, colorhash, sha256, "
+                " filename, content_type, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(job_id, entry_path) DO UPDATE SET "
+                "phash=excluded.phash, colorhash=excluded.colorhash, "
+                "sha256=excluded.sha256, filename=excluded.filename, "
+                "content_type=excluded.content_type, indexed_at=excluded.indexed_at",
+                [tuple(r[k] for k in (
+                    "job_id", "entry_path", "phash", "colorhash", "sha256",
+                    "filename", "content_type", "indexed_at"
+                )) for r in rows],
+            )
+            await self._aiosqlite_conn.commit()
+        else:
+            async with self._psycopg_pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.executemany(
+                        f'INSERT INTO "{self._schema}".entry_hashes '
+                        "(job_id, entry_path, phash, colorhash, sha256, "
+                        " filename, content_type, indexed_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                        "ON CONFLICT (job_id, entry_path) DO UPDATE SET "
+                        "phash=EXCLUDED.phash, colorhash=EXCLUDED.colorhash, "
+                        "sha256=EXCLUDED.sha256, filename=EXCLUDED.filename, "
+                        "content_type=EXCLUDED.content_type, "
+                        "indexed_at=EXCLUDED.indexed_at",
+                        [tuple(r[k] for k in (
+                            "job_id", "entry_path", "phash", "colorhash", "sha256",
+                            "filename", "content_type", "indexed_at"
+                        )) for r in rows],
+                    )
+                await conn.commit()
+        return len(rows)
+
+    async def find_similar_phash(
+        self, target_int8: int, max_distance: int, limit: int = 50
+    ) -> list[dict]:
+        """Return rows whose phash is within ``max_distance`` Hamming bits of
+        target. On Postgres uses bit_count for fast distance computation;
+        on SQLite falls back to in-memory popcount over the full table."""
+        if self._dialect == "sqlite":
+            async with self._aiosqlite_conn.execute(
+                "SELECT job_id, entry_path, phash, colorhash, sha256, "
+                "filename, content_type FROM entry_hashes WHERE phash IS NOT NULL"
+            ) as cur:
+                rows = await cur.fetchall()
+            out = []
+            for r in rows:
+                ph = r[2]
+                if ph is None:
+                    continue
+                dist = bin((ph ^ target_int8) & ((1 << 64) - 1)).count("1")
+                if dist <= max_distance:
+                    out.append({
+                        "job_id": r[0], "entry_path": r[1],
+                        "phash": ph, "colorhash": r[3], "sha256": r[4],
+                        "filename": r[5], "content_type": r[6],
+                        "distance": dist,
+                    })
+            out.sort(key=lambda x: (x["distance"], x["job_id"], x["entry_path"]))
+            return out[:limit]
+        # Postgres
+        async with self._psycopg_pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f'SELECT job_id, entry_path, phash, colorhash, sha256, '
+                    f'filename, content_type, '
+                    f"bit_count((phash # %s::int8)::bit(64)) AS distance "
+                    f'FROM "{self._schema}".entry_hashes '
+                    f"WHERE phash IS NOT NULL "
+                    f"AND bit_count((phash # %s::int8)::bit(64)) <= %s "
+                    f"ORDER BY distance, job_id, entry_path LIMIT %s",
+                    (target_int8, target_int8, max_distance, limit),
+                )
+                cols = [d.name for d in cur.description]
+                rows = [dict(zip(cols, row)) for row in await cur.fetchall()]
+        return rows
+
+    async def find_by_colorhash(
+        self, colorhash: str, limit: int = 50
+    ) -> list[dict]:
+        """Exact-match colorhash lookup."""
+        if self._dialect == "sqlite":
+            async with self._aiosqlite_conn.execute(
+                "SELECT job_id, entry_path, phash, colorhash, sha256, "
+                "filename, content_type FROM entry_hashes "
+                "WHERE colorhash = ? ORDER BY job_id, entry_path LIMIT ?",
+                (colorhash, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+            keys = ("job_id", "entry_path", "phash", "colorhash", "sha256",
+                    "filename", "content_type")
+            return [dict(zip(keys, r)) for r in rows]
+        async with self._psycopg_pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f'SELECT job_id, entry_path, phash, colorhash, sha256, '
+                    f'filename, content_type FROM "{self._schema}".entry_hashes '
+                    f"WHERE colorhash = %s ORDER BY job_id, entry_path LIMIT %s",
+                    (colorhash, limit),
+                )
+                cols = [d.name for d in cur.description]
+                return [dict(zip(cols, row)) for row in await cur.fetchall()]
+
+    async def find_by_sha256(
+        self, sha256: str, limit: int = 50
+    ) -> list[dict]:
+        """Exact-match SHA-256 lookup."""
+        if self._dialect == "sqlite":
+            async with self._aiosqlite_conn.execute(
+                "SELECT job_id, entry_path, phash, colorhash, sha256, "
+                "filename, content_type FROM entry_hashes "
+                "WHERE sha256 = ? ORDER BY job_id, entry_path LIMIT ?",
+                (sha256, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+            keys = ("job_id", "entry_path", "phash", "colorhash", "sha256",
+                    "filename", "content_type")
+            return [dict(zip(keys, r)) for r in rows]
+        async with self._psycopg_pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f'SELECT job_id, entry_path, phash, colorhash, sha256, '
+                    f'filename, content_type FROM "{self._schema}".entry_hashes '
+                    f"WHERE sha256 = %s ORDER BY job_id, entry_path LIMIT %s",
+                    (sha256, limit),
+                )
+                cols = [d.name for d in cur.description]
+                return [dict(zip(cols, row)) for row in await cur.fetchall()]
