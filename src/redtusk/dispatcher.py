@@ -147,6 +147,11 @@ class Dispatcher:
             if job.input_path:
                 _hardlink_or_copy(job.input_path, str(dest))
 
+            # Record the moment the worker actually starts processing — this is
+            # the boundary between "pool wait" and "real worker time" that the
+            # job's `pool_wait_ms` / `processing_ms` calculations key off.
+            job.worker_started_at = datetime.now(UTC)
+            await self._store.update(job)
             await self._runtime.signal_job(slot, job, self._limits)
             exit_code = await self._runtime.wait(
                 slot, timeout=float(self._limits.job_timeout_s)
@@ -265,11 +270,13 @@ class Dispatcher:
 
         # Build ephemeral job record (not persisted)
         sha256 = hashlib.sha256(body).hexdigest()
+        now = datetime.now(UTC)
         job = JobRecord(
             id=f"sync-{sha256[:16]}",
             state=JobState.RUNNING,
-            submitted_at=datetime.now(UTC),
-            started_at=datetime.now(UTC),
+            submitted_at=now,
+            started_at=now,
+            worker_started_at=None,  # set after pool.claim() below
             completed_at=None,
             input_sha256=sha256,
             input_size_bytes=len(body),
@@ -295,6 +302,7 @@ class Dispatcher:
             dest.parent.mkdir(parents=True, exist_ok=True)
             _hardlink_or_copy(tmp_path, str(dest))
 
+            job.worker_started_at = datetime.now(UTC)
             await self._runtime.signal_job(slot, job, limits)
             exit_code = await self._runtime.wait(
                 slot, timeout=float(limits.job_timeout_s)

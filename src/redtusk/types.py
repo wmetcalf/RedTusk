@@ -381,11 +381,17 @@ class JobRecord:
     id: str
     state: JobState
     submitted_at: datetime
+    # Filled when the dispatcher claims the job from the queue. From this
+    # point the job is "running" but may still be waiting for a worker slot.
     started_at: datetime | None
-    completed_at: datetime | None
-    input_sha256: str
-    input_size_bytes: int
-    filename_hint: str | None
+    # Filled when the worker pool slot has been acquired and the signal has
+    # been sent — the worker actually starts processing here. Newer field;
+    # absent on records created before this column was added.
+    worker_started_at: datetime | None = None
+    completed_at: datetime | None = None
+    input_sha256: str = ""
+    input_size_bytes: int = 0
+    filename_hint: str | None = None
     input_path: str | None = None   # host path to staged input file (set by API on job creation)
     result: ExtractResult | None = None
     error_code: str | None = None
@@ -393,19 +399,42 @@ class JobRecord:
 
     def to_dict(self) -> dict[str, Any]:
         queue_ms: int | None = None
+        pool_wait_ms: int | None = None
         processing_ms: int | None = None
+        parse_ms: int | None = None
         if self.started_at is not None:
+            # API → dispatcher claim (DB queue wait)
             queue_ms = int((self.started_at - self.submitted_at).total_seconds() * 1000)
-        if self.started_at is not None and self.completed_at is not None:
-            processing_ms = int((self.completed_at - self.started_at).total_seconds() * 1000)
+        if self.started_at is not None and self.worker_started_at is not None:
+            # dispatcher claim → worker slot acquired & signaled
+            pool_wait_ms = int((self.worker_started_at - self.started_at).total_seconds() * 1000)
+        if self.completed_at is not None:
+            # processing_ms = time inside the worker pipeline (real Tika + ingest).
+            # Falls back to the legacy started_at-to-completed measurement on
+            # records that predate worker_started_at.
+            anchor = self.worker_started_at or self.started_at
+            if anchor is not None:
+                processing_ms = int((self.completed_at - anchor).total_seconds() * 1000)
+        # parse_ms reflects Tika's self-reported extraction time inside the
+        # worker — strictly less than processing_ms (no ingest/copy overhead).
+        if self.result is not None:
+            try:
+                parse_ms = int(self.result.extraction.duration_ms)
+            except (AttributeError, TypeError):
+                parse_ms = None
         return {
             "id": self.id,
             "state": self.state.value,
             "submitted_at": self.submitted_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            "worker_started_at": (
+                self.worker_started_at.isoformat() if self.worker_started_at else None
+            ),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "queue_ms": queue_ms,
+            "pool_wait_ms": pool_wait_ms,
             "processing_ms": processing_ms,
+            "parse_ms": parse_ms,
             "input_sha256": self.input_sha256,
             "input_size_bytes": self.input_size_bytes,
             "filename_hint": self.filename_hint,
@@ -422,6 +451,10 @@ class JobRecord:
             state=JobState(d["state"]),
             submitted_at=datetime.fromisoformat(d["submitted_at"]),
             started_at=datetime.fromisoformat(d["started_at"]) if d.get("started_at") else None,
+            worker_started_at=(
+                datetime.fromisoformat(d["worker_started_at"])
+                if d.get("worker_started_at") else None
+            ),
             completed_at=(
                 datetime.fromisoformat(d["completed_at"]) if d.get("completed_at") else None
             ),
