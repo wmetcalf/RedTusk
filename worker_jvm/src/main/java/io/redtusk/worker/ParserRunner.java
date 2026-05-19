@@ -340,11 +340,11 @@ public final class ParserRunner {
                             ZXingCPPConfig zcfgLocal = context.get(ZXingCPPConfig.class);
                             ZXingCPPScanner uqScanner = new ZXingCPPScanner();
                             java.util.List<org.apache.tika.parser.image.ZXingCPPScanner.Result>
-                                    results = UnicodeQRExtractor.extractAndDecode(
+                                    uqResults = UnicodeQRExtractor.extractAndDecode(
                                             text, uqScanner, zcfgLocal, context);
-                            decoded = new java.util.ArrayList<>(results.size());
+                            decoded = new java.util.ArrayList<>(uqResults.size());
                             for (org.apache.tika.parser.image.ZXingCPPScanner.Result r
-                                    : results) {
+                                    : uqResults) {
                                 String t = r.getText();
                                 if (t != null && !t.isEmpty()) {
                                     decoded.add(t);
