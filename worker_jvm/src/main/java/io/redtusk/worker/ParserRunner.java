@@ -330,7 +330,11 @@ public final class ParserRunner {
                     && text != null && text.length() > 0) {
                 try {
                     int glyphCount = UnicodeQRExtractor.countQrGlyphs(text);
-                    if (glyphCount >= 100) {
+                    // Threshold sized for the densest packing the extractor
+                    // supports (sextants = 6 modules per glyph). A v1 QR
+                    // (21x21) packed in sextants is ~77 glyphs; pad slightly
+                    // below to keep the pre-filter useful but not exclusionary.
+                    if (glyphCount >= 50) {
                         metadata.put("unicode_qr:glyph_count", Integer.toString(glyphCount));
                         // SHA-256 of the text body keys the dedup cache. Cheap
                         // vs an extra ZXing subprocess fork for duplicate bodies.
