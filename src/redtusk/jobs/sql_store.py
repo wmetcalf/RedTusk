@@ -336,27 +336,62 @@ class SqlJobStore:
                 await conn.commit()
                 return updated
 
-    async def list_recent(self, limit: int = 50, offset: int = 0) -> list[JobRecord]:
+    async def list_recent(self, limit: int = 50, offset: int = 0,
+                          state: str | None = None) -> list[JobRecord]:
         if self._dialect == "sqlite":
-            async with self._aiosqlite_conn.execute(
-                "SELECT payload FROM jobs ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            ) as cur:
-                rows = await cur.fetchall()
+            if state:
+                async with self._aiosqlite_conn.execute(
+                    "SELECT payload FROM jobs WHERE state = ? "
+                    "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                    (state, limit, offset),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with self._aiosqlite_conn.execute(
+                    "SELECT payload FROM jobs ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ) as cur:
+                    rows = await cur.fetchall()
         else:
             async with self._psycopg_pool.connection() as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute(
-                        f'SELECT payload FROM "{self._schema}".jobs '
-                        "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
-                        (limit, offset),
-                    )
+                    if state:
+                        await cur.execute(
+                            f'SELECT payload FROM "{self._schema}".jobs '
+                            "WHERE state = %s "
+                            "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
+                            (state, limit, offset),
+                        )
+                    else:
+                        await cur.execute(
+                            f'SELECT payload FROM "{self._schema}".jobs '
+                            "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
+                            (limit, offset),
+                        )
                     rows = await cur.fetchall()
         out: list[JobRecord] = []
         for row in rows:
             payload = row[0] if isinstance(row[0], str) else json.dumps(row[0])
             out.append(JobRecord.from_dict(json.loads(payload)))
         return out
+
+    async def count_by_state(self) -> dict[str, int]:
+        """Returns the count of jobs per state. Used by the UI to surface
+        a summary banner so users can navigate large queues by state."""
+        if self._dialect == "sqlite":
+            async with self._aiosqlite_conn.execute(
+                "SELECT state, COUNT(*) FROM jobs GROUP BY state"
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._psycopg_pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        f'SELECT state, COUNT(*) FROM "{self._schema}".jobs '
+                        "GROUP BY state"
+                    )
+                    rows = await cur.fetchall()
+        return {state: int(count) for state, count in rows}
 
     async def search(self, query: str, limit: int = 50, offset: int = 0) -> list[JobRecord]:
         q = f"%{query}%"

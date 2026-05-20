@@ -69,12 +69,23 @@ class MemoryJobStore:
             self._records[chosen.id] = updated
             return copy.deepcopy(updated)
 
-    async def list_recent(self, limit: int = 50) -> list[JobRecord]:
+    async def list_recent(self, limit: int = 50, offset: int = 0,
+                          state: str | None = None) -> list[JobRecord]:
         async with self._lock:
+            records = self._records.values()
+            if state:
+                records = [r for r in records if r.state.value == state]
             ordered = sorted(
-                self._records.values(), key=lambda r: r.submitted_at, reverse=True
+                records, key=lambda r: r.submitted_at, reverse=True
             )
-            return [copy.deepcopy(r) for r in ordered[:limit]]
+            return [copy.deepcopy(r) for r in ordered[offset:offset + limit]]
+
+    async def count_by_state(self) -> dict[str, int]:
+        async with self._lock:
+            out: dict[str, int] = {}
+            for r in self._records.values():
+                out[r.state.value] = out.get(r.state.value, 0) + 1
+            return out
 
     async def search(self, query: str, limit: int = 50) -> list[JobRecord]:
         q = query.lower()

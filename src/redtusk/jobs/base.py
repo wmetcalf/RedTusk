@@ -47,8 +47,19 @@ class JobStore(Protocol):
         """
         ...
 
-    async def list_recent(self, limit: int = 50) -> list[JobRecord]:
-        """Return up to ``limit`` most-recently-submitted jobs, newest first."""
+    async def list_recent(self, limit: int = 50, offset: int = 0,
+                          state: str | None = None) -> list[JobRecord]:
+        """Return up to ``limit`` most-recently-submitted jobs, newest first.
+
+        Optional ``state`` filters to a single JobState value
+        ("queued" / "running" / "succeeded" / "failed"). ``offset`` skips
+        the first N matching jobs for pagination.
+        """
+        ...
+
+    async def count_by_state(self) -> dict[str, int]:
+        """Returns total job count per state. Used by the UI to drive
+        state-filter pills so users can navigate large queues."""
         ...
 
     async def search(self, query: str, limit: int = 50) -> list[JobRecord]:

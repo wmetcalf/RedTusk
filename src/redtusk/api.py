@@ -458,16 +458,37 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/v1/jobs")
     async def list_jobs(
-        request: Request, limit: int = 50, offset: int = 0, q: str = ""
+        request: Request, limit: int = 50, offset: int = 0, q: str = "",
+        state: str = ""
     ) -> JSONResponse:
         store: JobStore = request.app.state.store
         capped_limit = min(limit, 200)
+        state_filter = state.strip().lower() if state else None
+        if state_filter and state_filter not in (
+                "queued", "running", "succeeded", "failed"):
+            raise HTTPException(400, "state must be one of: queued, running, succeeded, failed")
         if q.strip():
             records = await store.search(q.strip(), limit=capped_limit, offset=offset)
+            if state_filter:
+                # Apply state filter client-side on top of search.
+                records = [r for r in records if r.state.value == state_filter]
         else:
-            records = await store.list_recent(limit=capped_limit, offset=offset)
+            records = await store.list_recent(
+                limit=capped_limit, offset=offset, state=state_filter)
         has_more = len(records) == capped_limit
         return JSONResponse({"jobs": [_job_summary(r) for r in records], "has_more": has_more})
+
+    @app.get("/v1/jobs/counts")
+    async def job_counts(request: Request) -> JSONResponse:
+        """Counts of jobs per state. Backs the UI's state-filter pills so
+        users can navigate large queues without scrolling through hundreds
+        of queued rows."""
+        store: JobStore = request.app.state.store
+        method = getattr(store, "count_by_state", None)
+        if method is None:
+            return JSONResponse({"counts": {}})
+        counts = await method()
+        return JSONResponse({"counts": counts})
 
     # Similarity gate — same idea as clippyshot. Fuzzy phash queries with
     # large max_hamming can sequentially scan entry_hashes; cap concurrency
