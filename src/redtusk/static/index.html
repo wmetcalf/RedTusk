@@ -156,8 +156,14 @@
     .slot-assigned { background: #7a5000; }
     .slot-warming  { background: #2a2a6a; }
 
-    /* Infinite scroll sentinel */
-    #load-sentinel { height: 1px; margin-top: 0.5rem; }
+    /* Pagination controls (replaces infinite scroll) */
+    #pager { margin-top: 0.6rem; display: flex; gap: 0.25rem; align-items: center; flex-wrap: wrap; font-size: 0.78rem; }
+    #pager .pg { background: #1f1f1f; border: 1px solid #333; color: #ccc; padding: 0.15rem 0.55rem; border-radius: 3px; cursor: pointer; user-select: none; min-width: 1.5rem; text-align: center; }
+    #pager .pg:hover { background: #2a2a2a; }
+    #pager .pg.active { background: #c0392b33; border-color: #c0392b; color: #fff; cursor: default; }
+    #pager .pg.disabled { opacity: 0.35; pointer-events: none; }
+    #pager .pg.gap { background: none; border: none; cursor: default; pointer-events: none; padding: 0.15rem 0.3rem; color: #666; }
+    #pager .count { color: #888; margin-left: 0.5rem; font-variant-numeric: tabular-nums; }
 
     /* State-filter pills above the jobs table */
     .pill { background: #1f1f1f; border: 1px solid #333; border-radius: 12px; padding: 0.15rem 0.7rem; cursor: pointer; user-select: none; color: #ccc; }
@@ -233,7 +239,7 @@
         <tr><td colspan="6" class="no-jobs">Loading…</td></tr>
       </tbody>
     </table>
-    <div id="load-sentinel"></div>
+    <div id="pager"></div>
   </div>
 
   <script>
@@ -424,6 +430,15 @@
       }
     }
 
+    function thumbUrlFor(jobId, entryPath) {
+      if (!jobId) return null;
+      if (!entryPath || entryPath === '/') {
+        return '/v1/jobs/' + jobId + '/artifacts/thumbnail.jpg';
+      }
+      const rel = entryPath.startsWith('/') ? entryPath.slice(1) : entryPath;
+      return '/v1/jobs/' + jobId + '/artifacts/embedded/thumbnails/' + rel + '.jpg';
+    }
+
     function renderSimilarMatches(matches) {
       const body = document.getElementById('similar-body');
       if (!matches.length) {
@@ -432,11 +447,18 @@
       }
       let html = '';
       for (const m of matches) {
+        const thumb = thumbUrlFor(m.job_id, m.entry_path);
         html += '<div class="similar-tile">';
         html += '<div class="top">';
         html += '<span class="fname">' + esc(m.filename || m.entry_path || '—') + '</span>';
         if (m.distance != null) html += '<span class="dist">Δ ' + m.distance + '</span>';
         html += '</div>';
+        if (thumb) {
+          html += '<img src="' + esc(thumb) + '" alt="" loading="lazy" ' +
+                  'style="max-width:100%;max-height:160px;border:1px solid #30363d;' +
+                  'border-radius:3px;margin-bottom:6px;display:block" ' +
+                  'onerror="this.style.display=\'none\'">';
+        }
         html += '<div class="meta">';
         html += '<div>entry: <span style="color:#c9d1d9">' + esc(m.entry_path || '/') + '</span></div>';
         if (m.content_type) html += '<div>ct: <span style="color:#c9d1d9">' + esc(m.content_type) + '</span></div>';
@@ -799,13 +821,16 @@
 
     async function triggerSearch(q) {
       activeQuery = q;
+      // Reset to page 1 whenever entering or leaving search mode.
+      if (q) currentPage = 1;
       const ind = document.getElementById('refresh-indicator');
       ind.textContent = q ? 'searching…' : 'refreshing…';
       try {
         const stateQS = activeStateFilter ? `&state=${activeStateFilter}` : '';
+        const offset = (currentPage - 1) * PAGE_SIZE;
         const url = q
           ? `/v1/jobs?limit=200&q=${encodeURIComponent(q)}${stateQS}`
-          : `/v1/jobs?limit=50&offset=0${stateQS}`;
+          : `/v1/jobs?limit=${PAGE_SIZE}&offset=${offset}${stateQS}`;
         const resp = await fetch(url);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
@@ -819,18 +844,7 @@
         const countEl = document.getElementById('search-count');
         countEl.textContent = q ? `${jobs.length} result${jobs.length === 1 ? '' : 's'}` : '';
         ind.textContent = 'updated ' + new Date().toLocaleTimeString();
-
-        // When search is active, disable pagination sentinel
-        if (q) {
-          hasMore = false;
-          const sentinel = document.getElementById('load-sentinel');
-          if (sentinel) sentinel.style.display = 'none';
-        } else {
-          loadedCount = jobs.length;
-          hasMore = data.has_more === true;
-          const sentinel = document.getElementById('load-sentinel');
-          if (sentinel) sentinel.style.display = hasMore ? 'block' : 'none';
-        }
+        renderPager();
       } catch(e) {
         ind.textContent = 'error: ' + e.message;
       }
@@ -843,9 +857,57 @@
     const jobCache = new Map();
 
     // ── pagination state ──────────────────────────────────────────
-    let loadedCount = 0;   // how many jobs are currently shown (non-search)
-    let hasMore = false;   // whether there are more to load
-    let loadingMore = false; // guard against concurrent loads
+    const PAGE_SIZE = 50;
+    let currentPage = 1;   // 1-based
+    let totalJobs = 0;     // total matching current filter (state, not search)
+
+    function goToPage(p) {
+      const maxP = Math.max(1, Math.ceil(totalJobs / PAGE_SIZE));
+      currentPage = Math.min(Math.max(1, p), maxP);
+      fetchJobs();
+    }
+
+    function renderPager() {
+      const el = document.getElementById('pager');
+      if (!el) return;
+      // No pager during a text search (server returns up to 200 results
+      // in a single shot; pagination over search would need a separate
+      // store API).
+      if (activeQuery) {
+        el.innerHTML = '';
+        return;
+      }
+      const totalPages = Math.max(1, Math.ceil(totalJobs / PAGE_SIZE));
+      if (totalPages <= 1) {
+        el.innerHTML = `<span class="count">${totalJobs} job${totalJobs===1?'':'s'}</span>`;
+        return;
+      }
+      const parts = [];
+      const pg = (label, page, opts) => {
+        const o = opts || {};
+        const cls = 'pg' + (o.active ? ' active' : '') + (o.disabled ? ' disabled' : '') + (o.gap ? ' gap' : '');
+        if (o.gap) return `<span class="${cls}">…</span>`;
+        const click = o.disabled || o.active ? '' : `onclick="goToPage(${page})"`;
+        return `<span class="${cls}" ${click}>${label}</span>`;
+      };
+      parts.push(pg('« First', 1, { disabled: currentPage === 1 }));
+      parts.push(pg('‹ Prev', currentPage - 1, { disabled: currentPage === 1 }));
+
+      // Page numbers with smart truncation: 1 ... (cur-1, cur, cur+1) ... last
+      const pageSet = new Set([1, totalPages, currentPage, currentPage - 1, currentPage + 1, currentPage - 2, currentPage + 2]);
+      const pages = [...pageSet].filter(p => p >= 1 && p <= totalPages).sort((a, b) => a - b);
+      let prev = 0;
+      for (const p of pages) {
+        if (p - prev > 1) parts.push(pg('', 0, { gap: true }));
+        parts.push(pg(String(p), p, { active: p === currentPage }));
+        prev = p;
+      }
+
+      parts.push(pg('Next ›', currentPage + 1, { disabled: currentPage === totalPages }));
+      parts.push(pg('Last »', totalPages, { disabled: currentPage === totalPages }));
+      parts.push(`<span class="count">page ${currentPage} / ${totalPages} · ${totalJobs} job${totalJobs===1?'':'s'}</span>`);
+      el.innerHTML = parts.join('');
+    }
 
     // ── state-filter pills ────────────────────────────────────────
     let activeStateFilter = null; // null | "queued" | "running" | "succeeded" | "failed"
@@ -857,6 +919,8 @@
       // Clear any text-search so the two filters don't fight
       const inp = document.getElementById('search-input');
       if (inp.value) { inp.value = ''; activeQuery = ''; }
+      // Reset to first page when filter changes
+      currentPage = 1;
       fetchJobs();
     }
 
@@ -885,7 +949,21 @@
         const r = await fetch('/v1/jobs/counts');
         if (!r.ok) return;
         const d = await r.json();
-        renderStatePills(d.counts || {});
+        const counts = d.counts || {};
+        renderStatePills(counts);
+        // Update totalJobs for the pager based on the active state filter.
+        if (activeStateFilter) {
+          totalJobs = counts[activeStateFilter] || 0;
+        } else {
+          totalJobs = (counts.queued||0) + (counts.running||0)
+                    + (counts.succeeded||0) + (counts.failed||0);
+        }
+        // If we're past the last page (e.g. jobs drained / deleted), step
+        // back. Don't fire another fetch from here — the regular 3s poll
+        // will reflect it.
+        const totalPages = Math.max(1, Math.ceil(totalJobs / PAGE_SIZE));
+        if (currentPage > totalPages) currentPage = totalPages;
+        renderPager();
       } catch (e) {
         // best-effort
       }
@@ -1025,62 +1103,29 @@
       const ind = document.getElementById('refresh-indicator');
       ind.textContent='refreshing…';
       try {
-        // Search: fetch up to 200 results with no pagination.
-        // Normal: always refresh the first page (offset=0, limit=50).
-        // State filter (if any) layers on top of either mode.
+        // Search: fetch up to 200 results, single shot, no pagination.
+        // Normal: fetch the current page via offset=(page-1)*PAGE_SIZE.
+        // State filter layers on top of either mode.
         const stateQS = activeStateFilter ? `&state=${activeStateFilter}` : '';
+        const offset = (currentPage - 1) * PAGE_SIZE;
         const url = activeQuery
           ? `/v1/jobs?limit=200&q=${encodeURIComponent(activeQuery)}${stateQS}`
-          : `/v1/jobs?limit=50&offset=0${stateQS}`;
+          : `/v1/jobs?limit=${PAGE_SIZE}&offset=${offset}${stateQS}`;
         const resp = await fetch(url);
         if (!resp.ok) throw new Error('HTTP '+resp.status);
         const data = await resp.json();
         const jobs = Array.isArray(data) ? data : (data.jobs||[]);
 
         for (const j of jobs) {
-          // List response is summary-only (no result); evict stale in-flight entries.
-          // Full records are fetched individually on expand and cached there.
+          // List response is summary-only; evict stale in-flight entries.
           if (j.state==='queued'||j.state==='running') jobCache.delete(j.id);
         }
 
         renderJobs(jobs, /*append=*/false);
         ind.textContent='updated '+new Date().toLocaleTimeString();
-
-        if (!activeQuery) {
-          loadedCount = jobs.length;
-          hasMore = data.has_more === true;
-        } else {
-          hasMore = false;
-        }
-        const sentinel = document.getElementById('load-sentinel');
-        if (sentinel) sentinel.style.display = hasMore ? 'block' : 'none';
+        renderPager();
       } catch(e) { ind.textContent='error: '+e.message; }
       fetchPoolStatus();
-    }
-
-    async function loadMore() {
-      if (loadingMore || !hasMore || activeQuery) return;
-      loadingMore = true;
-      try {
-        const stateQS = activeStateFilter ? `&state=${activeStateFilter}` : '';
-        const resp = await fetch(`/v1/jobs?limit=50&offset=${loadedCount}${stateQS}`);
-        if (!resp.ok) throw new Error('HTTP '+resp.status);
-        const data = await resp.json();
-        const jobs = Array.isArray(data) ? data : (data.jobs||[]);
-
-        for (const j of jobs) {
-          if (j.state==='queued'||j.state==='running') jobCache.delete(j.id);
-        }
-
-        renderJobs(jobs, /*append=*/true);
-        loadedCount += jobs.length;
-        hasMore = data.has_more === true;
-        const sentinel = document.getElementById('load-sentinel');
-        if (sentinel) sentinel.style.display = hasMore ? 'block' : 'none';
-      } catch(e) {
-        // silently swallow; next poll will retry
-      }
-      loadingMore = false;
     }
 
     function rowCells(job) {
@@ -1186,20 +1231,48 @@
     // ── boot ──────────────────────────────────────────────────────
     document.getElementById('search-clear').style.opacity = '0.3';
 
-    // Infinite scroll: observe the sentinel element
-    const _sentinel = document.getElementById('load-sentinel');
-    if (_sentinel) {
-      _sentinel.style.display = 'none'; // hidden until hasMore is true
-      const _observer = new IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) loadMore();
+    // Deep-link via ?job=<id>: fetch + auto-expand that job after the
+    // initial jobs list loads. If the job isn't in the current page's
+    // server response (different state, older offset), inject a synthetic
+    // row at the top of the table so the user has something to click into;
+    // setting expandedId protects it from the reconcile loop's row-removal.
+    async function applyJobDeepLink() {
+      try {
+        const jobId = new URLSearchParams(window.location.search).get('job');
+        if (!jobId) return;
+        const r = await fetch('/v1/jobs/' + encodeURIComponent(jobId));
+        if (!r.ok) return;
+        const job = await r.json();
+        jobCache.set(job.id, job);
+        const tbody = document.getElementById('jobs-body');
+        if (!document.getElementById('row-' + job.id)) {
+          // Synthetic row at the top
+          const tr = document.createElement('tr');
+          tr.id = 'row-' + job.id;
+          tr.className = 'job-row';
+          tr.innerHTML = rowCells(job);
+          tr.addEventListener('click', () => toggleExpand(job.id, tbody));
+          tbody.insertBefore(tr, tbody.firstChild);
         }
-      }, { rootMargin: '200px' });
-      _observer.observe(_sentinel);
+        expandedId = job.id;
+        document.getElementById('row-' + job.id)?.classList.add('expanded');
+        // Avoid double-render if an expand row is somehow already there.
+        if (!document.getElementById('expand-' + job.id)) {
+          openExpand(job.id, tbody);
+        }
+        document.getElementById('row-' + job.id)?.scrollIntoView({
+          block: 'center', behavior: 'instant'
+        });
+      } catch (e) {
+        // best-effort; the regular jobs list still renders
+      }
     }
 
     fetchJobs();
     fetchJobCounts();
+    // Boot the deep-link AFTER the initial list render so the synthetic row
+    // either decorates a row that just landed or is added at the top.
+    setTimeout(applyJobDeepLink, 50);
     setInterval(fetchJobs, 3000);
     setInterval(fetchJobCounts, 3000);
   </script>
