@@ -375,7 +375,7 @@ class SqlJobStore:
             out.append(JobRecord.from_dict(json.loads(payload)))
         return out
 
-    async def count_by_state(self) -> dict[str, int]:
+    async def state_counts(self) -> dict[str, int]:
         """Returns the count of jobs per state. Used by the UI to surface
         a summary banner so users can navigate large queues by state."""
         if self._dialect == "sqlite":

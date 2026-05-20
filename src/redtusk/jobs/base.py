@@ -57,7 +57,7 @@ class JobStore(Protocol):
         """
         ...
 
-    async def count_by_state(self) -> dict[str, int]:
+    async def state_counts(self) -> dict[str, int]:
         """Returns total job count per state. Used by the UI to drive
         state-filter pills so users can navigate large queues."""
         ...

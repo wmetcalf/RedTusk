@@ -80,7 +80,7 @@ class MemoryJobStore:
             )
             return [copy.deepcopy(r) for r in ordered[offset:offset + limit]]
 
-    async def count_by_state(self) -> dict[str, int]:
+    async def state_counts(self) -> dict[str, int]:
         async with self._lock:
             out: dict[str, int] = {}
             for r in self._records.values():

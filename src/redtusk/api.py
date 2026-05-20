@@ -436,7 +436,7 @@ def _register_routes(app: FastAPI) -> None:
         of queued rows. Registered BEFORE /v1/jobs/{job_id} so the literal
         path wins over the path-param route."""
         store: JobStore = request.app.state.store
-        method = getattr(store, "count_by_state", None)
+        method = getattr(store, "state_counts", None)
         if method is None:
             return JSONResponse({"counts": {}})
         counts = await method()
