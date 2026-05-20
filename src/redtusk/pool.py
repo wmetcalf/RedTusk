@@ -77,18 +77,50 @@ class Pool:
         """Wait up to ``timeout`` seconds for an IDLE slot. Return it as ASSIGNED.
 
         Raises PoolExhaustedError on timeout.
+
+        Performs a live container inspect on the candidate slot before
+        returning, to close the residual race between worker self-timeout
+        and the periodic health check evicting the dead slot. Without
+        this, a slot whose worker just exited (within the last <2s
+        health-check window) would still appear IDLE; the dispatcher
+        would send go-signal to a dead FIFO and surface as instant
+        exit-2.
         """
         deadline = asyncio.get_running_loop().time() + timeout
         async with self._lock:
             while True:
+                candidate: Slot | None = None
                 for slot in self._slots.values():
                     if slot.state == SlotState.IDLE:
-                        slot.state = SlotState.ASSIGNED
-                        slot.assigned_at = datetime.now(UTC)
-                        self._burst_last_claimed_at = datetime.now(UTC)
-                        self._idle_event.clear()
-                        self._update_metrics()
-                        return slot
+                        candidate = slot
+                        break
+                if candidate is not None:
+                    # Tentatively assign; verify outside the lock with
+                    # docker inspect. If the container is dead, evict
+                    # and look for another slot.
+                    candidate.state = SlotState.ASSIGNED
+                    candidate.assigned_at = datetime.now(UTC)
+                    self._burst_last_claimed_at = datetime.now(UTC)
+                    self._idle_event.clear()
+                    self._update_metrics()
+                    self._lock.release()
+                    try:
+                        alive = await self._runtime.is_container_running(candidate)
+                    except Exception:
+                        alive = False
+                    await self._lock.acquire()
+                    if alive:
+                        return candidate
+                    # Slot was dead. Demote to DRAINING and spawn a
+                    # replacement; loop to try another IDLE slot.
+                    _logger.warning("pool.claim_found_dead_slot",
+                                    id=str(candidate.id))
+                    candidate.state = SlotState.DRAINING
+                    self._update_metrics()
+                    asyncio.create_task(self._reap_and_replace(
+                        candidate, success=False))
+                    # Retry the scan — another IDLE slot may exist.
+                    continue
                 # No IDLE slot — wait for idle_event
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
