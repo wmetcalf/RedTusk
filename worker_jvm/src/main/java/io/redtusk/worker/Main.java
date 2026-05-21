@@ -184,12 +184,14 @@ public final class Main {
                         }
                     }
                     // Prefer Pass-2's byte count (it actually saved the bytes).
-                    // BUT if Pass-2 reported zero_byte_stream while Pass-1
-                    // succeeded (mergedThumb=true), Pass-2's 0 overrides Pass-1's
-                    // real size and the UI shows "0-byte image with thumbnail".
-                    // Keep the original entry size in that mismatch.
+                    // BUT if Pass-2 reported any kind of byte-stream miss while
+                    // Pass-1 succeeded (mergedThumb=true), Pass-2's 0 overrides
+                    // Pass-1's real size and the UI shows "0-byte image with
+                    // thumbnail". Generalize the guard so any future Pass-2
+                    // skip reason with sizeBytes=0 doesn't reintroduce the
+                    // mismatch.
                     long mergedSize = fh.sizeBytes();
-                    if (mergedThumb && "zero_byte_stream".equals(fh.thumbnailSkipped())) {
+                    if (mergedThumb && fh.sizeBytes() == 0 && e.sizeBytes() > 0) {
                         mergedSize = e.sizeBytes();
                     }
                     updated.add(new EntryResult(

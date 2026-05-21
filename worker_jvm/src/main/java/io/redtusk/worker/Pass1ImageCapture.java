@@ -127,33 +127,58 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
             return;
         }
 
-        byte[] bytes;
+        // Materialize the stream to disk BEFORE consuming any bytes. This
+        // gives us two cheap operations:
+        //   1. Peek the first 16 bytes from a sibling FileInputStream for the
+        //      magic-byte check without touching `stream`'s position.
+        //   2. On magic mismatch, hand a fresh file-backed TikaInputStream to
+        //      the downstream parser. POI's MSG reader regresses when fed a
+        //      memory-backed (ByteArrayInputStream-backed) TikaInputStream;
+        //      the prior fix replayed bytes via TikaInputStream.get(byte[])
+        //      which has exactly the broken backing.
+        java.io.File materialized;
         try {
-            bytes = stream.readNBytes(MAX_FILE_BYTES);
+            materialized = stream.getFile();
         } catch (IOException e) {
-            LOG.fine("Pass1ImageCapture: readNBytes failed: " + e.getMessage());
-            return;
-        }
-        if (bytes.length == 0) {
+            // Materialization failed (rare — usually means the parser couldn't
+            // spool). Fall back to passing through; we lose the magic check
+            // but at least don't break the parse.
+            delegate(stream, handler, metadata, context);
             return;
         }
 
-        // Magic-byte cross-check BEFORE replay. likelyImage() can be fooled by
-        // an attacker who sets Content-Type=image/jpeg or RESOURCE_NAME_KEY=foo.jpg
-        // on a nested non-image attachment (typically an MSG-in-MSG). If we
-        // replay those bytes through a memory-backed TikaInputStream into POI's
-        // MSG reader, the inner MSG parse breaks — denial of extraction. Magic
-        // bytes are authoritative; on a hint/magic mismatch, pass through with
-        // the ORIGINAL stream (which has only been touched by readNBytes — we
-        // still need to feed it via a replay because the bytes have been
-        // consumed, but at least we don't poison non-images that managed to
-        // look like images by name alone).
-        if (!hasImageMagic(bytes)) {
-            // Bytes already consumed from the original stream; replay them but
-            // do NOT buffer — we have no thumbnail to write from these bytes.
-            try (TikaInputStream replay = TikaInputStream.get(bytes)) {
-                delegate(replay, handler, metadata, context);
-            }
+        // Magic-byte cross-check. Reads from a sibling FileInputStream so
+        // `stream`'s position is untouched and we can still hand it to delegate.
+        byte[] head = new byte[16];
+        int headLen = 0;
+        try (java.io.InputStream peek = new java.io.FileInputStream(materialized)) {
+            headLen = peek.readNBytes(head, 0, head.length);
+        } catch (IOException e) {
+            LOG.fine("Pass1ImageCapture: magic peek failed: " + e.getMessage());
+        }
+        if (headLen < 4 || !hasImageMagic(headLen == head.length
+                ? head : java.util.Arrays.copyOf(head, headLen))) {
+            // Hint said image, magic says no. Pass the ORIGINAL stream through
+            // (file-backed already because getFile() ran) so POI MSG and other
+            // file-backing-sensitive parsers don't break on memory replay.
+            delegate(stream, handler, metadata, context);
+            return;
+        }
+
+        // Confirmed image. Read the rest into memory for thumbnail decode +
+        // the metadata-walk replay. Memory-backed replay is safe here because
+        // an image inner parser doesn't care about file-backing.
+        byte[] bytes;
+        try (java.io.InputStream all = new java.io.FileInputStream(materialized)) {
+            bytes = all.readNBytes(MAX_FILE_BYTES);
+        } catch (IOException e) {
+            LOG.fine("Pass1ImageCapture: full read failed: " + e.getMessage());
+            // Fall back to passing the original stream so the inner parser
+            // still sees the entry.
+            delegate(stream, handler, metadata, context);
+            return;
+        }
+        if (bytes.length == 0) {
             return;
         }
 
@@ -221,23 +246,31 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
         // WEBP: "RIFF" .... "WEBP"
         if (b.length >= 12 && b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F'
                 && b[8] == 'W' && b[9] == 'E' && b[10] == 'B' && b[11] == 'P') return true;
-        // HEIC/HEIF box: "ftyp" at offset 4 followed by a brand starting with "heic"/"heix"/"hevc"/"mif1"
-        if (b.length >= 12 && b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') return true;
-        // SVG: text "<?xml" or "<svg" within first 256 bytes (case-sensitive
-        // here; case-insensitive root tag matching is overkill for the threat
-        // model — attacker who crafts a malformed SVG just falls through to
-        // Pass-2, no security implication).
-        int probeLen = Math.min(b.length, 256);
-        if (b[0] == '<') {
-            for (int i = 1; i + 4 <= probeLen; i++) {
-                if (b[i] == '<' && b[i+1] == 's' && b[i+2] == 'v' && b[i+3] == 'g') return true;
+        // HEIC/HEIF box: "ftyp" at offset 4 followed by a 4-char brand. ISO
+        // base media file format uses ftyp boxes for many formats (MP4, MOV,
+        // 3GP, etc.); only return true when the brand identifies an image
+        // variant so we don't buffer video bytes for thumbnailing.
+        if (b.length >= 12 && b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') {
+            String brand = new String(b, 8, 4, java.nio.charset.StandardCharsets.US_ASCII);
+            switch (brand) {
+                case "heic": case "heix": case "hevc": case "hevx":
+                case "heim": case "heis": case "hevm": case "hevs":
+                case "mif1": case "msf1": case "avif": case "avis":
+                    return true;
+                default:
+                    // Other ftyp brand (mp42, qt  , 3gp4, …): not an image.
+                    // Fall through to remaining magic checks.
             }
-            // Common: starts with <?xml then later has <svg
-            if (b[1] == '?' && b[2] == 'x' && b[3] == 'm' && probeLen >= 8 && b[4] == 'l') {
-                for (int i = 5; i + 4 <= probeLen; i++) {
-                    if (b[i] == '<' && b[i+1] == 's' && b[i+2] == 'v' && b[i+3] == 'g') return true;
-                }
-            }
+        }
+        // SVG: probe within first 512 bytes, tolerating common leading content:
+        //   * UTF-8 BOM EF BB BF
+        //   * Leading whitespace (\t \n \r ' ')
+        //   * <?xml ... ?> + arbitrary intermediate content + <svg
+        // Locating <svg via a moving scan handles all of those without
+        // needing a real XML parser at the magic-check stage.
+        int probeLen = Math.min(b.length, 512);
+        for (int i = 0; i + 4 <= probeLen; i++) {
+            if (b[i] == '<' && b[i+1] == 's' && b[i+2] == 'v' && b[i+3] == 'g') return true;
         }
         // EMF: signature "EMF" at offset 40 within EMR_HEADER record (record
         // type 1 at offset 0, then later " EMF" — POI's HemfPicture is

@@ -96,13 +96,17 @@ def make_html_body(url: str, art_rows: list[str], *, font_size_px: int = 11) -> 
     container_w = cols * 8 + 20     # eyeballed: 11px Courier ≈ 6.6px per glyph
 
     def to_entities(s: str) -> str:
+        # Encodes for both text and attribute contexts: covers `&<>` as expected
+        # plus `"` and `'` so a future use like <a href="{to_entities(url)}">
+        # doesn't reintroduce attribute-context XSS that the caller might miss.
         out = []
         for ch in s:
             cp = ord(ch)
             if ch == ' ':
                 out.append('&nbsp;')
             elif cp < 128:
-                out.append({'&': '&amp;', '<': '&lt;', '>': '&gt;'}.get(ch, ch))
+                out.append({'&': '&amp;', '<': '&lt;', '>': '&gt;',
+                            '"': '&quot;', "'": '&#39;'}.get(ch, ch))
             else:
                 out.append(f'&#{cp};')
         return ''.join(out)
@@ -125,7 +129,11 @@ def make_html_body(url: str, art_rows: list[str], *, font_size_px: int = 11) -> 
             + to_entities(row) + '</div>'
         )
     parts.append('</font></td></tr></table>')
-    parts.append(f'<p>{url}</p></body></html>')
+    # Entity-encode the URL so a `--url` that contains `</p><script>` or other
+    # markup characters can't break out of the <p> context and inject script
+    # tags into the Outlook HTML alternative. The QR rows are already encoded
+    # via to_entities(); the bare URL was the lone unescaped sink.
+    parts.append(f'<p>{to_entities(url)}</p></body></html>')
     return ''.join(parts)
 
 

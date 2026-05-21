@@ -71,14 +71,24 @@ final class DraftSnapshotWriter {
     }
 
     private void write(List<Metadata> metaList) {
-        // Snapshot the list under its own monitor before iterating.
-        // RecursiveParserWrapperHandler.metadataList is an ArrayList (not
-        // thread-safe); container parsers that fan out to multiple threads
-        // (some POI / PDFBox paths) can mutate it while we read. Defensive
-        // copy under the list's intrinsic lock avoids ConcurrentModification.
+        // Snapshot the list before iterating. RecursiveParserWrapperHandler's
+        // list is a plain LinkedList (not thread-safe) and Tika doesn't
+        // synchronize on it when appending — so taking the list's intrinsic
+        // lock here is uncontended against the mutator. We catch CME defensively
+        // and skip this snapshot tick rather than swallow it later in writeValue
+        // (where a partially-iterated snapshot would land on disk). Throttle
+        // fires us again on the next entry; eventual consistency is fine for
+        // the salvage-on-timeout use case.
         List<Metadata> snapshot;
-        synchronized (metaList) {
-            snapshot = new java.util.ArrayList<>(metaList);
+        try {
+            // synchronized(metaList) is belt-and-suspenders: if a future Tika
+            // upgrade DOES sync on the list, we're already cooperating.
+            synchronized (metaList) {
+                snapshot = new java.util.ArrayList<>(metaList);
+            }
+        } catch (java.util.ConcurrentModificationException e) {
+            LOG.fine("DraftSnapshotWriter: concurrent modification during snapshot copy; skipping tick");
+            return;
         }
         try {
             File metaFile = new File(outDir, "metadata.json");
