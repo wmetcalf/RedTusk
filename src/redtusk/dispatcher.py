@@ -294,22 +294,27 @@ class Dispatcher:
         truncated["reason"] = "job_timeout"
         doc["truncated"] = truncated
 
-        # Persist the rewritten doc so artifact-copy in _ingest_result sees the
-        # final form on disk and downstream UI / API reads it consistently.
-        try:
-            metadata_path.write_text(json.dumps(doc, indent=2))
-        except OSError as exc:
-            _logger.warning(
-                "dispatcher.salvage_write_failed", job_id=job.id, error=str(exc)
-            )
-            return False
-
+        # Validate FIRST so a schema-invalid draft cannot leave a half-rewritten
+        # file on disk. Only after validation succeeds do we commit the rewrite.
         try:
             validate_rmeta(doc)
         except SchemaValidationError as exc:
             _logger.warning(
                 "dispatcher.salvage_schema_invalid",
                 job_id=job.id, error=str(exc),
+            )
+            return False
+
+        # Atomic-replace via os.replace + tmp file. Plain write_text could leave
+        # a truncated file on disk if interrupted mid-write, breaking the next
+        # read in _ingest_result.
+        try:
+            tmp_path = metadata_path.with_suffix(".json.salvage.tmp")
+            tmp_path.write_text(json.dumps(doc, indent=2))
+            os.replace(tmp_path, metadata_path)
+        except OSError as exc:
+            _logger.warning(
+                "dispatcher.salvage_write_failed", job_id=job.id, error=str(exc)
             )
             return False
 
@@ -457,6 +462,12 @@ def _copy_artifacts(src_dir: Path, dst_dir: Path, *, max_bytes: int) -> None:
     copied = 0
     for src_path in src_dir.rglob("*"):
         if not src_path.is_file() or src_path.is_symlink():
+            continue
+        # Skip worker draft-snapshot scratch files. DraftSnapshotWriter writes
+        # to .metadata.json.draft.tmp and atomically renames onto metadata.json;
+        # if SIGKILL hits mid-write, the orphan .tmp shouldn't surface in the
+        # artifact tree where the UI would list it.
+        if src_path.name == ".metadata.json.draft.tmp":
             continue
         size = src_path.stat().st_size
         if copied + size > max_bytes:

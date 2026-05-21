@@ -183,9 +183,18 @@ public final class Main {
                             contentType = magic;
                         }
                     }
+                    // Prefer Pass-2's byte count (it actually saved the bytes).
+                    // BUT if Pass-2 reported zero_byte_stream while Pass-1
+                    // succeeded (mergedThumb=true), Pass-2's 0 overrides Pass-1's
+                    // real size and the UI shows "0-byte image with thumbnail".
+                    // Keep the original entry size in that mismatch.
+                    long mergedSize = fh.sizeBytes();
+                    if (mergedThumb && "zero_byte_stream".equals(fh.thumbnailSkipped())) {
+                        mergedSize = e.sizeBytes();
+                    }
                     updated.add(new EntryResult(
                         e.path(), e.parentPath(), e.depth(), contentType,
-                        fh.sizeBytes(),           // actual byte count from saved file
+                        mergedSize,
                         fh.sha256(), fh.md5(), fh.sha1(),
                         mergedThumb,
                         thumbSkipped,

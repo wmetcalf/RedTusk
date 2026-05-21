@@ -50,6 +50,12 @@ final class DraftSnapshotWriter {
         this.startMs = System.currentTimeMillis();
     }
 
+    /** Fixed name for the in-flight draft file. Uses a leading dot so it sorts
+     *  separately and `_copy_artifacts` can glob-skip it. Renamed atomically
+     *  onto {@code metadata.json}; if SIGKILL hits between the write and rename
+     *  the only orphan is this single fixed name, easy to identify. */
+    private static final String DRAFT_TMP_NAME = ".metadata.json.draft.tmp";
+
     /** Flush a snapshot now, regardless of throttle. Used at end-of-parse. */
     void flushNow(List<Metadata> metaList) {
         write(metaList);
@@ -65,11 +71,20 @@ final class DraftSnapshotWriter {
     }
 
     private void write(List<Metadata> metaList) {
+        // Snapshot the list under its own monitor before iterating.
+        // RecursiveParserWrapperHandler.metadataList is an ArrayList (not
+        // thread-safe); container parsers that fan out to multiple threads
+        // (some POI / PDFBox paths) can mutate it while we read. Defensive
+        // copy under the list's intrinsic lock avoids ConcurrentModification.
+        List<Metadata> snapshot;
+        synchronized (metaList) {
+            snapshot = new java.util.ArrayList<>(metaList);
+        }
         try {
             File metaFile = new File(outDir, "metadata.json");
-            Path tmp = Files.createTempFile(outDir.toPath(), "metadata-", ".json.tmp");
+            Path tmp = outDir.toPath().resolve(DRAFT_TMP_NAME);
             try {
-                OM.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), buildDoc(metaList));
+                OM.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), buildDoc(snapshot));
                 Files.move(tmp, metaFile.toPath(),
                         StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } finally {
@@ -77,8 +92,9 @@ final class DraftSnapshotWriter {
             }
         } catch (Exception e) {
             // Never fail the parse over a draft-write failure — it's best-effort
-            // salvage, not load-bearing for the happy path.
-            LOG.fine("DraftSnapshotWriter: write failed: " + e.getMessage());
+            // salvage, not load-bearing for the happy path. Log at WARNING (not
+            // FINE) since silent draft failure defeats the salvage feature.
+            LOG.warning("DraftSnapshotWriter: write failed: " + e.getMessage());
         }
     }
 

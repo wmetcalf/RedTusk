@@ -472,6 +472,7 @@ public final class ParserRunner {
             // AND a thumbnail write succeeds (just below, post-walk). Root entry
             // is skipped here — Main.tryGenerateRootThumbnail handles it.
             boolean pass1Thumb = false;
+            String pass1Skip = null;
             if (pass1Capture != null && i > 0) {
                 // Key on the same EMBEDDED_RESOURCE_PATH string the capture
                 // recorded post-delegate — survives RecursiveParserWrapperHandler's
@@ -481,12 +482,18 @@ public final class ParserRunner {
                     String thumbCt = pass1Capture.contentTypeFor(path);
                     if (thumbCt == null) thumbCt = contentType;
                     pass1Thumb = writePass1Thumbnail(outDir, path, imgBytes, thumbCt);
+                } else if (pass1Capture.wasBufferCapped(path)) {
+                    // We saw the image, recognized it as such, but dropped the
+                    // buffer to stay under the per-job byte budget. Surface so
+                    // the UI explains the missing thumbnail instead of falling
+                    // through to pass2_missed_entry which would be misleading.
+                    pass1Skip = "pass1_buffer_cap";
                 }
             }
 
             results.add(new EntryResult(
                 path, parentPath, depth, contentType, sizeBytes,
-                sha256, md5, sha1, pass1Thumb, null, phash, colorhash, metadata, text, language, qr, ocr, null
+                sha256, md5, sha1, pass1Thumb, pass1Skip, phash, colorhash, metadata, text, language, qr, ocr, null
             ));
         }
 

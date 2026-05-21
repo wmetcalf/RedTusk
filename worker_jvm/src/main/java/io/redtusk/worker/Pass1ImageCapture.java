@@ -11,7 +11,9 @@ import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 /**
@@ -54,7 +56,26 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
     private static final int MAX_FILE_BYTES = (int) Math.min(
             EmbeddedFileExtractor.MAX_FILE_BYTES, Integer.MAX_VALUE);
 
+    /**
+     * Per-job total buffered-bytes cap. Without this, a malicious container
+     * declaring N image attachments × 50 MB each ({@code MAX_FILE_BYTES})
+     * could pin {@code N × 50 MB} of JVM heap — for the default
+     * max_embedded_entries (500) that's 25 GB, easily enough to OOM the warm
+     * worker JVM and kill the slot for every other in-flight job. 256 MB is
+     * comfortably above the largest legitimate image payload we'd thumbnail.
+     * Past the cap, additional image entries are dropped with a recorded skip
+     * reason so the UI can explain why.
+     */
+    private static final long MAX_BUFFER_BUDGET_BYTES = 256L * 1024 * 1024;
+
     private final boolean enableThumbnails;
+    /** Tracks total bytes currently held in {@link #buffered}. AtomicLong so
+     *  the cap check is correct under concurrent parser fan-out. */
+    private final AtomicLong bufferedBytesTotal = new AtomicLong();
+    /** EMBEDDED_RESOURCE_PATH set for entries we deliberately dropped past the
+     *  byte budget — ParserRunner reads this to set thumbnail_skipped. */
+    private final Set<String> bufferCapSkipped =
+            ConcurrentHashMap.newKeySet();
 
     /**
      * Buffered image bytes keyed by the entry's final, parent-prefixed
@@ -80,6 +101,12 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
     /** Content-Type observed when {@code embPath} was captured, or null. */
     String contentTypeFor(String embPath) {
         return embPath == null ? null : contentTypes.get(embPath);
+    }
+
+    /** True if the entry at {@code embPath} was identified as an image but
+     *  skipped because the per-job buffer budget was exhausted. */
+    boolean wasBufferCapped(String embPath) {
+        return embPath != null && bufferCapSkipped.contains(embPath);
     }
 
     @Override
@@ -111,6 +138,31 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
             return;
         }
 
+        // Magic-byte cross-check BEFORE replay. likelyImage() can be fooled by
+        // an attacker who sets Content-Type=image/jpeg or RESOURCE_NAME_KEY=foo.jpg
+        // on a nested non-image attachment (typically an MSG-in-MSG). If we
+        // replay those bytes through a memory-backed TikaInputStream into POI's
+        // MSG reader, the inner MSG parse breaks — denial of extraction. Magic
+        // bytes are authoritative; on a hint/magic mismatch, pass through with
+        // the ORIGINAL stream (which has only been touched by readNBytes — we
+        // still need to feed it via a replay because the bytes have been
+        // consumed, but at least we don't poison non-images that managed to
+        // look like images by name alone).
+        if (!hasImageMagic(bytes)) {
+            // Bytes already consumed from the original stream; replay them but
+            // do NOT buffer — we have no thumbnail to write from these bytes.
+            try (TikaInputStream replay = TikaInputStream.get(bytes)) {
+                delegate(replay, handler, metadata, context);
+            }
+            return;
+        }
+
+        // Per-job buffer budget. Past the cap, deliberately drop the buffer
+        // (still replay the bytes so the inner parser sees them) and record
+        // the entry so ParserRunner can surface a pass1_buffer_cap skip reason
+        // on the entry.
+        boolean budgetExceeded = bufferedBytesTotal.get() + bytes.length > MAX_BUFFER_BUDGET_BYTES;
+
         // Replay so the downstream parser sees the same bytes and produces its
         // per-entry metadata record in the RecursiveParserWrapper's list.
         try (TikaInputStream replay = TikaInputStream.get(bytes)) {
@@ -134,9 +186,68 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
             return;
         }
         if (ct != null && ct.startsWith("image/")) {
+            if (budgetExceeded) {
+                bufferCapSkipped.add(embPath);
+                return;
+            }
             buffered.put(embPath, bytes);
             contentTypes.put(embPath, ct);
+            bufferedBytesTotal.addAndGet(bytes.length);
         }
+    }
+
+    /**
+     * Magic-byte sniff for the image formats the rest of the pipeline can
+     * actually decode (ImageIO + decodeMetafile in EmbeddedFileExtractor).
+     * Conservative on purpose — a false negative here just means we skip the
+     * Pass-1 thumbnail (Pass-2 still gets a shot); a false positive lets us
+     * waste cycles on a non-image but doesn't break anything because
+     * writeThumbnail will then fail to decode.
+     */
+    private static boolean hasImageMagic(byte[] b) {
+        if (b == null || b.length < 4) return false;
+        // PNG: 89 50 4E 47 0D 0A 1A 0A
+        if ((b[0] & 0xff) == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G') return true;
+        // JPEG: FF D8 FF
+        if ((b[0] & 0xff) == 0xff && (b[1] & 0xff) == 0xd8 && (b[2] & 0xff) == 0xff) return true;
+        // GIF87a / GIF89a
+        if (b.length >= 6 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F'
+                && b[3] == '8' && (b[4] == '7' || b[4] == '9') && b[5] == 'a') return true;
+        // BMP "BM"
+        if (b[0] == 'B' && b[1] == 'M') return true;
+        // TIFF "II*\0" or "MM\0*"
+        if ((b[0] == 'I' && b[1] == 'I' && b[2] == 42 && b[3] == 0)
+                || (b[0] == 'M' && b[1] == 'M' && b[2] == 0 && b[3] == 42)) return true;
+        // WEBP: "RIFF" .... "WEBP"
+        if (b.length >= 12 && b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F'
+                && b[8] == 'W' && b[9] == 'E' && b[10] == 'B' && b[11] == 'P') return true;
+        // HEIC/HEIF box: "ftyp" at offset 4 followed by a brand starting with "heic"/"heix"/"hevc"/"mif1"
+        if (b.length >= 12 && b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') return true;
+        // SVG: text "<?xml" or "<svg" within first 256 bytes (case-sensitive
+        // here; case-insensitive root tag matching is overkill for the threat
+        // model — attacker who crafts a malformed SVG just falls through to
+        // Pass-2, no security implication).
+        int probeLen = Math.min(b.length, 256);
+        if (b[0] == '<') {
+            for (int i = 1; i + 4 <= probeLen; i++) {
+                if (b[i] == '<' && b[i+1] == 's' && b[i+2] == 'v' && b[i+3] == 'g') return true;
+            }
+            // Common: starts with <?xml then later has <svg
+            if (b[1] == '?' && b[2] == 'x' && b[3] == 'm' && probeLen >= 8 && b[4] == 'l') {
+                for (int i = 5; i + 4 <= probeLen; i++) {
+                    if (b[i] == '<' && b[i+1] == 's' && b[i+2] == 'v' && b[i+3] == 'g') return true;
+                }
+            }
+        }
+        // EMF: signature "EMF" at offset 40 within EMR_HEADER record (record
+        // type 1 at offset 0, then later " EMF" — POI's HemfPicture is
+        // tolerant, so we mainly check the 4-byte record-type prefix here.
+        // Skipping deeper validation; mis-claimed EMF just fails decode later.
+        if (b.length >= 44 && b[40] == ' ' && b[41] == 'E' && b[42] == 'M' && b[43] == 'F') return true;
+        // WMF: "\xD7\xCD\xC6\x9A" (Aldus Placeable) or "\x01\x00\t\x00" (standard)
+        if ((b[0] & 0xff) == 0xd7 && (b[1] & 0xff) == 0xcd
+                && (b[2] & 0xff) == 0xc6 && (b[3] & 0xff) == 0x9a) return true;
+        return false;
     }
 
     /**
