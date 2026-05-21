@@ -68,6 +68,13 @@ public final class ParserRunner {
     private final boolean ocrSkipBlank;
     private final String zxingPath;
     private final String tesseractPath;
+    // Optional: when set, Pass 1 captures image bytes inline and writes thumbnails.
+    // Configured via setOutputDir so existing constructor + tests remain unchanged.
+    private java.nio.file.Path outDir;
+    private boolean enableThumbnails;
+    // Optional: when set, every embedded-doc end flushes a partial metadata.json
+    // snapshot to outDir so the dispatcher can salvage on SIGKILL. See DraftSnapshotWriter.
+    private JobDescriptor draftJob;
 
     public ParserRunner(
             JobDescriptor.LimitsDescriptor limits,
@@ -86,6 +93,29 @@ public final class ParserRunner {
         this.tesseractPath = tesseractPath;
     }
 
+    /**
+     * Configure inline thumbnail capture during Pass 1. Optional — when called,
+     * image entries observed by the recursive walk get their thumbnails written
+     * directly without waiting for {@link EmbeddedFileExtractor}'s second pass.
+     * Eliminates the "Pass-2 missed entry" gap (see Pass1ImageCapture javadoc).
+     */
+    public ParserRunner setOutputDir(java.nio.file.Path outDir, boolean enableThumbnails) {
+        this.outDir = outDir;
+        this.enableThumbnails = enableThumbnails;
+        return this;
+    }
+
+    /**
+     * Enable incremental draft-snapshot writes. Required for the dispatcher's
+     * timeout-salvage path: each entry the parser walks flushes a partial
+     * metadata.json to outDir, so a SIGKILLed worker leaves a usable result
+     * instead of nothing. Caller must also have set outDir via {@link #setOutputDir}.
+     */
+    public ParserRunner setDraftSnapshot(JobDescriptor job) {
+        this.draftJob = job;
+        return this;
+    }
+
     public ParseResult parse(File inputFile, String filenameHint, String rootSha256)
             throws Exception {
         AutoDetectParser auto = new AutoDetectParser();
@@ -95,10 +125,25 @@ public final class ParserRunner {
         // JSoupParser.Config in ParseContext is ignored (parser reads instance field, not
         // ParseContext).  Walk the tree to set extractScripts=true on the actual instance.
         enableHtmlScriptExtraction(auto);
-        RecursiveParserWrapperHandler handler = new RecursiveParserWrapperHandler(
-            new BasicContentHandlerFactory(
-                BasicContentHandlerFactory.HANDLER_TYPE.TEXT, CHARS_PER_ENTRY)
-        );
+        BasicContentHandlerFactory chFactory = new BasicContentHandlerFactory(
+                BasicContentHandlerFactory.HANDLER_TYPE.TEXT, CHARS_PER_ENTRY);
+        RecursiveParserWrapperHandler handler;
+        DraftSnapshotWriter draftWriter = null;
+        if (draftJob != null && outDir != null) {
+            // Incremental draft writes — partial metadata.json after each entry so
+            // a SIGKILLed worker leaves a usable salvage for the dispatcher.
+            draftWriter = new DraftSnapshotWriter(draftJob, outDir.toFile());
+            handler = new DraftingRecursiveHandler(chFactory, draftWriter);
+            // Skeleton snapshot before any parsing starts. Covers the worst case:
+            // a monolithic parser (CHM, large OLE/MSG) hangs inside its container
+            // unpack and never emits a single endEmbeddedDocument before SIGKILL.
+            // The skeleton has zero entries but a valid in_progress truncation
+            // sentinel, so the dispatcher promotes it to a partial instead of
+            // discarding the job entirely.
+            draftWriter.flushNow(java.util.List.of());
+        } else {
+            handler = new RecursiveParserWrapperHandler(chFactory);
+        }
         RecursiveParserWrapper wrapper = new RecursiveParserWrapper(auto);
         ParseContext context = new ParseContext();
 
@@ -164,6 +209,18 @@ public final class ParserRunner {
         worksCfg.setTimeoutSeconds(Math.max(5, limits.ocrTimeoutS()));
         context.set(org.apache.tika.parser.microsoft.WorksConfig.class, worksCfg);
 
+
+        // Pass-1 image capture. Buffers image bytes during the recursive metadata
+        // walk so we can write thumbnails AFTER the walk finishes — by then each
+        // entry's Metadata carries the final, parent-prefixed
+        // EMBEDDED_RESOURCE_PATH that the UI's thumbnail URL convention requires.
+        // Closes the gap where MSG-style attachments surface in the recursive
+        // metadata walk but get missed by EmbeddedFileExtractor's second pass.
+        Pass1ImageCapture pass1Capture = null;
+        if (outDir != null && enableThumbnails) {
+            pass1Capture = new Pass1ImageCapture(true);
+            context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, pass1Capture);
+        }
 
         Metadata rootMeta = new Metadata();
         if (filenameHint != null) {
@@ -411,9 +468,25 @@ public final class ParserRunner {
                 ocr = new EntryResult.OcrResult(ocrText, language, ocrMs, ocrSkippedReason);
             }
 
+            // hasThumbnail starts true only when Pass-1 capture buffered bytes
+            // AND a thumbnail write succeeds (just below, post-walk). Root entry
+            // is skipped here — Main.tryGenerateRootThumbnail handles it.
+            boolean pass1Thumb = false;
+            if (pass1Capture != null && i > 0) {
+                // Key on the same EMBEDDED_RESOURCE_PATH string the capture
+                // recorded post-delegate — survives RecursiveParserWrapperHandler's
+                // cloneMetadata in endEmbeddedDocument.
+                byte[] imgBytes = pass1Capture.bufferedBytesFor(path);
+                if (imgBytes != null) {
+                    String thumbCt = pass1Capture.contentTypeFor(path);
+                    if (thumbCt == null) thumbCt = contentType;
+                    pass1Thumb = writePass1Thumbnail(outDir, path, imgBytes, thumbCt);
+                }
+            }
+
             results.add(new EntryResult(
                 path, parentPath, depth, contentType, sizeBytes,
-                sha256, md5, sha1, false, null, phash, colorhash, metadata, text, language, qr, ocr, null
+                sha256, md5, sha1, pass1Thumb, null, phash, colorhash, metadata, text, language, qr, ocr, null
             ));
         }
 
@@ -451,6 +524,30 @@ public final class ParserRunner {
             limits.maxExtractedBytes()
         );
         return capped;
+    }
+
+    /**
+     * Write a thumbnail for an entry that Pass-1 buffered, using the final
+     * parent-prefixed EMBEDDED_RESOURCE_PATH from the metaList. Mirrors the
+     * filesystem layout Pass-2 uses ({@code outDir/embedded/thumbnails/<rel>.jpg})
+     * so the UI's deterministic URL builder finds it without any rewrite.
+     */
+    private static boolean writePass1Thumbnail(java.nio.file.Path outDir, String entryPath,
+                                               byte[] bytes, String contentType) {
+        if (outDir == null || entryPath == null || "/".equals(entryPath)) return false;
+        java.nio.file.Path embRoot = outDir.resolve("embedded");
+        // Reuse Pass-2's path sanitizer so the thumbnail file lands at exactly the
+        // path Pass 2 would have produced for the same entry — keeps the layout
+        // single-sourced and avoids divergent escaping between the two passes.
+        Metadata nameOnly = new Metadata();
+        java.nio.file.Path outFile = EmbeddedFileExtractor.resolveOutFile(embRoot, entryPath, nameOnly);
+        if (outFile == null) return false;
+        try {
+            return EmbeddedFileExtractor.writeThumbnail(bytes, contentType, embRoot, outFile);
+        } catch (Exception e) {
+            LOG.fine("Pass-1 thumbnail write failed for " + entryPath + ": " + e.getMessage());
+            return false;
+        }
     }
 
     /** SHA-256 of a UTF-8 string as lowercase hex. Used to dedupe Unicode-QR

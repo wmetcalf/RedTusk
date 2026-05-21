@@ -314,6 +314,31 @@ public final class EmbeddedFileExtractor {
         return sb.toString();
     }
 
+    /**
+     * Resolve where to save bytes for an embedded entry, sanitizing path components
+     * and refusing escapes outside {@code root}. Package-private so Pass-1 capture
+     * (Pass1ImageCapture) writes to the same paths Pass 2 would use, keeping the
+     * thumbnail artifact tree consistent regardless of which pass produced the file.
+     */
+    static Path resolveOutFile(Path root, String embPath, Metadata metadata) {
+        String rel;
+        if (embPath != null && !embPath.isEmpty()) {
+            rel = embPath.startsWith("/") ? embPath.substring(1) : embPath;
+        } else {
+            String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+            if (name == null || name.isEmpty()) return null;
+            rel = name;
+        }
+        Path result = root;
+        for (String part : rel.split("/")) {
+            part = part.replaceAll("[^a-zA-Z0-9._+\\- ]", "_").trim();
+            if (part.isEmpty() || part.equals(".") || part.equals("..")) part = "_";
+            result = result.resolve(part);
+        }
+        if (!result.normalize().startsWith(root.normalize())) return null;
+        return result;
+    }
+
     private static void enableImageHashing(Parser root) {
         java.util.Set<Parser> seen = new java.util.HashSet<>();
         java.util.Deque<Parser> queue = new java.util.ArrayDeque<>();
@@ -400,7 +425,7 @@ public final class EmbeddedFileExtractor {
                     embPath = parent + "/" + rname;
                 }
             }
-            Path outFile = resolveOutFile(root, embPath, metadata);
+            Path outFile = EmbeddedFileExtractor.resolveOutFile(root, embPath, metadata);
             if (outFile == null) return;
 
             // Save file
@@ -477,25 +502,6 @@ public final class EmbeddedFileExtractor {
                     // non-fatal — nested parse errors are common for binary blobs
                 }
             }
-        }
-
-        private static Path resolveOutFile(Path root, String embPath, Metadata metadata) {
-            String rel;
-            if (embPath != null && !embPath.isEmpty()) {
-                rel = embPath.startsWith("/") ? embPath.substring(1) : embPath;
-            } else {
-                String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-                if (name == null || name.isEmpty()) return null;
-                rel = name;
-            }
-            Path result = root;
-            for (String part : rel.split("/")) {
-                part = part.replaceAll("[^a-zA-Z0-9._+\\- ]", "_").trim();
-                if (part.isEmpty() || part.equals(".") || part.equals("..")) part = "_";
-                result = result.resolve(part);
-            }
-            if (!result.normalize().startsWith(root.normalize())) return null;
-            return result;
         }
 
         private static int countSlashes(String s) {

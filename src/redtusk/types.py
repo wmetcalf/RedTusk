@@ -52,6 +52,10 @@ class SkipReason(StrEnum):
     ERROR = "error"
     DISABLED = "disabled"
     BLANK_IMAGE = "blank_image"
+    # Entry was observed mid-parse by DraftSnapshotWriter; placeholder in a
+    # draft metadata.json that gets overwritten by the final write OR promoted
+    # to a real partial when the dispatcher salvages a timed-out job.
+    IN_PROGRESS = "in_progress"
 
 
 class TruncationReason(StrEnum):
@@ -60,6 +64,13 @@ class TruncationReason(StrEnum):
     MAX_EMBEDDED_ENTRIES = "max_embedded_entries"
     MAX_RECURSION_DEPTH = "max_recursion_depth"
     MAX_EXTRACTED_BYTES = "max_extracted_bytes"
+    # Sentinel: worker is still parsing. DraftSnapshotWriter writes this on
+    # every mid-parse snapshot; the dispatcher rewrites to JOB_TIMEOUT when
+    # promoting a draft after SIGKILL.
+    IN_PROGRESS = "in_progress"
+    # The dispatcher SIGKILLed the worker past job_timeout_s and promoted the
+    # last mid-parse snapshot to a partial result.
+    JOB_TIMEOUT = "job_timeout"
 
 
 @dataclass(frozen=True)

@@ -162,10 +162,16 @@ class Dispatcher:
                 await release_slot(success=True)
             else:
                 code = "timeout" if exit_code == 137 else "worker_crash"
-                await self._fail_job(
-                    job, code=code, detail=f"worker exited {exit_code}"
-                )
-                await release_slot(success=False)
+                # Worker may have left a mid-parse metadata.json snapshot
+                # (DraftSnapshotWriter writes after each entry). If so, promote
+                # it to a partial success rather than discarding the work.
+                if await self._try_salvage_partial(slot, job, fail_code=code):
+                    await release_slot(success=True)
+                else:
+                    await self._fail_job(
+                        job, code=code, detail=f"worker exited {exit_code}"
+                    )
+                    await release_slot(success=False)
 
         except asyncio.CancelledError:
             await release_slot(success=False)
@@ -245,6 +251,86 @@ class Dispatcher:
         _logger.info("dispatcher.job_succeeded", job_id=job.id)
         fmt = doc.get("extraction", {}).get("root_content_type", "unknown")
         record_extraction_total(outcome="succeeded", fmt=fmt)
+
+    async def _try_salvage_partial(
+        self, slot: Slot, job: JobRecord, *, fail_code: str
+    ) -> bool:
+        """If the worker left a draft metadata.json from DraftSnapshotWriter,
+        promote it to a partial result. Returns True iff the salvage succeeded
+        and the job is now in SUCCEEDED state.
+
+        A draft is identified by ``truncated.reason == "in_progress"`` —
+        DraftSnapshotWriter sets that sentinel on every snapshot. We rewrite it
+        to ``"job_timeout"`` so downstream consumers can tell complete from
+        partial results.
+
+        Only ``timeout`` (SIGKILLed past job_timeout_s, exit 137) salvages. A
+        ``worker_crash`` (segfault, OOM, JVM exit) may have produced corrupt
+        bytes mid-flush — failing the job is safer than ingesting a partial we
+        can't trust. Failures here (no file, schema invalid, sha mismatch) are
+        non-fatal — the caller falls back to ``_fail_job``.
+        """
+        if fail_code != "timeout":
+            return False
+        out_dir = Path(slot.scratch_dir) / "out"  # type: ignore[arg-type]
+        metadata_path = out_dir / "metadata.json"
+        try:
+            raw = _read_capped(metadata_path, self._limits.max_metadata_bytes)
+        except (FileNotFoundError, OSError):
+            return False
+        try:
+            doc: dict[str, Any] = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+
+        truncated = doc.get("truncated") or {}
+        if truncated.get("reason") != "in_progress":
+            # No draft sentinel — this isn't a salvageable partial. (A complete
+            # metadata.json reaches this path only if the worker wrote it and
+            # then exited non-zero anyway, which would be a real worker_crash.)
+            return False
+
+        # Promote sentinel to a real truncation reason callers can act on.
+        truncated["reason"] = "job_timeout"
+        doc["truncated"] = truncated
+
+        # Persist the rewritten doc so artifact-copy in _ingest_result sees the
+        # final form on disk and downstream UI / API reads it consistently.
+        try:
+            metadata_path.write_text(json.dumps(doc, indent=2))
+        except OSError as exc:
+            _logger.warning(
+                "dispatcher.salvage_write_failed", job_id=job.id, error=str(exc)
+            )
+            return False
+
+        try:
+            validate_rmeta(doc)
+        except SchemaValidationError as exc:
+            _logger.warning(
+                "dispatcher.salvage_schema_invalid",
+                job_id=job.id, error=str(exc),
+            )
+            return False
+
+        # Reuse _ingest_result so artifact copy + indexing + state update all go
+        # through the same code path as a normal success.
+        try:
+            await self._ingest_result(slot, job)
+        except Exception as exc:
+            _logger.warning(
+                "dispatcher.salvage_ingest_failed", job_id=job.id, error=str(exc)
+            )
+            return False
+
+        if job.state == JobState.SUCCEEDED:
+            _logger.info(
+                "dispatcher.job_salvaged",
+                job_id=job.id, fail_code=fail_code,
+                entries=len((doc.get("extraction") or {}).get("entries") or []),
+            )
+            return True
+        return False
 
     async def _fail_job(self, job: JobRecord, *, code: str, detail: str = "") -> None:
         job.state = JobState.FAILED

@@ -15,8 +15,15 @@ from jsonschema.exceptions import ValidationError
 from redtusk.errors import SchemaValidationError
 
 _SHA256_PATTERN = "^[a-f0-9]{64}$"
-_SKIP_REASONS = ["no_images", "timeout_budget", "error", "disabled", "blank_image"]
-_TRUNCATION_REASONS = ["max_embedded_entries", "max_recursion_depth", "max_extracted_bytes"]
+_SKIP_REASONS = ["no_images", "timeout_budget", "error", "disabled", "blank_image",
+                 "in_progress"]  # see DraftSnapshotWriter — entry was observed mid-parse
+_TRUNCATION_REASONS = [
+    "max_embedded_entries",
+    "max_recursion_depth",
+    "max_extracted_bytes",
+    "in_progress",   # worker is mid-parse; metadata.json is a draft snapshot
+    "job_timeout",   # dispatcher SIGKILLed worker past job_timeout_s; result is partial
+]
 _PROFILES = ["default", "high-density"]
 
 _QR_CODE_SCHEMA = {
@@ -82,7 +89,8 @@ _ENTRY_SCHEMA = {
         "md5":            {"type": ["string", "null"]},
         "sha1":           {"type": ["string", "null"]},
         "has_thumbnail":     {"type": "boolean"},
-        "thumbnail_skipped": {"type": ["string", "null"], "enum": ["zero_byte_stream", None]},
+        "thumbnail_skipped": {"type": ["string", "null"],
+                              "enum": ["zero_byte_stream", "pass2_missed_entry", None]},
         "phash":     {"type": ["string", "null"]},
         "colorhash": {"type": ["string", "null"]},
         "metadata": {"type": "object"},

@@ -128,7 +128,8 @@ public final class Main {
                 job.ocrLang(), job.ocrPsm(),
                 job.ocrMaxImageDim(), job.ocrSkipBlank(),
                 job.zxingPath(), job.tesseractPath()
-            );
+            ).setOutputDir(outDir.toPath(), job.enableThumbnails())
+             .setDraftSnapshot(job);
             result = runner.parse(inputFile, job.filenameHint(), job.sha256());
         } catch (Exception e) {
             LOG.severe("Parse failed: " + e.getMessage());
@@ -157,7 +158,15 @@ public final class Main {
                     // means Pass 2 received 0 bytes for this entry (common for deeply nested images
                     // or VBA modules whose source was stripped). If Pass 1 still produced a phash
                     // or OCR text the entry is marked so the UI can explain the missing thumbnail.
-                    String thumbSkipped = fh.thumbnailSkipped();
+                    //
+                    // NB: Pass 1's inline capture (Pass1ImageCapture) may have already written a
+                    // thumbnail before we got here. In that case e.hasThumbnail() is true and we
+                    // must not let Pass 2's report downgrade it (e.g. zero_byte_stream from a
+                    // SavingExtractor call that received nothing because the bytes were already
+                    // consumed elsewhere). OR the two flags and clear the skip reason when a
+                    // thumbnail genuinely exists.
+                    boolean mergedThumb = e.hasThumbnail() || fh.hasThumbnail();
+                    String thumbSkipped = mergedThumb ? null : fh.thumbnailSkipped();
                     // Use Pass-2 magic-detected type when Pass-1 returned a generic type
                     // (application/x-tika-msoffice or application/octet-stream). This surfaces
                     // the actual inner payload type (e.g. PE, XML, image) for OLE-wrapped objects.
@@ -178,7 +187,7 @@ public final class Main {
                         e.path(), e.parentPath(), e.depth(), contentType,
                         fh.sizeBytes(),           // actual byte count from saved file
                         fh.sha256(), fh.md5(), fh.sha1(),
-                        fh.hasThumbnail(),
+                        mergedThumb,
                         thumbSkipped,
                         e.phash(), e.colorhash(),
                         meta, e.text(), e.language(),
