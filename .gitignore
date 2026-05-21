@@ -56,3 +56,7 @@ tests/fixtures/**/*.msg
 tests/fixtures/**/*.chm
 tests/fixtures/**/*.wps
 tests/fixtures/**/corpus/
+
+# Per-host runtime config — set REDTUSK_STATE_DIR, POSTGRES_PASSWORD, etc.
+# locally; never commit. See deploy/docker/.env.example for the template.
+deploy/docker/.env
