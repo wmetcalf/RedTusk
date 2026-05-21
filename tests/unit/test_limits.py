@@ -33,11 +33,13 @@ def test_defaults_are_sensible() -> None:
     assert limits.ocr_all is False
 
     # Pool
-    assert limits.pool_size == 10
+    expected_pool_size = max(2, (os.cpu_count() or 4) // 2)
+    expected_pool_max_size = max(8, os.cpu_count() or 8)
+    assert limits.pool_size == expected_pool_size
     assert limits.pool_burst_size == 5
     assert limits.pool_burst_trigger_s == 3
     assert limits.pool_burst_drain_s == 60
-    assert limits.pool_max_size == 32
+    assert limits.pool_max_size == expected_pool_max_size
     assert limits.pool_spawn_rate_limit == 4.0
     assert limits.pool_spawn_retry_max == 5
 

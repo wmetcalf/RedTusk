@@ -145,7 +145,10 @@ public final class Main {
         ).extract(inputFile, outDir.toPath());
 
         // Merge per-file digests (sha256/md5/sha1/size) back into the entry results.
-        if (!fileHashes.isEmpty()) {
+        // Always run this loop so we can also mark image entries that Pass 2 missed
+        // (fileHashes.get() == null) with a thumbnail_skipped reason — surfaces the
+        // gap to the UI instead of silently showing "no thumbnail".
+        {
             var updated = new java.util.ArrayList<EntryResult>(result.entries().size());
             for (EntryResult e : result.entries()) {
                 var fh = fileHashes.get(e.path());
@@ -179,6 +182,25 @@ public final class Main {
                         thumbSkipped,
                         e.phash(), e.colorhash(),
                         meta, e.text(), e.language(),
+                        e.qr(), e.ocr(), e.error()
+                    ));
+                } else if (job.enableThumbnails()
+                        && e.contentType() != null && e.contentType().startsWith("image/")
+                        && !e.hasThumbnail()
+                        && e.thumbnailSkipped() == null) {
+                    // Pass 2 didn't see this entry but Pass 1 detected it as an
+                    // image (and possibly computed a phash). Surface why we can't
+                    // show a thumbnail so the UI can render an explanation instead
+                    // of silently rendering a missing-image icon. Common cause:
+                    // Tika parser path differences between passes (e.g., some MSG
+                    // attachment-extraction quirks where the inline image surfaces
+                    // in Pass 1's recursive walk but not in Pass 2's SavingExtractor).
+                    updated.add(new EntryResult(
+                        e.path(), e.parentPath(), e.depth(), e.contentType(),
+                        e.sizeBytes(), e.sha256(), e.md5(), e.sha1(),
+                        false, "pass2_missed_entry",
+                        e.phash(), e.colorhash(),
+                        e.metadata(), e.text(), e.language(),
                         e.qr(), e.ocr(), e.error()
                     ));
                 } else {

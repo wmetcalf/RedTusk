@@ -145,7 +145,7 @@ async def test_happy_path(tmp_path: Path) -> None:
     with patch("redtusk.dispatcher._copy_artifacts"):
         await dispatcher._dispatch(job)
 
-    store.update.assert_called_once()
+    assert store.update.call_count == 2
     updated_job: JobRecord = store.update.call_args[0][0]
     assert updated_job.state == JobState.SUCCEEDED
     assert updated_job.result is not None
@@ -170,7 +170,7 @@ async def test_worker_crash(tmp_path: Path) -> None:
     dispatcher = make_dispatcher(pool, store, runtime)
     await dispatcher._dispatch(job)
 
-    store.update.assert_called_once()
+    assert store.update.call_count == 2
     updated_job: JobRecord = store.update.call_args[0][0]
     assert updated_job.state == JobState.FAILED
     assert updated_job.error_code == "worker_crash"
@@ -195,7 +195,7 @@ async def test_worker_timeout(tmp_path: Path) -> None:
     dispatcher = make_dispatcher(pool, store, runtime)
     await dispatcher._dispatch(job)
 
-    store.update.assert_called_once()
+    assert store.update.call_count == 2
     updated_job: JobRecord = store.update.call_args[0][0]
     assert updated_job.state == JobState.FAILED
     assert updated_job.error_code == "timeout"
@@ -242,7 +242,7 @@ async def test_metadata_missing(tmp_path: Path) -> None:
     dispatcher = make_dispatcher(pool, store, runtime)
     await dispatcher._dispatch(job)
 
-    store.update.assert_called_once()
+    assert store.update.call_count == 2
     updated_job: JobRecord = store.update.call_args[0][0]
     assert updated_job.state == JobState.FAILED
     assert updated_job.error_code == "metadata_missing"
@@ -272,7 +272,7 @@ async def test_sha256_mismatch(tmp_path: Path) -> None:
     dispatcher = make_dispatcher(pool, store, runtime)
     await dispatcher._dispatch(job)
 
-    store.update.assert_called_once()
+    assert store.update.call_count == 2
     updated_job: JobRecord = store.update.call_args[0][0]
     assert updated_job.state == JobState.FAILED
     assert updated_job.error_code == "metadata_invalid"
@@ -302,7 +302,7 @@ async def test_schema_validation_failure(tmp_path: Path) -> None:
     dispatcher = make_dispatcher(pool, store, runtime)
     await dispatcher._dispatch(job)
 
-    store.update.assert_called_once()
+    assert store.update.call_count == 2
     updated_job: JobRecord = store.update.call_args[0][0]
     assert updated_job.state == JobState.FAILED
     assert updated_job.error_code == "metadata_invalid"

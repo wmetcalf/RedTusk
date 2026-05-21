@@ -62,9 +62,13 @@ def test_job_store_get_signature() -> None:
 def test_job_store_list_recent_signature() -> None:
     sig = inspect.signature(JobStore.list_recent)
     params = list(sig.parameters.values())
-    assert len(params) == 2
+    assert len(params) == 4
     assert params[1].name == "limit"
     assert params[1].default == 50
+    assert params[2].name == "offset"
+    assert params[2].default == 0
+    assert params[3].name == "state"
+    assert params[3].default is None
 
 
 def test_job_store_delete_expired_signature() -> None:
