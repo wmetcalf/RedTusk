@@ -160,12 +160,22 @@ def fold_line(line: str) -> list[str]:
 
 def build_ics(*, url: str, summary: str, start: datetime,
               duration: timedelta, uid: str,
-              description: str | None = None) -> bytes:
+              description: str | None = None,
+              method: str | None = None,
+              organizer: str | None = None,
+              attendees: list[str] | None = None) -> bytes:
     """Assemble the full VCALENDAR/VEVENT body with the X-ALT-DESC QR.
 
     DTSTART/DTEND are emitted as floating UTC (Z suffix). The plain-text
     DESCRIPTION is a fallback for clients that don't render X-ALT-DESC
     (Thunderbird, several mobile clients).
+
+    Gmail / Google Calendar require:
+      * METHOD on the VCALENDAR (PUBLISH or REQUEST). Without it Gmail
+        treats the .ics as a generic attachment and won't render the
+        calendar UI. Outlook tolerates the absence.
+      * For METHOD=REQUEST: at least one ATTENDEE, plus an ORGANIZER.
+      * For METHOD=PUBLISH: ORGANIZER recommended, ATTENDEE optional.
     """
     art_rows = make_qr_rows(url)
     html_body = make_html_body(url, art_rows)
@@ -179,10 +189,19 @@ def build_ics(*, url: str, summary: str, start: datetime,
         + ics_escape(url)
     )
 
+    # VCALENDAR-level lines. METHOD must appear here (not inside VEVENT) per
+    # RFC 5545 §3.7.2 — placing it inside the VEVENT silently fails on Gmail.
     lines = [
         'BEGIN:VCALENDAR',
         'VERSION:2.0',
         'PRODID:-//ClippyShot//ICS QR generator//EN',
+        'CALSCALE:GREGORIAN',
+    ]
+    if method:
+        lines.append(f'METHOD:{method.upper()}')
+
+    # VEVENT body.
+    lines += [
         'BEGIN:VEVENT',
         f'UID:{uid}',
         f'DTSTAMP:{dtstamp.strftime("%Y%m%dT%H%M%SZ")}',
@@ -191,6 +210,35 @@ def build_ics(*, url: str, summary: str, start: datetime,
         f'SUMMARY:{ics_escape(summary)}',
         f'DESCRIPTION:{plain_desc}',
         f'X-ALT-DESC;FMTTYPE=text/html:{alt}',
+        # Defaults Gmail looks for to surface the calendar UI / accept-decline
+        # widget. SEQUENCE:0 is the initial revision; bumps would be sent for
+        # updates. STATUS:CONFIRMED and TRANSP:OPAQUE mark the event as a real
+        # blocking event (vs tentative / free).
+        'SEQUENCE:0',
+        'STATUS:CONFIRMED',
+        'TRANSP:OPAQUE',
+        'CLASS:PUBLIC',
+    ]
+    if organizer:
+        # Both CN= (display name) and mailto: URI per RFC 5545 §3.8.4.3.
+        # If the operator passed `Name <email@host>`, split; else use email
+        # for both fields. Keeps the property simple — Gmail tolerates either.
+        cn, mailto = _split_address(organizer)
+        if cn:
+            lines.append(f'ORGANIZER;CN={ics_escape(cn)}:mailto:{mailto}')
+        else:
+            lines.append(f'ORGANIZER:mailto:{mailto}')
+    if attendees:
+        for a in attendees:
+            cn, mailto = _split_address(a)
+            # ROLE=REQ-PARTICIPANT + PARTSTAT=NEEDS-ACTION makes Gmail/Outlook
+            # show the accept/decline RSVP buttons — without these the event
+            # imports silently with no widget.
+            params = ['ROLE=REQ-PARTICIPANT', 'PARTSTAT=NEEDS-ACTION', 'RSVP=TRUE']
+            if cn:
+                params.append(f'CN={ics_escape(cn)}')
+            lines.append(f'ATTENDEE;' + ';'.join(params) + f':mailto:{mailto}')
+    lines += [
         'END:VEVENT',
         'END:VCALENDAR',
     ]
@@ -198,6 +246,15 @@ def build_ics(*, url: str, summary: str, start: datetime,
     for ln in lines:
         folded.extend(fold_line(ln))
     return ('\r\n'.join(folded) + '\r\n').encode('utf-8')
+
+
+def _split_address(s: str) -> tuple[str | None, str]:
+    """Parse `Name <email@host>` or bare `email@host`. Returns (cn, email)."""
+    s = s.strip()
+    if '<' in s and s.endswith('>'):
+        cn, rest = s.split('<', 1)
+        return (cn.strip().strip('"').strip() or None), rest[:-1].strip()
+    return None, s
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────
@@ -218,12 +275,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help='Event duration in minutes (default: 60)')
     p.add_argument('--uid', default=None,
                    help='VEVENT UID (default: random)')
+    p.add_argument('--method', default='PUBLISH',
+                   choices=['PUBLISH', 'REQUEST', 'CANCEL', 'NONE'],
+                   help='VCALENDAR METHOD. PUBLISH (default) makes Gmail / '
+                        'Google Calendar render the calendar UI; REQUEST adds '
+                        'the accept/decline RSVP widget. Use NONE to omit '
+                        '(some Outlook-only invites do this).')
+    p.add_argument('--organizer', default=None,
+                   help='ORGANIZER address. `Name <email@host>` or bare email. '
+                        'Recommended for Gmail. Required when --method=REQUEST.')
+    p.add_argument('--attendee', action='append', default=[],
+                   help='ATTENDEE address (repeatable). Required when '
+                        '--method=REQUEST; surfaces the RSVP buttons.')
     p.add_argument('--out', default=None,
                    help='Output file path. Defaults to ./invite.ics or, '
                         'when --url is "-", <urlhash>.ics in --out-dir.')
     p.add_argument('--out-dir', default='.',
                    help='Output directory when --url is "-" (default: cwd)')
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.method == 'REQUEST':
+        if not args.organizer:
+            p.error('--method=REQUEST requires --organizer')
+        if not args.attendee:
+            p.error('--method=REQUEST requires at least one --attendee')
+    return args
 
 
 def default_start() -> datetime:
@@ -247,8 +322,11 @@ def write_one(url: str, args, *, out_path: Path) -> Path:
     start = parse_iso(args.start) if args.start else default_start()
     duration = timedelta(minutes=args.duration_min)
     uid = args.uid or f'{uuid.uuid4()}@clippyshot.local'
+    method = None if args.method == 'NONE' else args.method
     blob = build_ics(url=url, summary=args.summary, start=start,
-                     duration=duration, uid=uid)
+                     duration=duration, uid=uid,
+                     method=method, organizer=args.organizer,
+                     attendees=args.attendee)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(blob)
     return out_path
