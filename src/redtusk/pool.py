@@ -251,7 +251,15 @@ class Pool:
             failures = self._consecutive_spawn_failures
         await self._runtime.reap(slot)
         async with self._lock:
-            del self._slots[slot.id]
+            # pop(...,None) instead of del: stale-evict reaper and claim's
+            # dead-slot path can BOTH spawn _reap_and_replace for the same
+            # slot id (claim_found_dead_slot logs ~simultaneously with the
+            # periodic stale eviction). Both tasks reach the lock and try to
+            # delete; the second one raises KeyError outside any caller's
+            # except clause, surfacing as an asyncio "Task exception was
+            # never retrieved" warning. Idempotent removal makes the second
+            # task a no-op.
+            self._slots.pop(slot.id, None)
         if failures > self._limits.pool_spawn_retry_max:
             async with self._lock:
                 if self._target_size > 1:
@@ -267,7 +275,15 @@ class Pool:
     async def _reap_and_replace(self, slot: Slot, *, success: bool) -> None:
         await self._runtime.reap(slot)
         async with self._lock:
-            del self._slots[slot.id]
+            # pop(...,None) instead of del: stale-evict reaper and claim's
+            # dead-slot path can BOTH spawn _reap_and_replace for the same
+            # slot id (claim_found_dead_slot logs ~simultaneously with the
+            # periodic stale eviction). Both tasks reach the lock and try to
+            # delete; the second one raises KeyError outside any caller's
+            # except clause, surfacing as an asyncio "Task exception was
+            # never retrieved" warning. Idempotent removal makes the second
+            # task a no-op.
+            self._slots.pop(slot.id, None)
             self._update_metrics()
         # Immediately spawn replacement (unless pool target is being met already)
         if not slot.is_burst or self._burst_active:
@@ -327,7 +343,15 @@ class Pool:
     async def _reap_without_replace(self, slot: Slot) -> None:
         await self._runtime.reap(slot)
         async with self._lock:
-            del self._slots[slot.id]
+            # pop(...,None) instead of del: stale-evict reaper and claim's
+            # dead-slot path can BOTH spawn _reap_and_replace for the same
+            # slot id (claim_found_dead_slot logs ~simultaneously with the
+            # periodic stale eviction). Both tasks reach the lock and try to
+            # delete; the second one raises KeyError outside any caller's
+            # except clause, surfacing as an asyncio "Task exception was
+            # never retrieved" warning. Idempotent removal makes the second
+            # task a no-op.
+            self._slots.pop(slot.id, None)
             self._update_metrics()
 
     # ------------------------------------------------------------------

@@ -23,10 +23,37 @@ from redtusk.types import JobRecord, JobState
 def _serialize(record: JobRecord) -> str:
     """Serialize a JobRecord to JSON, stripping U+0000 which Postgres JSONB rejects.
 
-    json.dumps encodes Python null bytes as the 6-char JSON escape \\u0000; Postgres
-    JSONB rejects both the raw null byte and the escape sequence. Strip both forms.
+    PostgreSQL's jsonb type rejects the NUL code point even though it's valid
+    JSON. Strip NULs from string values BEFORE json.dumps so the encoder produces
+    valid JSON with no escaped \\u0000.
+
+    The previous implementation did the strip on the json.dumps OUTPUT via
+    `.replace("\\u0000", "")` — which CORRUPTED any string containing the
+    literal six characters `\\u0000` (e.g. extracted JS files with escape
+    literals: `Kr=/\\u0000|.../` → json.dumps → `\\\\u0000|...` → replace
+    matches at position 1, strips 6 chars → `\\|...` → INVALID JSON → PG
+    rejects with "Escape sequence \"\\|\" is invalid."). Stripping at the
+    Python-value layer can't corrupt escape sequences because there are none
+    yet.
     """
-    return json.dumps(record.to_dict()).replace("\\u0000", "").replace("\x00", "")
+    return json.dumps(_strip_nuls(record.to_dict()))
+
+
+def _strip_nuls(obj: Any) -> Any:
+    """Recursively strip raw NUL bytes from every string value in obj.
+
+    Walks dicts and lists in place-equivalent (returns new structures to keep
+    the caller's `record.to_dict()` immutable). Non-string scalars pass through
+    unchanged. NUL bytes are removed silently — they have no meaningful place
+    in extracted-text payloads and PG jsonb won't store them regardless.
+    """
+    if isinstance(obj, str):
+        return obj.replace("\x00", "") if "\x00" in obj else obj
+    if isinstance(obj, dict):
+        return {k: _strip_nuls(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_nuls(v) for v in obj]
+    return obj
 
 _SCHEMA_SQLITE = """
 CREATE TABLE IF NOT EXISTS jobs (
