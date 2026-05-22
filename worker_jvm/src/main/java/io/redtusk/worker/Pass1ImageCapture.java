@@ -114,6 +114,12 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
         return true;
     }
 
+    /** Magic-byte probe window. Generous enough to capture SVG with a UTF-8 BOM
+     *  (3 bytes) + XML prologue (~50 bytes from Inkscape) + room before {@code <svg}.
+     *  Java's default BufferedInputStream uses an 8 KB buffer, so a 512-byte
+     *  {@code mark(limit)} fits trivially in the underlying re-read region. */
+    private static final int MAGIC_PROBE_BYTES = 512;
+
     @Override
     public void parseEmbedded(TikaInputStream stream, ContentHandler handler,
                               Metadata metadata, ParseContext context, boolean outputHtml)
@@ -127,54 +133,85 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
             return;
         }
 
-        // Materialize the stream to disk BEFORE consuming any bytes. This
-        // gives us two cheap operations:
-        //   1. Peek the first 16 bytes from a sibling FileInputStream for the
-        //      magic-byte check without touching `stream`'s position.
-        //   2. On magic mismatch, hand a fresh file-backed TikaInputStream to
-        //      the downstream parser. POI's MSG reader regresses when fed a
-        //      memory-backed (ByteArrayInputStream-backed) TikaInputStream;
-        //      the prior fix replayed bytes via TikaInputStream.get(byte[])
-        //      which has exactly the broken backing.
-        java.io.File materialized;
-        try {
-            materialized = stream.getFile();
-        } catch (IOException e) {
-            // Materialization failed (rare — usually means the parser couldn't
-            // spool). Fall back to passing through; we lose the magic check
-            // but at least don't break the parse.
-            delegate(stream, handler, metadata, context);
-            return;
+        // Peek the first MAGIC_PROBE_BYTES for the magic-byte check WITHOUT
+        // consuming the stream. Two strategies:
+        //
+        //   1. mark()/reset() (preferred): zero disk cost, single in-memory
+        //      buffer bounded by the underlying BufferedInputStream. Works for
+        //      every TikaInputStream the Tika framework hands us — the get()
+        //      factories wrap in BufferedInputStream / ByteArrayInputStream
+        //      which both support mark.
+        //
+        //   2. getFile() fallback (only when markSupported() is false):
+        //      materializes the WHOLE stream to disk so we can peek via a
+        //      sibling FileInputStream. The mismatch path then hands the
+        //      original (now file-backed) stream to delegate, so POI MSG keeps
+        //      working. Caveat: spools the full attacker file regardless of
+        //      our MAX_FILE_BYTES cap — only triggered when mark is unsupported.
+        //
+        // The mark path is strictly preferred because the getFile fallback has
+        // unbounded disk amplification (a 10 GB mis-hinted attachment spools
+        // 10 GB of tmpfs). In practice every TikaInputStream we see supports
+        // mark, so the fallback is dormant defensive code.
+        byte[] head = new byte[MAGIC_PROBE_BYTES];
+        int headLen;
+        java.io.File materialized = null;
+
+        if (stream.markSupported()) {
+            stream.mark(MAGIC_PROBE_BYTES + 16);
+            try {
+                headLen = stream.readNBytes(head, 0, head.length);
+                stream.reset();
+            } catch (IOException e) {
+                LOG.fine("Pass1ImageCapture: mark/reset peek failed: " + e.getMessage());
+                delegate(stream, handler, metadata, context);
+                return;
+            }
+        } else {
+            try {
+                materialized = stream.getFile();
+            } catch (IOException e) {
+                LOG.warning("Pass1ImageCapture: getFile fallback failed (no markSupport, "
+                        + "no spool): " + e.getMessage());
+                delegate(stream, handler, metadata, context);
+                return;
+            }
+            try (java.io.InputStream peek = new java.io.FileInputStream(materialized)) {
+                headLen = peek.readNBytes(head, 0, head.length);
+            } catch (IOException e) {
+                LOG.warning("Pass1ImageCapture: file peek failed: " + e.getMessage());
+                delegate(stream, handler, metadata, context);
+                return;
+            }
         }
 
-        // Magic-byte cross-check. Reads from a sibling FileInputStream so
-        // `stream`'s position is untouched and we can still hand it to delegate.
-        byte[] head = new byte[16];
-        int headLen = 0;
-        try (java.io.InputStream peek = new java.io.FileInputStream(materialized)) {
-            headLen = peek.readNBytes(head, 0, head.length);
-        } catch (IOException e) {
-            LOG.fine("Pass1ImageCapture: magic peek failed: " + e.getMessage());
-        }
         if (headLen < 4 || !hasImageMagic(headLen == head.length
                 ? head : java.util.Arrays.copyOf(head, headLen))) {
-            // Hint said image, magic says no. Pass the ORIGINAL stream through
-            // (file-backed already because getFile() ran) so POI MSG and other
-            // file-backing-sensitive parsers don't break on memory replay.
+            // Hint said image, magic says no. Hand the original stream to the
+            // downstream parser — it's still rewound (mark path) or
+            // file-backed (getFile fallback path), both safe for POI MSG.
             delegate(stream, handler, metadata, context);
             return;
         }
 
-        // Confirmed image. Read the rest into memory for thumbnail decode +
-        // the metadata-walk replay. Memory-backed replay is safe here because
-        // an image inner parser doesn't care about file-backing.
+        // Confirmed image. Read into memory for thumbnail decode + the
+        // metadata-walk replay. Memory-backed replay is safe here because the
+        // inner parser is an image parser, not POI MSG.
         byte[] bytes;
-        try (java.io.InputStream all = new java.io.FileInputStream(materialized)) {
-            bytes = all.readNBytes(MAX_FILE_BYTES);
+        try {
+            if (materialized != null) {
+                // getFile fallback path — read from the spooled file.
+                try (java.io.InputStream all = new java.io.FileInputStream(materialized)) {
+                    bytes = all.readNBytes(MAX_FILE_BYTES);
+                }
+            } else {
+                // Mark path — stream is rewound to position 0, read directly.
+                bytes = stream.readNBytes(MAX_FILE_BYTES);
+            }
         } catch (IOException e) {
             LOG.fine("Pass1ImageCapture: full read failed: " + e.getMessage());
-            // Fall back to passing the original stream so the inner parser
-            // still sees the entry.
+            // Original stream may be partially consumed; pass through anyway
+            // so the inner parser at least sees something rather than nothing.
             delegate(stream, handler, metadata, context);
             return;
         }
@@ -253,9 +290,19 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
         if (b.length >= 12 && b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') {
             String brand = new String(b, 8, 4, java.nio.charset.StandardCharsets.US_ASCII);
             switch (brand) {
+                // HEIF core image profiles (ISO/IEC 23008-12)
                 case "heic": case "heix": case "hevc": case "hevx":
                 case "heim": case "heis": case "hevm": case "hevs":
-                case "mif1": case "msf1": case "avif": case "avis":
+                // HEIF generic image item containers
+                case "mif1": case "msf1": case "mif2":
+                // AVIF (AV1 Image File Format)
+                case "avif": case "avis":
+                // MIAF structural brand + profile brands (ISO/IEC 23000-22)
+                case "miaf": case "MA1A": case "MA1B":
+                // Apple HEIC compatibility marker
+                case "1pic":
+                // JPEG-in-HEIF item container (ISO/IEC 23008-12 Annex H)
+                case "jpeg": case "jpgs":
                     return true;
                 default:
                     // Other ftyp brand (mp42, qt  , 3gp4, …): not an image.
