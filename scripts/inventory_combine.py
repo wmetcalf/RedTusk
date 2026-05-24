@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Combine static + runtime inventories into a single canonical field registry.
+
+Inputs:
+  --static  ../tika/docs/metadata-fields-static.json (from inventory_static.py)
+  --runtime docs/metadata-fields-observed.json       (from inventory_runtime.py)
+Output:
+  --out     docs/metadata-fields.json (combined registry)
+            docs/metadata-fields.md   (rendered Markdown)
+
+The combined registry attaches per-MIME observed counts to each statically-
+declared field. Fields that exist in only one source are flagged so a
+downstream consumer can see:
+
+  * declared+observed: type-safe Property AND seen in the corpus (production)
+  * declared-only:     type-safe Property declared but no parser path
+                       in the corpus has emitted it (rare formats, unwalked
+                       code paths, or genuinely-orphan declarations)
+  * observed-only:     parser emits it but no Property exists — fork-side
+                       string-literal field that should be migrated, OR an
+                       upstream field declared in a class our static scanner
+                       missed (rare; track-down candidate)
+
+Downstream consumers (RedTusk UI, analytics, schema validators) treat the
+combined registry as the source of truth for "what fields can appear in a
+RedTusk job result, and under what content types."
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--static", required=True, type=Path,
+                    help="Static inventory JSON from tools/inventory_static.py")
+    ap.add_argument("--runtime", required=True, type=Path,
+                    help="Runtime inventory JSON from scripts/inventory_runtime.py")
+    ap.add_argument("--out-json", default="docs/metadata-fields.json", type=Path,
+                    help="Combined registry output JSON")
+    ap.add_argument("--out-md", default="docs/metadata-fields.md", type=Path,
+                    help="Combined registry output Markdown")
+    args = ap.parse_args(argv)
+
+    static = json.loads(args.static.read_text())
+    runtime = json.loads(args.runtime.read_text())
+
+    # Build the union field set.
+    static_props: dict = static.get("properties", {})
+    static_undecl: dict = static.get("undeclared_string_fields", {})
+    runtime_fields: dict = runtime.get("by_field", {})
+
+    all_fields = set(static_props) | set(static_undecl) | set(runtime_fields)
+    combined: dict[str, dict] = {}
+
+    for f in sorted(all_fields):
+        decl = static_props.get(f)
+        undecl = static_undecl.get(f)
+        obs = runtime_fields.get(f)
+        status = []
+        if decl: status.append("declared")
+        if undecl: status.append("undeclared-literal")
+        if obs: status.append("observed")
+        else: status.append("not-observed")
+
+        entry: dict = {"status": status}
+        if decl:
+            entry["type"] = decl.get("type")
+            entry["declared_in"] = decl.get("declared_in")
+            entry["constant_name"] = decl.get("constant_name")
+            entry["javadoc"] = decl.get("javadoc")
+            entry["emitted_by_static"] = decl.get("emitted_by", [])
+        if undecl:
+            entry["emission_sites"] = undecl.get("emitted_by", [])
+        if obs:
+            entry["observed_count"] = obs.get("total_count", 0)
+            entry["observed_mime_types"] = obs.get("mime_types", [])
+        combined[f] = entry
+
+    out_doc = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "static_source": str(args.static),
+        "runtime_source": str(args.runtime),
+        "summary": {
+            "total_fields": len(combined),
+            "declared_and_observed": sum(1 for e in combined.values()
+                                          if "declared" in e["status"] and "observed" in e["status"]),
+            "declared_only": sum(1 for e in combined.values()
+                                  if "declared" in e["status"] and "not-observed" in e["status"]),
+            "undeclared_literal_observed": sum(1 for e in combined.values()
+                                                if "undeclared-literal" in e["status"]
+                                                and "observed" in e["status"]),
+            "observed_only_unknown_source": sum(1 for e in combined.values()
+                                                 if "observed" in e["status"]
+                                                 and "declared" not in e["status"]
+                                                 and "undeclared-literal" not in e["status"]),
+        },
+        "fields": combined,
+    }
+
+    args.out_json.parent.mkdir(parents=True, exist_ok=True)
+    args.out_json.write_text(json.dumps(out_doc, indent=2, ensure_ascii=False))
+    print(f"wrote {args.out_json}", file=sys.stderr)
+
+    # Render Markdown.
+    md = _render_md(out_doc)
+    args.out_md.write_text(md)
+    print(f"wrote {args.out_md} ({len(md)} bytes)", file=sys.stderr)
+    for k, v in out_doc["summary"].items():
+        print(f"  {k}: {v}", file=sys.stderr)
+    return 0
+
+
+def _render_md(doc: dict) -> str:
+    s = doc["summary"]
+    out = []
+    out.append("# RedTusk Metadata Field Registry")
+    out.append("")
+    out.append(f"Combined static + runtime inventory. Generated {doc['generated_at']}.")
+    out.append("")
+    out.append(f"- **{s['total_fields']}** total fields seen across sources")
+    out.append(f"- **{s['declared_and_observed']}** declared + observed (the healthy core)")
+    out.append(f"- **{s['declared_only']}** declared but not observed (rare formats / unwalked code paths)")
+    out.append(f"- **{s['undeclared_literal_observed']}** observed undeclared string literals (migration targets)")
+    out.append(f"- **{s['observed_only_unknown_source']}** observed but no source trace (investigation queue)")
+    out.append("")
+    out.append("## Field index")
+    out.append("")
+    out.append("| Field | Status | Type | Declared in | Observed in (top 3 MIMEs) |")
+    out.append("|---|---|---|---|---|")
+    for name, e in doc["fields"].items():
+        status = ",".join(e["status"])
+        type_s = e.get("type", "-")
+        decl = (e.get("declared_in") or "").rsplit(".", 1)[-1] or "-"
+        mimes = ", ".join(f"`{m}`" for m in (e.get("observed_mime_types") or [])[:3])
+        if not mimes:
+            mimes = "_-_"
+        out.append(f"| `{name}` | {status} | `{type_s}` | `{decl}` | {mimes} |")
+    out.append("")
+    return "\n".join(out)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
