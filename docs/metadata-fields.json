@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-05-24T18:24:51.241433+00:00",
-  "static_source": "docs/metadata-fields-static.json",
-  "runtime_source": "/home/coz/Downloads/RedTusk/docs/metadata-fields-observed.json",
+  "generated_at": "2026-05-24T20:30:28.415495+00:00",
+  "static_source": "docs/metadata-fields-static-augmented.json",
+  "runtime_source": "docs/metadata-fields-observed.json",
   "summary": {
     "total_fields": 2169,
     "declared_and_observed": 231,

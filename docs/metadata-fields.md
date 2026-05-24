@@ -1,6 +1,6 @@
 # RedTusk Metadata Field Registry
 
-Combined static + runtime inventory. Generated 2026-05-24T18:24:51.241433+00:00.
+Combined static + runtime inventory. Generated 2026-05-24T20:30:28.415495+00:00.
 
 - **2169** total fields seen across sources
 - **231** declared + observed (the healthy core)
