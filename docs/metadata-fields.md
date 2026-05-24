@@ -1,12 +1,12 @@
 # RedTusk Metadata Field Registry
 
-Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
+Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 
-- **2034** total fields seen across sources
+- **2076** total fields seen across sources
 - **212** declared + observed (the healthy core)
 - **337** declared but not observed (rare formats / unwalked code paths)
-- **57** observed undeclared string literals (migration targets)
-- **63** observed but no source trace (investigation queue)
+- **69** observed undeclared string literals (migration targets)
+- **9** observed but no source trace (investigation queue)
 
 ## Field index
 
@@ -17,6 +17,7 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `Address` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Affiliation` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Authors` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `AvgCharacterWidth` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `CharacterSet` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `CitationDate ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `CitedResponsiblePartyEMail ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -42,6 +43,7 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `DistributionFormatSpecificationAlternativeTitle ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Distributor Contact ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Distributor Organization Name ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `DocVersion` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Error` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ExploitClass` | undeclared-literal,observed | `-` | `-` | `application/x-msc`, `application/x-mswinurl`, `application/x-rdp` |
 | `File-Type-Description` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -50,6 +52,13 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `FilePermissions` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `FileSize` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Filename` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `FontFamilyName` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `FontFullName` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `FontName` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `FontNotice` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `FontUnderlineThickness` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `FontVersion` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `FontWeight` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `FullAffiliations` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `GeographicIdentifierAuthorityAlternativeTitle ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `GeographicIdentifierAuthorityDate ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1129,6 +1138,8 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `html_unicode_qr:glyph_count` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:alarm_action` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:alarm_attach` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:alarm_description` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:alarm_trigger` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:attach_html` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:attach_mime` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:attach_sha256` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1140,24 +1151,42 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `ical:conference_host_abused` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:event_attendee` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:event_attendee_partstat` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
-| `ical:event_class` | observed | `-` | `-` | `text/calendar` |
-| `ical:event_dtend` | observed | `-` | `-` | `text/calendar` |
-| `ical:event_dtstamp` | observed | `-` | `-` | `text/calendar` |
-| `ical:event_dtstart` | observed | `-` | `-` | `text/calendar` |
+| `ical:event_categories` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:event_class` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
+| `ical:event_created` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:event_description` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:event_description_html` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:event_dtend` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
+| `ical:event_dtstamp` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
+| `ical:event_dtstart` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:event_duration_hours` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
-| `ical:event_location` | observed | `-` | `-` | `text/calendar` |
+| `ical:event_last_modified` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:event_location` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:event_organizer` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:event_phone` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:event_revision` | undeclared-literal,not-observed | `-` | `-` | _-_ |
-| `ical:event_status` | observed | `-` | `-` | `text/calendar` |
-| `ical:event_summary` | observed | `-` | `-` | `text/calendar` |
-| `ical:event_transp` | observed | `-` | `-` | `text/calendar` |
-| `ical:event_uid` | observed | `-` | `-` | `text/calendar` |
+| `ical:event_rrule` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:event_sequence` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:event_status` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
+| `ical:event_summary` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
+| `ical:event_transp` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
+| `ical:event_uid` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:event_urgency_keyword` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:event_url` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:method` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:prodid` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:source_encoding` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:timezone_id` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
+| `ical:todo_categories` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_description` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_dtstart` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_due` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_last_modified` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_percent_complete` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_priority` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_status` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_summary` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ical:todo_uid` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:url` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:version` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:warning` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1478,10 +1507,10 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `mapi:attach:long-path-name` | declared,not-observed | `internalText` | `MAPI` | _-_ |
 | `mapi:attach:mime` | declared,observed | `internalText` | `MAPI` | `application/msword`, `application/pdf`, `application/vnd.ms-excel` |
 | `mapi:body-types-processed` | declared,observed | `internalTextBag` | `MAPI` | `application/vnd.ms-outlook` |
-| `mapi:client-submit-time` | observed | `-` | `-` | `application/vnd.ms-outlook` |
+| `mapi:client-submit-time` | templated,observed | `-` | `-` | `application/vnd.ms-outlook` |
 | `mapi:conversation-index` | declared,observed | `internalText` | `MAPI` | `application/vnd.ms-outlook` |
 | `mapi:conversation-topic` | declared,observed | `internalText` | `MAPI` | `application/vnd.ms-outlook` |
-| `mapi:creation-time` | observed | `-` | `-` | `application/vnd.ms-outlook` |
+| `mapi:creation-time` | templated,observed | `-` | `-` | `application/vnd.ms-outlook` |
 | `mapi:from-representing-email` | declared,observed | `internalText` | `MAPI` | `application/vnd.ms-outlook` |
 | `mapi:from-representing-name` | declared,observed | `internalText` | `MAPI` | `application/vnd.ms-outlook` |
 | `mapi:importance` | declared,not-observed | `internalInteger` | `MAPI` | _-_ |
@@ -1489,10 +1518,10 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `mapi:internet-message-id` | declared,observed | `internalText` | `MAPI` | `application/vnd.ms-outlook` |
 | `mapi:internet-references` | declared,observed | `internalTextBag` | `MAPI` | `application/vnd.ms-outlook` |
 | `mapi:is-flagged` | declared,not-observed | `internalBoolean` | `MAPI` | _-_ |
-| `mapi:last-modification-time` | observed | `-` | `-` | `application/vnd.ms-outlook` |
+| `mapi:last-modification-time` | templated,observed | `-` | `-` | `application/vnd.ms-outlook` |
 | `mapi:message-class` | declared,observed | `internalText` | `MAPI` | `application/vnd.ms-outlook` |
 | `mapi:message-class-raw` | declared,observed | `internalText` | `MAPI` | `application/vnd.ms-outlook` |
-| `mapi:message-delivery-time` | observed | `-` | `-` | `application/vnd.ms-outlook` |
+| `mapi:message-delivery-time` | templated,observed | `-` | `-` | `application/vnd.ms-outlook` |
 | `mapi:msg-submission-accepted-at-time` | declared,observed | `internalDate` | `MAPI` | `application/vnd.ms-outlook` |
 | `mapi:msg-submission-id` | declared,observed | `internalText` | `MAPI` | `application/vnd.ms-outlook` |
 | `mapi:priority` | declared,not-observed | `internalInteger` | `MAPI` | _-_ |
@@ -1564,9 +1593,9 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `meta:slide-count` | declared,observed | `internalInteger` | `Office` | `application/vnd.ms-powerpoint`, `application/vnd.ms-powerpoint.presentation.macroenabled.12`, `application/vnd.ms-powerpoint.slideshow.macroenabled.12` |
 | `meta:table-count` | declared,not-observed | `internalInteger` | `Office` | _-_ |
 | `meta:word-count` | declared,observed | `internalInteger` | `Office` | `application/msword`, `application/rtf`, `application/vnd.ms-powerpoint` |
-| `msc:binary_mime` | observed | `-` | `-` | `application/x-msc` |
-| `msc:binary_sha256` | observed | `-` | `-` | `application/x-msc` |
-| `msc:binary_type` | observed | `-` | `-` | `application/x-msc` |
+| `msc:binary_mime` | undeclared-literal,observed | `-` | `-` | `application/x-msc` |
+| `msc:binary_sha256` | undeclared-literal,observed | `-` | `-` | `application/x-msc` |
+| `msc:binary_type` | undeclared-literal,observed | `-` | `-` | `application/x-msc` |
 | `msc:command` | undeclared-literal,observed | `-` | `-` | `application/x-msc` |
 | `msc:snap_in_clsid` | undeclared-literal,observed | `-` | `-` | `application/x-msc` |
 | `msc:snap_in_name` | undeclared-literal,observed | `-` | `-` | `application/x-msc` |
@@ -1666,9 +1695,9 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `pdf:docinfo:created` | declared,observed | `internalDate` | `PDF` | `application/illustrator`, `application/pdf` |
 | `pdf:docinfo:creator` | declared,observed | `internalText` | `PDF` | `application/pdf` |
 | `pdf:docinfo:creator_tool` | declared,observed | `internalText` | `PDF` | `application/illustrator`, `application/pdf` |
-| `pdf:docinfo:custom:Company` | observed | `-` | `-` | `application/pdf` |
-| `pdf:docinfo:custom:Nur_Dienstgebrauch` | observed | `-` | `-` | `application/pdf` |
-| `pdf:docinfo:custom:SourceModified` | observed | `-` | `-` | `application/pdf` |
+| `pdf:docinfo:custom:Company` | templated,observed | `-` | `-` | `application/pdf` |
+| `pdf:docinfo:custom:Nur_Dienstgebrauch` | templated,observed | `-` | `-` | `application/pdf` |
+| `pdf:docinfo:custom:SourceModified` | templated,observed | `-` | `-` | `application/pdf` |
 | `pdf:docinfo:keywords` | declared,observed | `internalText` | `PDF` | `application/pdf` |
 | `pdf:docinfo:modified` | declared,observed | `internalDate` | `PDF` | `application/illustrator`, `application/pdf` |
 | `pdf:docinfo:producer` | declared,observed | `internalText` | `PDF` | `application/illustrator`, `application/pdf` |
@@ -1688,7 +1717,7 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `pdf:hasXFA` | declared,observed | `internalBoolean` | `PDF` | `application/illustrator`, `application/pdf` |
 | `pdf:hasXMP` | declared,observed | `internalBoolean` | `PDF` | `application/illustrator`, `application/pdf`, `image/jpeg` |
 | `pdf:illustrator:type` | declared,not-observed | `internalText` | `PDF` | _-_ |
-| `pdf:incrementalUpdateCount` | observed | `-` | `-` | `application/illustrator`, `application/pdf` |
+| `pdf:incrementalUpdateCount` | templated,observed | `-` | `-` | `application/illustrator`, `application/pdf` |
 | `pdf:jsName` | declared,not-observed | `internalText` | `PDF` | _-_ |
 | `pdf:num3DAnnotations` | declared,observed | `internalInteger` | `PDF` | `application/illustrator`, `application/pdf` |
 | `pdf:ocrPageCount` | declared,observed | `externalInteger` | `PDF` | `application/illustrator`, `application/pdf` |
@@ -1756,7 +1785,14 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `plus:PropertyReleaseStatus` | declared,not-observed | `internalText` | `IPTC` | _-_ |
 | `plus:Version` | declared,not-observed | `internalText` | `IPTC` | _-_ |
 | `ppkg:command` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ppkg:data_asset` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ppkg:data_asset_ref` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ppkg:embedded_file_md5` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ppkg:embedded_file_mime` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ppkg:embedded_file_name` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ppkg:embedded_file_sha1` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ppkg:embedded_file_sha256` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `ppkg:embedded_file_size` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ppkg:warning` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `pst:discriptorNodeId` | declared,not-observed | `internalText` | `PST` | _-_ |
 | `pst:isValid` | declared,not-observed | `internalBoolean` | `PST` | _-_ |
@@ -1775,6 +1811,12 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `rdp:gatewayusagemethod` | templated,observed | `-` | `-` | `application/x-rdp` |
 | `rdp:keyboardhook` | templated,observed | `-` | `-` | `application/x-rdp` |
 | `rdp:networkautodetect` | templated,observed | `-` | `-` | `application/x-rdp` |
+| `rdp:pcb_cert_issuer` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `rdp:pcb_cert_san` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `rdp:pcb_cert_self_signed` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `rdp:pcb_cert_subject` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `rdp:pcb_chain_depth` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `rdp:pcb_warning` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `rdp:promptcredentialonce` | templated,observed | `-` | `-` | `application/x-rdp` |
 | `rdp:redirectclipboard` | templated,observed | `-` | `-` | `application/x-rdp` |
 | `rdp:redirectcomports` | templated,observed | `-` | `-` | `application/x-rdp` |
@@ -1816,38 +1858,38 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `rtf_meta:objdata_decoy_count` | declared,not-observed | `internalInteger` | `RTFMetadata` | _-_ |
 | `rtf_meta:thumbnail` | declared,observed | `internalBoolean` | `RTFMetadata` | `application/octet-stream`, `image/emf`, `image/jpeg` |
 | `rtf_meta:unicode_in_objdata` | declared,not-observed | `internalBoolean` | `RTFMetadata` | _-_ |
-| `rtf_pict:fArrowheadsOK` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:fCameFromImgDummy` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fFakeMaster` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fFilled` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fFlipH` | observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
-| `rtf_pict:fFlipV` | observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
-| `rtf_pict:fHitTestFill` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fHitTestLine` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:fInsetPen` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:fInsetPenOK` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:fLayoutInCell` | observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
-| `rtf_pict:fLine` | observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
-| `rtf_pict:fLineRecolorFillAsPicture` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:fLineUseShapeAnchor` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:fLockAspectRatio` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fNoFillHitTest` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fNoLineDrawDash` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:fPreferRelativeResize` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fReallyHidden` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fRecolorFillAsPicture` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fScriptAnchor` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fUseShapeAnchor` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fillColor` | observed | `-` | `-` | `image/wmf` |
-| `rtf_pict:fillOpacity` | observed | `-` | `-` | `image/wmf` |
-| `rtf_pict:fillShape` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:fillUseRect` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:lineFillShape` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:pictureActive` | observed | `-` | `-` | `image/emf` |
-| `rtf_pict:pictureBiLevel` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:pictureGray` | observed | `-` | `-` | `image/emf`, `image/wmf` |
-| `rtf_pict:shapeType` | observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
-| `rtf_pict:wzDescription` | observed | `-` | `-` | `image/wmf` |
+| `rtf_pict:fArrowheadsOK` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:fCameFromImgDummy` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fFakeMaster` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fFilled` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fFlipH` | templated,observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
+| `rtf_pict:fFlipV` | templated,observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
+| `rtf_pict:fHitTestFill` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fHitTestLine` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:fInsetPen` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:fInsetPenOK` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:fLayoutInCell` | templated,observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
+| `rtf_pict:fLine` | templated,observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
+| `rtf_pict:fLineRecolorFillAsPicture` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:fLineUseShapeAnchor` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:fLockAspectRatio` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fNoFillHitTest` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fNoLineDrawDash` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:fPreferRelativeResize` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fReallyHidden` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fRecolorFillAsPicture` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fScriptAnchor` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fUseShapeAnchor` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fillColor` | templated,observed | `-` | `-` | `image/wmf` |
+| `rtf_pict:fillOpacity` | templated,observed | `-` | `-` | `image/wmf` |
+| `rtf_pict:fillShape` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:fillUseRect` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:lineFillShape` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:pictureActive` | templated,observed | `-` | `-` | `image/emf` |
+| `rtf_pict:pictureBiLevel` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:pictureGray` | templated,observed | `-` | `-` | `image/emf`, `image/wmf` |
+| `rtf_pict:shapeType` | templated,observed | `-` | `-` | `image/emf`, `image/jpeg`, `image/wmf` |
+| `rtf_pict:wzDescription` | templated,observed | `-` | `-` | `image/wmf` |
 | `samplerate` | undeclared-literal,observed | `-` | `-` | `audio/vnd.wave` |
 | `segment-type` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `sheetNames` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1947,7 +1989,7 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `xmp:dc:creator` | declared,observed | `internalTextBag` | `XMPDC` | `application/pdf` |
 | `xmp:dc:date` | declared,not-observed | `internalDate` | `XMPDC` | _-_ |
 | `xmp:dc:description` | declared,observed | `internalText` | `XMPDC` | `application/pdf` |
-| `xmp:dc:description:x-default` | observed | `-` | `-` | `application/pdf` |
+| `xmp:dc:description:x-default` | templated,observed | `-` | `-` | `application/pdf` |
 | `xmp:dc:format` | declared,not-observed | `internalText` | `XMPDC` | _-_ |
 | `xmp:dc:identifier` | declared,not-observed | `internalText` | `XMPDC` | _-_ |
 | `xmp:dc:language` | declared,not-observed | `internalText` | `XMPDC` | _-_ |
@@ -1957,7 +1999,7 @@ Combined static + runtime inventory. Generated 2026-05-24T16:24:47.148142+00:00.
 | `xmp:dc:source` | declared,not-observed | `internalText` | `XMPDC` | _-_ |
 | `xmp:dc:subject` | declared,observed | `internalTextBag` | `XMPDC` | `application/pdf` |
 | `xmp:dc:title` | declared,observed | `internalText` | `XMPDC` | `application/pdf` |
-| `xmp:dc:title:x-default` | observed | `-` | `-` | `application/pdf` |
+| `xmp:dc:title:x-default` | templated,observed | `-` | `-` | `application/pdf` |
 | `xmp:dc:type` | declared,not-observed | `internalText` | `XMPDC` | _-_ |
 | `xmp:dcterms:created` | declared,not-observed | `internalDate` | `XMPDC` | _-_ |
 | `xmp:dcterms:modified` | declared,not-observed | `internalDate` | `XMPDC` | _-_ |
