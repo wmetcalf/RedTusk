@@ -53,7 +53,31 @@ def main(argv: list[str]) -> int:
     # Build the union field set.
     static_props: dict = static.get("properties", {})
     static_undecl: dict = static.get("undeclared_string_fields", {})
+    static_templated: dict = static.get("templated_fields", {})
     runtime_fields: dict = runtime.get("by_field", {})
+
+    # Pre-compile templated pattern matchers. A template entry like
+    # `img:*` has prefix="img:" / suffix=None; observed `img:Chroma Gamma`
+    # should match. We match by literal prefix/suffix string ops — simple
+    # and avoids regex pitfalls with arbitrary suffixes.
+    def find_template(name: str) -> tuple[str, dict] | None:
+        for pattern, info in static_templated.items():
+            prefix = info.get("prefix") or ""
+            suffix = info.get("suffix") or ""
+            if not prefix and not suffix:
+                continue
+            if name == pattern:  # exact "*"-only pattern, rare
+                continue
+            if prefix and not name.startswith(prefix):
+                continue
+            if suffix and not name.endswith(suffix):
+                continue
+            # The dynamic-key middle must be non-empty — otherwise the field
+            # name equals just the prefix+suffix and isn't really templated.
+            if prefix + suffix == name:
+                continue
+            return pattern, info
+        return None
 
     all_fields = set(static_props) | set(static_undecl) | set(runtime_fields)
     combined: dict[str, dict] = {}
@@ -62,9 +86,13 @@ def main(argv: list[str]) -> int:
         decl = static_props.get(f)
         undecl = static_undecl.get(f)
         obs = runtime_fields.get(f)
+        template_match = None
+        if not decl and not undecl:
+            template_match = find_template(f)
         status = []
         if decl: status.append("declared")
         if undecl: status.append("undeclared-literal")
+        if template_match: status.append("templated")
         if obs: status.append("observed")
         else: status.append("not-observed")
 
@@ -77,6 +105,10 @@ def main(argv: list[str]) -> int:
             entry["emitted_by_static"] = decl.get("emitted_by", [])
         if undecl:
             entry["emission_sites"] = undecl.get("emitted_by", [])
+        if template_match:
+            pattern, tinfo = template_match
+            entry["template_pattern"] = pattern
+            entry["template_emission_sites"] = tinfo.get("emitted_by", [])
         if obs:
             entry["observed_count"] = obs.get("total_count", 0)
             entry["observed_mime_types"] = obs.get("mime_types", [])
@@ -95,10 +127,14 @@ def main(argv: list[str]) -> int:
             "undeclared_literal_observed": sum(1 for e in combined.values()
                                                 if "undeclared-literal" in e["status"]
                                                 and "observed" in e["status"]),
+            "templated_observed": sum(1 for e in combined.values()
+                                       if "templated" in e["status"]
+                                       and "observed" in e["status"]),
             "observed_only_unknown_source": sum(1 for e in combined.values()
                                                  if "observed" in e["status"]
                                                  and "declared" not in e["status"]
-                                                 and "undeclared-literal" not in e["status"]),
+                                                 and "undeclared-literal" not in e["status"]
+                                                 and "templated" not in e["status"]),
         },
         "fields": combined,
     }
