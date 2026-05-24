@@ -1,12 +1,12 @@
 # RedTusk Metadata Field Registry
 
-Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
+Combined static + runtime inventory. Generated 2026-05-24T18:24:51.241433+00:00.
 
-- **2076** total fields seen across sources
-- **212** declared + observed (the healthy core)
-- **337** declared but not observed (rare formats / unwalked code paths)
-- **69** observed undeclared string literals (migration targets)
-- **9** observed but no source trace (investigation queue)
+- **2169** total fields seen across sources
+- **231** declared + observed (the healthy core)
+- **432** declared but not observed (rare formats / unwalked code paths)
+- **58** observed undeclared string literals (migration targets)
+- **0** observed but no source trace (investigation queue)
 
 ## Field index
 
@@ -28,12 +28,12 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `Class` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ContactPartyName-` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ContactRole` | undeclared-literal,not-observed | `-` | `-` | _-_ |
-| `Content-Disposition` | observed | `-` | `-` | `application/gzip`, `application/msword`, `application/pdf` |
-| `Content-Encoding` | undeclared-literal,observed | `-` | `-` | `application/mbox`, `application/pdf`, `application/x-bat` |
-| `Content-Language` | undeclared-literal,observed | `-` | `-` | `text/html` |
-| `Content-Length` | undeclared-literal,observed | `-` | `-` | `application/octet-stream`, `application/vnd.ms-equation`, `application/vnd.ms-excel` |
-| `Content-Location` | undeclared-literal,observed | `-` | `-` | `text/html` |
-| `Content-Type` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `Content-Disposition` | declared,observed | `String` | `HttpHeaders` | `application/gzip`, `application/msword`, `application/pdf` |
+| `Content-Encoding` | declared,observed | `String` | `HttpHeaders` | `application/mbox`, `application/pdf`, `application/x-bat` |
+| `Content-Language` | declared,observed | `String` | `HttpHeaders` | `text/html` |
+| `Content-Length` | declared,observed | `String` | `HttpHeaders` | `application/octet-stream`, `application/vnd.ms-equation`, `application/vnd.ms-excel` |
+| `Content-Location` | declared,observed | `String` | `HttpHeaders` | `text/html` |
+| `Content-Type` | declared,not-observed | `String` | `HttpHeaders` | _-_ |
 | `Content-Type-Hint` | declared,observed | `internalText` | `TikaCoreProperties` | `application/xhtml+xml`, `text/html` |
 | `Content-Type-Magic-Detected` | declared,observed | `internalText` | `TikaCoreProperties` | `application/gzip`, `application/illustrator`, `application/java-archive` |
 | `Content-Type-Override` | declared,not-observed | `internalText` | `TikaCoreProperties` | _-_ |
@@ -67,6 +67,7 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `Geographic_LATITUDE` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Geographic_LONGITUDE` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Geographic_NAME` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `HP-UX` | declared,not-observed | `String` | `MachineMetadata` | _-_ |
 | `ICBM` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ICC:Blue Colorant` | templated,observed | `-` | `-` | `image/jpeg`, `image/webp` |
 | `ICC:Blue TRC` | templated,observed | `-` | `-` | `image/jpeg`, `image/webp` |
@@ -162,6 +163,8 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `Keyword` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Language` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `LastModifiedDate` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `License-Location` | declared,not-observed | `String` | `CreativeCommons` | _-_ |
+| `License-Url` | declared,not-observed | `String` | `CreativeCommons` | _-_ |
 | `LoC` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Masked icon count` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Masked icon details` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -182,11 +185,11 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `MboxParser-x-ms-exchange-organization-avstamp-mailbox` | templated,observed | `-` | `-` | `message/rfc822` |
 | `MboxParser-x-ms-exchange-organization-scl` | templated,observed | `-` | `-` | `message/rfc822` |
 | `MboxParser-x-originating-ip` | templated,observed | `-` | `-` | `message/rfc822` |
-| `Message-Bcc` | undeclared-literal,observed | `-` | `-` | `application/vnd.ms-outlook`, `message/rfc822` |
-| `Message-Cc` | undeclared-literal,observed | `-` | `-` | `application/vnd.ms-outlook`, `message/rfc822` |
-| `Message-From` | undeclared-literal,observed | `-` | `-` | `application/vnd.ms-outlook`, `message/rfc822` |
-| `Message-Recipient-Address` | undeclared-literal,observed | `-` | `-` | `application/vnd.ms-outlook`, `message/rfc822` |
-| `Message-To` | undeclared-literal,observed | `-` | `-` | `application/vnd.ms-outlook`, `message/rfc822` |
+| `Message-Bcc` | declared,observed | `String` | `Message` | `application/vnd.ms-outlook`, `message/rfc822` |
+| `Message-Cc` | declared,observed | `String` | `Message` | `application/vnd.ms-outlook`, `message/rfc822` |
+| `Message-From` | declared,observed | `String` | `Message` | `application/vnd.ms-outlook`, `message/rfc822` |
+| `Message-Recipient-Address` | declared,observed | `String` | `Message` | `application/vnd.ms-outlook`, `message/rfc822` |
+| `Message-To` | declared,observed | `String` | `Message` | `application/vnd.ms-outlook`, `message/rfc822` |
 | `Message:BCC-Display-Name` | declared,not-observed | `internalTextBag` | `Message` | _-_ |
 | `Message:BCC-Email` | declared,not-observed | `internalTextBag` | `Message` | _-_ |
 | `Message:BCC-Name` | declared,not-observed | `internalTextBag` | `Message` | _-_ |
@@ -847,8 +850,8 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `MetaDataResourceScope ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `MetaDataStandardEdition ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `MetaDataStandardTitle ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
-| `Multipart-Boundary` | undeclared-literal,observed | `-` | `-` | `application/gzip`, `application/msword`, `application/pdf` |
-| `Multipart-Subtype` | undeclared-literal,observed | `-` | `-` | `application/gzip`, `application/msword`, `application/pdf` |
+| `Multipart-Boundary` | declared,observed | `String` | `Message` | `application/gzip`, `application/msword`, `application/pdf` |
+| `Multipart-Subtype` | declared,observed | `String` | `Message` | `application/gzip`, `application/msword`, `application/pdf` |
 | `NumExecutables` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `NumHardLinks` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `OtherConstraints ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -856,6 +859,7 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `PDF-SLICED-ERROR` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `PageCount` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ParentMetaDataTitle` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `Password` | declared,not-observed | `externalText` | `JackcessParser` | _-_ |
 | `ReferencePageCount` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ResourceFormatSpecificationAlternativeTitle ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `SpreadPageCount` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -872,13 +876,16 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `TransferOptionsOnlineProfile ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `TransferOptionsOnlineProtocol ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `UserConstraints ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `Work-Type` | declared,not-observed | `String` | `CreativeCommons` | _-_ |
 | `X-TIKA:EXCEPTION:container_exception` | declared,not-observed | `internalText` | `TikaCoreProperties` | _-_ |
 | `X-TIKA:EXCEPTION:embedded_bytes_exception` | declared,not-observed | `internalTextBag` | `TikaCoreProperties` | _-_ |
 | `X-TIKA:EXCEPTION:embedded_depth_limit_reached` | declared,not-observed | `internalBoolean` | `TikaCoreProperties` | _-_ |
 | `X-TIKA:EXCEPTION:embedded_exception` | declared,not-observed | `internalTextBag` | `TikaCoreProperties` | _-_ |
+| `X-TIKA:EXCEPTION:embedded_parser` | declared,not-observed | `internalText` | `ParserUtils` | _-_ |
 | `X-TIKA:EXCEPTION:embedded_resource_limit_reached` | declared,not-observed | `internalBoolean` | `TikaCoreProperties` | _-_ |
 | `X-TIKA:EXCEPTION:embedded_stream_exception` | declared,not-observed | `internalTextBag` | `TikaCoreProperties` | _-_ |
 | `X-TIKA:EXCEPTION:embedded_warning` | declared,not-observed | `internalTextBag` | `TikaCoreProperties` | _-_ |
+| `X-TIKA:EXCEPTION:runtime` | declared,not-observed | `externalText` | `ProfilerBase` | _-_ |
 | `X-TIKA:EXCEPTION:warn` | declared,not-observed | `internalTextBag` | `TikaCoreProperties` | _-_ |
 | `X-TIKA:EXCEPTION:write_limit_reached` | declared,not-observed | `internalBoolean` | `TikaCoreProperties` | _-_ |
 | `X-TIKA:Parsed-By` | declared,not-observed | `internalTextBag` | `TikaCoreProperties` | _-_ |
@@ -937,10 +944,14 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `cp:lastModifiedBy` | declared,not-observed | `externalText` | `OfficeOpenXMLCore` | _-_ |
 | `cp:lastPrinted` | declared,not-observed | `externalDate` | `OfficeOpenXMLCore` | _-_ |
 | `cp:revision` | declared,observed | `externalText` | `OfficeOpenXMLCore` | `application/msword`, `application/vnd.ms-excel`, `application/vnd.ms-powerpoint` |
+| `cp:subject` | declared,not-observed | `externalText` | `OfficeOpenXMLCore` | _-_ |
 | `cp:version` | declared,not-observed | `externalText` | `OfficeOpenXMLCore` | _-_ |
 | `createdOn` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `creation-tool` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `creation-tool-version` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `csv:delimiter` | declared,not-observed | `externalText` | `TextAndCSVParser` | _-_ |
+| `csv:num_columns` | declared,not-observed | `externalInteger` | `TextAndCSVParser` | _-_ |
+| `csv:num_rows` | declared,not-observed | `externalInteger` | `TextAndCSVParser` | _-_ |
 | `ctakes:schema` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `custom:AVIWkjEfj` | templated,observed | `-` | `-` | `application/vnd.ms-word.document.macroenabled.12` |
 | `custom:AsjGx0` | templated,observed | `-` | `-` | `application/vnd.ms-word.document.macroenabled.12` |
@@ -1026,7 +1037,7 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `dc:creator` | declared,observed | `internalTextBag` | `DublinCore` | `application/msword`, `application/pdf`, `application/rtf` |
 | `dc:date` | declared,not-observed | `internalDate` | `DublinCore` | _-_ |
 | `dc:description` | declared,observed | `internalTextBag` | `DublinCore` | `application/pdf`, `application/vnd.ms-excel.sheet.macroenabled.12`, `application/vnd.ms-outlook` |
-| `dc:description:x-default` | observed | `-` | `-` | `application/pdf` |
+| `dc:description:x-default` | templated,observed | `-` | `-` | `application/pdf` |
 | `dc:format` | declared,observed | `internalText` | `DublinCore` | `application/illustrator`, `application/pdf`, `message/rfc822` |
 | `dc:identifier` | declared,observed | `internalTextBag` | `DublinCore` | `application/vnd.openxmlformats-officedocument.presentationml.presentation`, `message/rfc822` |
 | `dc:language` | declared,observed | `internalTextBag` | `DublinCore` | `application/pdf`, `application/vnd.openxmlformats-officedocument.presentationml.presentation`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` |
@@ -1036,7 +1047,7 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `dc:source` | declared,not-observed | `internalTextBag` | `DublinCore` | _-_ |
 | `dc:subject` | declared,observed | `internalTextBag` | `DublinCore` | `application/msword`, `application/pdf`, `application/vnd.ms-excel.sheet.macroenabled.12` |
 | `dc:title` | declared,observed | `internalTextBag` | `DublinCore` | `application/msword`, `application/pdf`, `application/vnd.ms-excel` |
-| `dc:title:x-default` | observed | `-` | `-` | `application/pdf` |
+| `dc:title:x-default` | templated,observed | `-` | `-` | `application/pdf` |
 | `dc:type` | declared,not-observed | `internalTextBag` | `DublinCore` | _-_ |
 | `dcterms:created` | declared,observed | `internalDate` | `DublinCore` | `application/illustrator`, `application/msword`, `application/pdf` |
 | `dcterms:modified` | declared,observed | `internalDate` | `DublinCore` | `application/illustrator`, `application/msword`, `application/pdf` |
@@ -1046,8 +1057,8 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `dwg:applicationVersion` | declared,not-observed | `externalText` | `DWG` | _-_ |
 | `dwg:productInfo` | declared,not-observed | `externalText` | `DWG` | _-_ |
 | `embeddedResourceType` | declared,observed | `internalClosedChoise` | `TikaCoreProperties` | `application/gzip`, `application/java-archive`, `application/msword` |
-| `emf:iconOnly` | observed | `-` | `-` | `image/emf` |
-| `emf:iconString` | observed | `-` | `-` | `image/emf` |
+| `emf:iconOnly` | declared,observed | `internalBoolean` | `EMFParser` | `image/emf` |
+| `emf:iconString` | declared,observed | `internalText` | `EMFParser` | `image/emf` |
 | `encoding` | undeclared-literal,observed | `-` | `-` | `audio/vnd.wave` |
 | `endian` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `envi.lat/lon` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1080,6 +1091,7 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `external-process:stdout-truncated` | declared,not-observed | `externalBoolean` | `ExternalProcess` | _-_ |
 | `external-process:timeout` | declared,not-observed | `externalBoolean` | `ExternalProcess` | _-_ |
 | `file-count` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `file:mime` | declared,not-observed | `externalText` | `FileCommandDetector` | _-_ |
 | `fileType` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `font:name` | declared,not-observed | `internalTextBag` | `Font` | _-_ |
 | `fs:accessed` | declared,not-observed | `externalDate` | `FileSystem` | _-_ |
@@ -1136,6 +1148,26 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `html:viewport` | templated,observed | `-` | `-` | `application/xhtml+xml`, `text/html` |
 | `html:x-ua-compatible` | templated,observed | `-` | `-` | `text/html` |
 | `html_unicode_qr:glyph_count` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `http-connection:fetch-truncated` | declared,not-observed | `externalBoolean` | `AtlassianJwtFetcher` | _-_ |
+| `http-connection:num-redirects` | declared,not-observed | `externalInteger` | `AtlassianJwtFetcher` | _-_ |
+| `http-connection:target-ip-address` | declared,not-observed | `externalText` | `AtlassianJwtFetcher` | _-_ |
+| `http-connection:target-url` | declared,not-observed | `externalText` | `AtlassianJwtFetcher` | _-_ |
+| `http-header:content-encoding` | declared,not-observed | `externalText` | `AtlassianJwtFetcher` | _-_ |
+| `http-header:content-type` | declared,not-observed | `externalText` | `AtlassianJwtFetcher` | _-_ |
+| `http-header:status-code` | declared,not-observed | `externalInteger` | `AtlassianJwtFetcher` | _-_ |
+| `http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/` | declared,not-observed | `String` | `IPTC` | _-_ |
+| `http://iptc.org/std/Iptc4xmpExt/2008-02-29/` | declared,not-observed | `String` | `IPTC` | _-_ |
+| `http://ns.adobe.com/photoshop/1.0/` | declared,not-observed | `String` | `Photoshop` | _-_ |
+| `http://ns.adobe.com/xap/1.0/` | declared,not-observed | `String` | `XMP` | _-_ |
+| `http://ns.adobe.com/xap/1.0/mm/` | declared,not-observed | `String` | `XMPMM` | _-_ |
+| `http://ns.adobe.com/xap/1.0/rights/` | declared,not-observed | `String` | `XMPRights` | _-_ |
+| `http://ns.adobe.com/xmp/identifier/qual/1.0/` | declared,not-observed | `String` | `XMPIdq` | _-_ |
+| `http://ns.useplus.org/ldf/xmp/1.0/` | declared,not-observed | `String` | `IPTC` | _-_ |
+| `http://purl.org/dc/elements/1.1/` | declared,not-observed | `String` | `DublinCore` | _-_ |
+| `http://purl.org/dc/terms/` | declared,not-observed | `String` | `DublinCore` | _-_ |
+| `http://schemas.openxmlformats.org/officeDocument/2006/extended-properties/` | declared,not-observed | `String` | `OfficeOpenXMLExtended` | _-_ |
+| `http://schemas.openxmlformats.org/package/2006/metadata/core-properties/` | declared,not-observed | `String` | `OfficeOpenXMLCore` | _-_ |
+| `http://schemas.openxmlformats.org/wordprocessingml/2006/main` | declared,not-observed | `String` | `OfficeOpenXMLExtended` | _-_ |
 | `ical:alarm_action` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:alarm_attach` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:alarm_description` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1401,6 +1433,8 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `img:tRNS tRNS_Palette tRNS_PaletteEntry` | templated,observed | `-` | `-` | `image/png` |
 | `img:width` | templated,observed | `-` | `-` | `image/bmp`, `image/gif`, `image/png` |
 | `img:zTXt zTXtEntry` | templated,observed | `-` | `-` | `image/png` |
+| `iworks:build-version-history` | declared,not-observed | `externalTextBag` | `IWork13PackageParser` | _-_ |
+| `iworks:document-id` | declared,not-observed | `externalText` | `IWork13PackageParser` | _-_ |
 | `language` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `lnk:AccessTime` | templated,observed | `-` | `-` | `application/x-ms-shortcut` |
 | `lnk:AltCommand` | templated,observed | `-` | `-` | `application/x-ms-shortcut` |
@@ -1495,6 +1529,15 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `machine:endian` | declared,observed | `internalClosedChoise` | `MachineMetadata` | `application/x-msdownload` |
 | `machine:machineType` | declared,observed | `internalClosedChoise` | `MachineMetadata` | `application/x-msdownload` |
 | `machine:platform` | declared,observed | `internalClosedChoise` | `MachineMetadata` | `application/x-msdownload` |
+| `magika:description` | declared,not-observed | `externalText` | `MagikaDetector` | _-_ |
+| `magika:errors` | declared,not-observed | `externalTextBag` | `MagikaDetector` | _-_ |
+| `magika:group` | declared,not-observed | `externalText` | `MagikaDetector` | _-_ |
+| `magika:is_text` | declared,not-observed | `externalBoolean` | `MagikaDetector` | _-_ |
+| `magika:label` | declared,not-observed | `externalText` | `MagikaDetector` | _-_ |
+| `magika:mime_type` | declared,not-observed | `externalText` | `MagikaDetector` | _-_ |
+| `magika:score` | declared,not-observed | `externalReal` | `MagikaDetector` | _-_ |
+| `magika:status` | declared,not-observed | `externalText` | `MagikaDetector` | _-_ |
+| `magika:version` | declared,not-observed | `externalText` | `MagikaDetector` | _-_ |
 | `mapi:attach:content-id` | declared,observed | `internalText` | `MAPI` | `application/msword`, `application/pdf`, `application/vnd.ms-excel` |
 | `mapi:attach:content-location` | declared,not-observed | `internalText` | `MAPI` | _-_ |
 | `mapi:attach:display-name` | declared,observed | `internalText` | `MAPI` | `application/msword`, `application/pdf`, `application/vnd.ms-excel` |
@@ -1582,7 +1625,7 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `meta:creation-date` | declared,not-observed | `internalDate` | `Office` | _-_ |
 | `meta:image-count` | declared,not-observed | `internalInteger` | `Office` | _-_ |
 | `meta:initial-author` | declared,not-observed | `internalText` | `Office` | _-_ |
-| `meta:keyword` | observed | `-` | `-` | `application/pdf`, `application/vnd.ms-powerpoint`, `application/vnd.ms-word.document.macroenabled.12` |
+| `meta:keyword` | declared,observed | `internalTextBag` | `Office` | `application/pdf`, `application/vnd.ms-powerpoint`, `application/vnd.ms-word.document.macroenabled.12` |
 | `meta:last-author` | declared,observed | `internalText` | `Office` | `application/msword`, `application/rtf`, `application/vnd.ms-excel` |
 | `meta:line-count` | declared,observed | `internalInteger` | `Office` | `application/vnd.ms-word.document.macroenabled.12`, `application/vnd.ms-word.template.macroenabled.12`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` |
 | `meta:object-count` | declared,not-observed | `internalInteger` | `Office` | _-_ |
@@ -1675,7 +1718,9 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `onenote:ffvOldestCodeThatMayReadThisFile` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `onenote:grfDebugLogFlags` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `onenote:lastModifiedTimestamp` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `onenote:mostRecentAuthors` | declared,not-observed | `externalTextBag` | `OneNoteParser` | _-_ |
 | `onenote:nFileVersionGeneration` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `onenote:originalAuthors` | declared,not-observed | `externalTextBag` | `OneNoteParser` | _-_ |
 | `onenote:rgbPlaceholder` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `original` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `original-format-type` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1717,7 +1762,8 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `pdf:hasXFA` | declared,observed | `internalBoolean` | `PDF` | `application/illustrator`, `application/pdf` |
 | `pdf:hasXMP` | declared,observed | `internalBoolean` | `PDF` | `application/illustrator`, `application/pdf`, `image/jpeg` |
 | `pdf:illustrator:type` | declared,not-observed | `internalText` | `PDF` | _-_ |
-| `pdf:incrementalUpdateCount` | templated,observed | `-` | `-` | `application/illustrator`, `application/pdf` |
+| `pdf:incrementalUpdateCount` | declared,observed | `externalInteger` | `PDF` | `application/illustrator`, `application/pdf` |
+| `pdf:incrementalUpdateNumber` | declared,not-observed | `internalInteger` | `PDF` | _-_ |
 | `pdf:jsName` | declared,not-observed | `internalText` | `PDF` | _-_ |
 | `pdf:num3DAnnotations` | declared,observed | `internalInteger` | `PDF` | `application/illustrator`, `application/pdf` |
 | `pdf:ocrPageCount` | declared,observed | `externalInteger` | `PDF` | `application/illustrator`, `application/pdf` |
@@ -1760,10 +1806,16 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `photoshop:Urgency` | declared,not-observed | `internalText` | `Photoshop` | _-_ |
 | `platform` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `plus:CopyrightOwner` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
+| `plus:CopyrightOwnerID` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
+| `plus:CopyrightOwnerId` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:CopyrightOwnerName` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:ImageCreator` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
+| `plus:ImageCreatorID` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
+| `plus:ImageCreatorId` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:ImageCreatorName` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:ImageSupplier` | declared,not-observed | `internalText` | `IPTC` | _-_ |
+| `plus:ImageSupplierID` | declared,not-observed | `internalText` | `IPTC` | _-_ |
+| `plus:ImageSupplierId` | declared,not-observed | `internalText` | `IPTC` | _-_ |
 | `plus:ImageSupplierImageID` | declared,not-observed | `internalText` | `IPTC` | _-_ |
 | `plus:ImageSupplierName` | declared,not-observed | `internalText` | `IPTC` | _-_ |
 | `plus:Licensor` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
@@ -1771,6 +1823,8 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `plus:LicensorCountry` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:LicensorEmail` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:LicensorExtendedAddress` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
+| `plus:LicensorID` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
+| `plus:LicensorId` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:LicensorName` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:LicensorPostalCode` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
 | `plus:LicensorRegion` | declared,not-observed | `internalTextBag` | `IPTC` | _-_ |
@@ -1834,10 +1888,15 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `rdp:signscope_but_missing_sig` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `rdp:videoplaybackmode` | templated,observed | `-` | `-` | `application/x-rdp` |
 | `rendering:Rendered-By` | declared,not-observed | `externalTextBag` | `Rendering` | _-_ |
+| `rendering:pdfbox-image-writing-ms` | declared,not-observed | `externalReal` | `PDFBoxRenderer` | _-_ |
+| `rendering:pdfbox-rendering-ms` | declared,not-observed | `externalReal` | `PDFBoxRenderer` | _-_ |
 | `rendering:rendering-time-ms` | declared,not-observed | `externalReal` | `Rendering` | _-_ |
-| `rtf:objdataMixedCase` | observed | `-` | `-` | `application/rtf` |
-| `rtf:protocolHandler` | observed | `-` | `-` | `application/rtf` |
-| `rtf:uncPath` | observed | `-` | `-` | `application/rtf` |
+| `rtf:hyperlinkUrl` | declared,not-observed | `String` | `RtfIocScanner` | _-_ |
+| `rtf:nullByteUrl` | declared,not-observed | `String` | `RtfIocScanner` | _-_ |
+| `rtf:objdataMixedCase` | declared,observed | `String` | `RtfIocScanner` | `application/rtf` |
+| `rtf:protocolHandler` | declared,observed | `String` | `RtfIocScanner` | `application/rtf` |
+| `rtf:templateUrl` | declared,not-observed | `String` | `RtfIocScanner` | _-_ |
+| `rtf:uncPath` | declared,observed | `String` | `RtfIocScanner` | `application/rtf` |
 | `rtf_color_qr:colortbl_size` | undeclared-literal,observed | `-` | `-` | `application/rtf` |
 | `rtf_color_qr:enabled` | undeclared-literal,observed | `-` | `-` | `application/rtf` |
 | `rtf_color_qr:error` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1892,6 +1951,12 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `rtf_pict:wzDescription` | templated,observed | `-` | `-` | `image/wmf` |
 | `samplerate` | undeclared-literal,observed | `-` | `-` | `audio/vnd.wave` |
 | `segment-type` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `sf:errors` | declared,not-observed | `externalTextBag` | `SiegfriedDetector` | _-_ |
+| `sf:identifiers_details` | declared,not-observed | `externalTextBag` | `SiegfriedDetector` | _-_ |
+| `sf:identifiers_name` | declared,not-observed | `externalTextBag` | `SiegfriedDetector` | _-_ |
+| `sf:sf_version` | declared,not-observed | `externalText` | `SiegfriedDetector` | _-_ |
+| `sf:signature` | declared,not-observed | `externalText` | `SiegfriedDetector` | _-_ |
+| `sf:status` | declared,not-observed | `externalText` | `SiegfriedDetector` | _-_ |
 | `sheetNames` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `signature:contact-info` | declared,not-observed | `internalTextBag` | `TikaCoreProperties` | _-_ |
 | `signature:date` | declared,observed | `internalDateBag` | `TikaCoreProperties` | `application/pdf` |
@@ -1903,6 +1968,8 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `slides-width` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `source` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `source-language` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `sqlite3:application_id` | declared,not-observed | `internalText` | `SQLite3Parser` | _-_ |
+| `sqlite3:user_version` | declared,not-observed | `internalText` | `SQLite3Parser` | _-_ |
 | `standard_references` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `streams-total` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `strings:encoding` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1917,6 +1984,14 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `svg:hasZeroWidthChars` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `svg:link` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `target-language` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `tess:image_magick_processed` | declared,not-observed | `externalBooleanSeq` | `TesseractOCRParser` | _-_ |
+| `tess:orientation` | declared,not-observed | `externalInteger` | `TesseractOCRParser` | _-_ |
+| `tess:orientation_confidence` | declared,not-observed | `externalReal` | `TesseractOCRParser` | _-_ |
+| `tess:page_number` | declared,not-observed | `externalInteger` | `TesseractOCRParser` | _-_ |
+| `tess:rotate` | declared,not-observed | `externalInteger` | `TesseractOCRParser` | _-_ |
+| `tess:rotation` | declared,not-observed | `externalRealSeq` | `TesseractOCRParser` | _-_ |
+| `tess:script` | declared,not-observed | `externalText` | `TesseractOCRParser` | _-_ |
+| `tess:script_confidence` | declared,not-observed | `externalReal` | `TesseractOCRParser` | _-_ |
 | `tiff:BitsPerSample` | declared,observed | `internalIntegerSequence` | `TIFF` | `image/bmp`, `image/jpeg`, `image/png` |
 | `tiff:ImageLength` | declared,observed | `internalInteger` | `TIFF` | `image/bmp`, `image/gif`, `image/jpeg` |
 | `tiff:ImageWidth` | declared,observed | `internalInteger` | `TIFF` | `image/bmp`, `image/gif`, `image/jpeg` |
@@ -1928,7 +2003,16 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `tiff:Software` | declared,observed | `internalText` | `TIFF` | `image/jpeg`, `image/tiff` |
 | `tiff:XResolution` | declared,observed | `internalRational` | `TIFF` | `image/jpeg`, `image/tiff` |
 | `tiff:YResolution` | declared,observed | `internalRational` | `TIFF` | `image/jpeg`, `image/tiff` |
-| `tika:chunks` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `tika-eval:lang` | declared,not-observed | `externalText` | `TikaEvalMetadataFilter` | _-_ |
+| `tika-eval:langConfidence` | declared,not-observed | `externalReal` | `TikaEvalMetadataFilter` | _-_ |
+| `tika-eval:languageness` | declared,not-observed | `externalReal` | `TikaEvalMetadataFilter` | _-_ |
+| `tika-eval:numAlphaTokens` | declared,not-observed | `externalInteger` | `TikaEvalMetadataFilter` | _-_ |
+| `tika-eval:numCommonTokens` | declared,not-observed | `externalInteger` | `TikaEvalMetadataFilter` | _-_ |
+| `tika-eval:numTokens` | declared,not-observed | `externalInteger` | `TikaEvalMetadataFilter` | _-_ |
+| `tika-eval:numUniqueAlphaTokens` | declared,not-observed | `externalInteger` | `TikaEvalMetadataFilter` | _-_ |
+| `tika-eval:numUniqueTokens` | declared,not-observed | `externalInteger` | `TikaEvalMetadataFilter` | _-_ |
+| `tika-eval:oov` | declared,not-observed | `externalReal` | `TikaEvalMetadataFilter` | _-_ |
+| `tika:chunks` | declared,not-observed | `String` | `TikaCoreProperties` | _-_ |
 | `tika_pg:page_number` | declared,observed | `internalInteger` | `TikaPagedText` | `image/jpeg`, `image/png`, `image/tiff` |
 | `tika_pg:page_rotation` | declared,not-observed | `internalRational` | `TikaPagedText` | _-_ |
 | `tracks` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1948,8 +2032,12 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `url:url_wide_raw` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `url:warning` | undeclared-literal,observed | `-` | `-` | `application/x-mswinurl` |
 | `url:working_directory` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `urn:oasis:names:tc:opendocument:xmlns:meta:1.0` | declared,not-observed | `String` | `Office` | _-_ |
 | `vendor` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `version` | undeclared-literal,not-observed | `-` | `-` | _-_ |
+| `vlm:completion_tokens` | declared,not-observed | `externalInteger` | `AbstractVLMParser` | _-_ |
+| `vlm:model` | declared,not-observed | `externalText` | `AbstractVLMParser` | _-_ |
+| `vlm:prompt_tokens` | declared,not-observed | `externalInteger` | `AbstractVLMParser` | _-_ |
 | `w:Comments` | declared,observed | `externalTextBag` | `OfficeOpenXMLExtended` | `image/gif`, `image/jpeg` |
 | `warc:WARC-Record-ID` | declared,not-observed | `externalText` | `WARC` | _-_ |
 | `warc:http:status` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -1973,6 +2061,9 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `xlsx_color_qr:decode_count` | templated,observed | `-` | `-` | `application/vnd.ms-excel.sheet.macroenabled.12`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` |
 | `xlsx_color_qr:maxcols` | templated,observed | `-` | `-` | `application/vnd.ms-excel.sheet.macroenabled.12`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` |
 | `xlsx_color_qr:rows` | templated,observed | `-` | `-` | `application/vnd.ms-excel.sheet.macroenabled.12`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` |
+| `xmlprofiler:entity_local_names` | declared,not-observed | `internalTextBag` | `XMLProfiler` | _-_ |
+| `xmlprofiler:entity_uris` | declared,not-observed | `internalTextBag` | `XMLProfiler` | _-_ |
+| `xmlprofiler:root_entity` | declared,not-observed | `internalText` | `XMLProfiler` | _-_ |
 | `xmp:About` | declared,observed | `externalTextBag` | `XMP` | `application/pdf` |
 | `xmp:Advisory` | declared,not-observed | `externalTextBag` | `XMP` | _-_ |
 | `xmp:CreateDate` | declared,observed | `externalDate` | `XMP` | `application/illustrator`, `application/pdf` |
@@ -1984,6 +2075,7 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `xmp:NickName` | declared,not-observed | `externalText` | `XMP` | _-_ |
 | `xmp:Rating` | declared,not-observed | `externalInteger` | `XMP` | _-_ |
 | `xmp:Title` | declared,not-observed | `externalText` | `XMP` | _-_ |
+| `xmp:dc` | declared,not-observed | `String` | `XMPDC` | _-_ |
 | `xmp:dc:contributor` | declared,not-observed | `internalTextBag` | `XMPDC` | _-_ |
 | `xmp:dc:coverage` | declared,not-observed | `internalText` | `XMPDC` | _-_ |
 | `xmp:dc:creator` | declared,observed | `internalTextBag` | `XMPDC` | `application/pdf` |
@@ -2001,6 +2093,7 @@ Combined static + runtime inventory. Generated 2026-05-24T17:15:47.495682+00:00.
 | `xmp:dc:title` | declared,observed | `internalText` | `XMPDC` | `application/pdf` |
 | `xmp:dc:title:x-default` | templated,observed | `-` | `-` | `application/pdf` |
 | `xmp:dc:type` | declared,not-observed | `internalText` | `XMPDC` | _-_ |
+| `xmp:dcterms` | declared,not-observed | `String` | `XMPDC` | _-_ |
 | `xmp:dcterms:created` | declared,not-observed | `internalDate` | `XMPDC` | _-_ |
 | `xmp:dcterms:modified` | declared,not-observed | `internalDate` | `XMPDC` | _-_ |
 | `xmp:pdf:About` | declared,not-observed | `externalTextBag` | `XMPPDF` | _-_ |
