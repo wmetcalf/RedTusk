@@ -1,0 +1,3732 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RedTusk metadata field contract",
+  "description": "Strict schema for the per-entry metadata dict in a RedTusk job result (result.extraction.entries[].metadata). Generated from docs/metadata-fields.json by scripts/inventory_to_jsonschema.py — do not edit by hand.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "Abstract": {
+      "type": "string"
+    },
+    "AccessContraints ": {
+      "type": "string"
+    },
+    "Address": {
+      "type": "string"
+    },
+    "Affiliation": {
+      "type": "string"
+    },
+    "Authors": {
+      "type": "string"
+    },
+    "AvgCharacterWidth": {
+      "type": "string"
+    },
+    "CharacterSet": {
+      "type": "string"
+    },
+    "CitationDate ": {
+      "type": "string"
+    },
+    "CitedResponsiblePartyEMail ": {
+      "type": "string"
+    },
+    "CitedResponsiblePartyName ": {
+      "type": "string"
+    },
+    "CitedResponsiblePartyOrganizationName ": {
+      "type": "string"
+    },
+    "CitedResponsiblePartyPositionName ": {
+      "type": "string"
+    },
+    "CitedResponsiblePartyRole ": {
+      "type": "string"
+    },
+    "Class": {
+      "type": "string"
+    },
+    "ContactPartyName-": {
+      "type": "string"
+    },
+    "ContactRole": {
+      "type": "string"
+    },
+    "Content-Disposition": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.HttpHeaders; constant=CONTENT_DISPOSITION; factory=String; observed_count=744"
+    },
+    "Content-Encoding": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.HttpHeaders; constant=CONTENT_ENCODING; factory=String; observed_count=18616"
+    },
+    "Content-Language": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.HttpHeaders; constant=CONTENT_LANGUAGE; factory=String; observed_count=144"
+    },
+    "Content-Length": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.HttpHeaders; constant=CONTENT_LENGTH; factory=String; observed_count=3253"
+    },
+    "Content-Location": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.HttpHeaders; constant=CONTENT_LOCATION; factory=String; observed_count=5"
+    },
+    "Content-Type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.HttpHeaders; constant=CONTENT_TYPE; factory=String"
+    },
+    "Content-Type-Hint": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=CONTENT_TYPE_HINT; factory=internalText; observed_count=358"
+    },
+    "Content-Type-Magic-Detected": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=CONTENT_TYPE_MAGIC_DETECTED; factory=internalText; observed_count=38058"
+    },
+    "Content-Type-Override": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=CONTENT_TYPE_USER_OVERRIDE; factory=internalText"
+    },
+    "Content-Type-Parser-Override": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=CONTENT_TYPE_PARSER_OVERRIDE; factory=internalText; observed_count=97"
+    },
+    "Copyright": {
+      "type": "string"
+    },
+    "DATE": {
+      "type": "string"
+    },
+    "DateInfo ": {
+      "type": "string"
+    },
+    "DistributionFormatSpecificationAlternativeTitle ": {
+      "type": "string"
+    },
+    "Distributor Contact ": {
+      "type": "string"
+    },
+    "Distributor Organization Name ": {
+      "type": "string"
+    },
+    "DocVersion": {
+      "type": "string"
+    },
+    "Error": {
+      "type": "string"
+    },
+    "ExploitClass": {
+      "type": "string",
+      "description": "observed_count=76"
+    },
+    "File-Parsed": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.crypto.TSDParser; constant=TSD_PARSED_LABEL; factory=String"
+    },
+    "File-Parsed-DateTime": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.crypto.TSDParser; constant=TSD_PARSED_DATE; factory=String"
+    },
+    "File-Type-Description": {
+      "type": "string"
+    },
+    "FileOwner": {
+      "type": "string"
+    },
+    "FileOwnerGroup": {
+      "type": "string"
+    },
+    "FilePermissions": {
+      "type": "string"
+    },
+    "FileSize": {
+      "type": "string"
+    },
+    "Filename": {
+      "type": "string"
+    },
+    "FontFamilyName": {
+      "type": "string"
+    },
+    "FontFullName": {
+      "type": "string"
+    },
+    "FontName": {
+      "type": "string"
+    },
+    "FontNotice": {
+      "type": "string"
+    },
+    "FontSubFamilyName": {
+      "type": "string"
+    },
+    "FontUnderlineThickness": {
+      "type": "string"
+    },
+    "FontVersion": {
+      "type": "string"
+    },
+    "FontWeight": {
+      "type": "string"
+    },
+    "FullAffiliations": {
+      "type": "string"
+    },
+    "GeographicIdentifierAuthorityAlternativeTitle ": {
+      "type": "string"
+    },
+    "GeographicIdentifierAuthorityDate ": {
+      "type": "string"
+    },
+    "GeographicIdentifierAuthorityTitle ": {
+      "type": "string"
+    },
+    "GeographicIdentifierCode ": {
+      "type": "string"
+    },
+    "Geographic_LATITUDE": {
+      "type": "string"
+    },
+    "Geographic_LONGITUDE": {
+      "type": "string"
+    },
+    "Geographic_NAME": {
+      "type": "string"
+    },
+    "HP-UX": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MachineMetadata; constant=PLATFORM_HPUX; factory=String"
+    },
+    "ICBM": {
+      "type": "string"
+    },
+    "Icon count": {
+      "type": "string"
+    },
+    "Icon details": {
+      "type": "string"
+    },
+    "IdentificationInfoAbstract ": {
+      "type": "string"
+    },
+    "IdentificationInfoCitationTitle ": {
+      "type": "string"
+    },
+    "IdentificationInfoLanguage-->": {
+      "type": "string"
+    },
+    "IdentificationInfoStatus ": {
+      "type": "string"
+    },
+    "IdentificationInfoTopicCategory-->": {
+      "type": "string"
+    },
+    "Iptc4xmpCore:CiAdrCity": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTACT_INFO_CITY; factory=internalText"
+    },
+    "Iptc4xmpCore:CiAdrCtry": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTACT_INFO_COUNTRY; factory=internalText"
+    },
+    "Iptc4xmpCore:CiAdrExtadr": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTACT_INFO_ADDRESS; factory=internalTextBag"
+    },
+    "Iptc4xmpCore:CiAdrPcode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTACT_INFO_POSTAL_CODE; factory=internalText"
+    },
+    "Iptc4xmpCore:CiAdrRegion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTACT_INFO_STATE_PROVINCE; factory=internalText"
+    },
+    "Iptc4xmpCore:CiEmailWork": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTACT_INFO_EMAIL; factory=internalTextBag"
+    },
+    "Iptc4xmpCore:CiTelWork": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTACT_INFO_PHONE; factory=internalTextBag"
+    },
+    "Iptc4xmpCore:CiUrlWork": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTACT_INFO_WEB_URL; factory=internalTextBag"
+    },
+    "Iptc4xmpCore:CountryCode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=COUNTRY_CODE; factory=internalText"
+    },
+    "Iptc4xmpCore:CreatorContactInfo": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CREATORS_CONTACT_INFO; factory=internalText"
+    },
+    "Iptc4xmpCore:IntellectualGenre": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=INTELLECTUAL_GENRE; factory=internalText"
+    },
+    "Iptc4xmpCore:Location": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=SUBLOCATION; factory=internalText"
+    },
+    "Iptc4xmpCore:Scene": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=SCENE_CODE; factory=internalTextBag"
+    },
+    "Iptc4xmpCore:SubjectCode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=SUBJECT_CODE; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:AOCopyrightNotice": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ARTWORK_OR_OBJECT_DETAIL_COPYRIGHT_NOTICE; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:AOCreator": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ARTWORK_OR_OBJECT_DETAIL_CREATOR; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:AODateCreated": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ARTWORK_OR_OBJECT_DETAIL_DATE_CREATED; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:AOSource": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ARTWORK_OR_OBJECT_DETAIL_SOURCE; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:AOSourceInvNo": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ARTWORK_OR_OBJECT_DETAIL_SOURCE_INVENTORY_NUMBER; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:AOTitle": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ARTWORK_OR_OBJECT_DETAIL_TITLE; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:AddlModelInfo": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ADDITIONAL_MODEL_INFO; factory=internalText"
+    },
+    "Iptc4xmpExt:ArtworkOrObject": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ARTWORK_OR_OBJECT; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:CVterm": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=CONTROLLED_VOCABULARY_TERM; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:DigImageGUID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=DIGITAL_IMAGE_GUID; factory=internalText"
+    },
+    "Iptc4xmpExt:DigitalSourceType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=DIGITAL_SOURCE_TYPE; factory=internalText"
+    },
+    "Iptc4xmpExt:DigitalSourcefileType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=DIGITAL_SOURCE_FILE_TYPE; factory=internalText"
+    },
+    "Iptc4xmpExt:Event": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=EVENT; factory=internalText"
+    },
+    "Iptc4xmpExt:IptcLastEdited": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=IPTC_LAST_EDITED; factory=internalDate"
+    },
+    "Iptc4xmpExt:LocationCreated": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_CREATED; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:LocationCreatedCity": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_CREATED_CITY; factory=internalText"
+    },
+    "Iptc4xmpExt:LocationCreatedCountryCode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_CREATED_COUNTRY_CODE; factory=internalText"
+    },
+    "Iptc4xmpExt:LocationCreatedCountryName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_CREATED_COUNTRY_NAME; factory=internalText"
+    },
+    "Iptc4xmpExt:LocationCreatedProvinceState": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_CREATED_PROVINCE_OR_STATE; factory=internalText"
+    },
+    "Iptc4xmpExt:LocationCreatedSublocation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_CREATED_SUBLOCATION; factory=internalText"
+    },
+    "Iptc4xmpExt:LocationCreatedWorldRegion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_CREATED_WORLD_REGION; factory=internalText"
+    },
+    "Iptc4xmpExt:LocationShown": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_SHOWN; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:LocationShownCity": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_SHOWN_CITY; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:LocationShownCountryCode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_SHOWN_COUNTRY_CODE; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:LocationShownCountryName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_SHOWN_COUNTRY_NAME; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:LocationShownProvinceState": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_SHOWN_PROVINCE_OR_STATE; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:LocationShownSublocation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_SHOWN_SUBLOCATION; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:LocationShownWorldRegion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LOCATION_SHOWN_WORLD_REGION; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:MaxAvailHeight": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=MAX_AVAIL_HEIGHT; factory=internalInteger"
+    },
+    "Iptc4xmpExt:MaxAvailWidth": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=MAX_AVAIL_WIDTH; factory=internalInteger"
+    },
+    "Iptc4xmpExt:ModelAge": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=MODEL_AGE; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:OrganisationInImageCode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ORGANISATION_CODE; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:OrganisationInImageName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=ORGANISATION_NAME; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:PersonInImage": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=PERSON; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:RegItemId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=REGISTRY_ENTRY_CREATED_ITEM_ID; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:RegOrgId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=REGISTRY_ENTRY_CREATED_ORGANISATION_ID; factory=internalTextBag"
+    },
+    "Iptc4xmpExt:RegistryId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=IMAGE_REGISTRY_ENTRY; factory=internalTextBag"
+    },
+    "Keyword": {
+      "type": "string"
+    },
+    "Language": {
+      "type": "string"
+    },
+    "LastModifiedDate": {
+      "type": "string"
+    },
+    "License-Location": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.CreativeCommons; constant=LICENSE_LOCATION; factory=String"
+    },
+    "License-Url": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.CreativeCommons; constant=LICENSE_URL; factory=String"
+    },
+    "LoC": {
+      "type": "string"
+    },
+    "Masked icon count": {
+      "type": "string"
+    },
+    "Masked icon details": {
+      "type": "string"
+    },
+    "MasterPageCount": {
+      "type": "string"
+    },
+    "MasterSpreadPageCount": {
+      "type": "string"
+    },
+    "MboxParser-from": {
+      "type": "string",
+      "description": "observed_count=97"
+    },
+    "Message-Bcc": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_BCC; factory=String; observed_count=368"
+    },
+    "Message-Cc": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_CC; factory=String; observed_count=387"
+    },
+    "Message-From": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_FROM; factory=String; observed_count=970"
+    },
+    "Message-Recipient-Address": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_RECIPIENT_ADDRESS; factory=String; observed_count=339"
+    },
+    "Message-To": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_TO; factory=String; observed_count=951"
+    },
+    "Message:BCC-Display-Name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_BCC_DISPLAY_NAME; factory=internalTextBag"
+    },
+    "Message:BCC-Email": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_BCC_EMAIL; factory=internalTextBag"
+    },
+    "Message:BCC-Name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_BCC_NAME; factory=internalTextBag"
+    },
+    "Message:CC-Display-Name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_CC_DISPLAY_NAME; factory=internalTextBag; observed_count=31"
+    },
+    "Message:CC-Email": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_CC_EMAIL; factory=internalTextBag; observed_count=31"
+    },
+    "Message:CC-Name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_CC_NAME; factory=internalTextBag; observed_count=31"
+    },
+    "Message:From-Email": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_FROM_EMAIL; factory=internalTextBag; observed_count=956"
+    },
+    "Message:From-Name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_FROM_NAME; factory=internalTextBag; observed_count=734"
+    },
+    "Message:To-Display-Name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_TO_DISPLAY_NAME; factory=internalTextBag; observed_count=331"
+    },
+    "Message:To-Email": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_TO_EMAIL; factory=internalTextBag; observed_count=331"
+    },
+    "Message:To-Name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MESSAGE_TO_NAME; factory=internalTextBag; observed_count=331"
+    },
+    "MetaDataIdentifierCode": {
+      "type": "string"
+    },
+    "MetaDataResourceScope ": {
+      "type": "string"
+    },
+    "MetaDataStandardEdition ": {
+      "type": "string"
+    },
+    "MetaDataStandardTitle ": {
+      "type": "string"
+    },
+    "Multipart-Boundary": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MULTIPART_BOUNDARY; factory=String; observed_count=2992"
+    },
+    "Multipart-Subtype": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Message; constant=MULTIPART_SUBTYPE; factory=String; observed_count=2992"
+    },
+    "NumExecutables": {
+      "type": "string"
+    },
+    "NumHardLinks": {
+      "type": "string"
+    },
+    "OtherConstraints ": {
+      "type": "string"
+    },
+    "PDF-SLICE-FAILED": {
+      "type": "string"
+    },
+    "PDF-SLICED-ERROR": {
+      "type": "string"
+    },
+    "PSName": {
+      "type": "string"
+    },
+    "PageCount": {
+      "type": "string"
+    },
+    "ParentMetaDataTitle": {
+      "type": "string"
+    },
+    "Password": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.microsoft.JackcessParser; constant=MDB_PW; factory=externalText"
+    },
+    "Policy-Id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.crypto.TSDParser; constant=TSD_POLICY_ID; factory=String"
+    },
+    "ReferencePageCount": {
+      "type": "string"
+    },
+    "ResourceFormatSpecificationAlternativeTitle ": {
+      "type": "string"
+    },
+    "Serial-Number": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.crypto.TSDParser; constant=TSD_SERIAL_NUMBER; factory=String"
+    },
+    "SpreadPageCount": {
+      "type": "string"
+    },
+    "TEIJSONSource": {
+      "type": "string"
+    },
+    "TEIXMLSource": {
+      "type": "string"
+    },
+    "ThesaurusNameDate ": {
+      "type": "string"
+    },
+    "Time-Stamp-DateTime": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.crypto.TSDParser; constant=TSD_DATE; factory=String"
+    },
+    "Title": {
+      "type": "string"
+    },
+    "TotalPageCount": {
+      "type": "string"
+    },
+    "Trademark": {
+      "type": "string"
+    },
+    "TransferOptionsOnlineDescription ": {
+      "type": "string"
+    },
+    "TransferOptionsOnlineFunction ": {
+      "type": "string"
+    },
+    "TransferOptionsOnlineLinkage ": {
+      "type": "string"
+    },
+    "TransferOptionsOnlineName ": {
+      "type": "string"
+    },
+    "TransferOptionsOnlineProfile ": {
+      "type": "string"
+    },
+    "TransferOptionsOnlineProtocol ": {
+      "type": "string"
+    },
+    "User-Agent": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher; constant=USER_AGENT; factory=String"
+    },
+    "UserConstraints ": {
+      "type": "string"
+    },
+    "Work-Type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.CreativeCommons; constant=WORK_TYPE; factory=String"
+    },
+    "X-TIKA:EXCEPTION:container_exception": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=CONTAINER_EXCEPTION; factory=internalText"
+    },
+    "X-TIKA:EXCEPTION:embedded_bytes_exception": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_BYTES_EXCEPTION; factory=internalTextBag"
+    },
+    "X-TIKA:EXCEPTION:embedded_depth_limit_reached": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_DEPTH_LIMIT_REACHED; factory=internalBoolean"
+    },
+    "X-TIKA:EXCEPTION:embedded_exception": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_EXCEPTION; factory=internalTextBag"
+    },
+    "X-TIKA:EXCEPTION:embedded_parser": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.utils.ParserUtils; constant=EMBEDDED_PARSER; factory=internalText"
+    },
+    "X-TIKA:EXCEPTION:embedded_resource_limit_reached": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_RESOURCE_LIMIT_REACHED; factory=internalBoolean"
+    },
+    "X-TIKA:EXCEPTION:embedded_stream_exception": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_META_EXCEPTION_EMBEDDED_STREAM; factory=internalTextBag"
+    },
+    "X-TIKA:EXCEPTION:embedded_warning": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_WARNING; factory=internalTextBag"
+    },
+    "X-TIKA:EXCEPTION:runtime": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.app.ProfilerBase; constant=CONTAINER_EXCEPTION_1X; factory=externalText"
+    },
+    "X-TIKA:EXCEPTION:warn": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_META_EXCEPTION_WARNING; factory=internalTextBag"
+    },
+    "X-TIKA:EXCEPTION:write_limit_reached": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=WRITE_LIMIT_REACHED; factory=internalBoolean"
+    },
+    "X-TIKA:Parsed-By": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_PARSED_BY; factory=internalTextBag"
+    },
+    "X-TIKA:Parsed-By-Full-Set": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_PARSED_BY_FULL_SET; factory=internalTextBag"
+    },
+    "X-TIKA:WARN:truncated_metadata": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TRUNCATED_METADATA; factory=internalBoolean"
+    },
+    "X-TIKA:content": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_CONTENT; factory=internalText"
+    },
+    "X-TIKA:content_handler": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_CONTENT_HANDLER; factory=internalText"
+    },
+    "X-TIKA:content_handler_type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_CONTENT_HANDLER_TYPE; factory=internalText"
+    },
+    "X-TIKA:decodedCharset": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=DECODED_CHARSET; factory=externalText"
+    },
+    "X-TIKA:detectedEncoding": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=DETECTED_ENCODING; factory=externalText"
+    },
+    "X-TIKA:detected_language": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_DETECTED_LANGUAGE; factory=externalTextBag"
+    },
+    "X-TIKA:detected_language_confidence": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_DETECTED_LANGUAGE_CONFIDENCE; factory=externalTextBag"
+    },
+    "X-TIKA:detected_language_confidence_raw": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_DETECTED_LANGUAGE_CONFIDENCE_RAW; factory=externalRealSeq"
+    },
+    "X-TIKA:detection_content_length": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=DETECTION_CONTENT_LENGTH; factory=internalInteger"
+    },
+    "X-TIKA:digest:MD5": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.app.ProfilerBase; constant=DIGEST_KEY; factory=String"
+    },
+    "X-TIKA:embeddedRelationshipId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_RELATIONSHIP_ID; factory=internalText"
+    },
+    "X-TIKA:embedded_depth": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_DEPTH; factory=internalInteger"
+    },
+    "X-TIKA:embedded_id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_ID; factory=internalInteger"
+    },
+    "X-TIKA:embedded_id_path": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_ID_PATH; factory=internalText"
+    },
+    "X-TIKA:embedded_resource_path": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_RESOURCE_PATH; factory=internalText"
+    },
+    "X-TIKA:encodingDetectionTrace": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=ENCODING_DETECTION_TRACE; factory=externalText"
+    },
+    "X-TIKA:encodingDetector": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=ENCODING_DETECTOR; factory=externalText"
+    },
+    "X-TIKA:encrypted": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=IS_ENCRYPTED; factory=internalBoolean"
+    },
+    "X-TIKA:final_embedded_resource_path": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=FINAL_EMBEDDED_RESOURCE_PATH; factory=internalText"
+    },
+    "X-TIKA:internalPath": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=INTERNAL_PATH; factory=internalText"
+    },
+    "X-TIKA:origResourceName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=ORIGINAL_RESOURCE_NAME; factory=internalTextBag"
+    },
+    "X-TIKA:parse_time_millis": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=PARSE_TIME_MILLIS; factory=internalText"
+    },
+    "X-TIKA:pdf:metadata-xmp-parse-failed": {
+      "type": "string"
+    },
+    "X-TIKA:pipes_result": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=PIPES_RESULT; factory=externalText"
+    },
+    "X-TIKA:resourceName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=RESOURCE_NAME_KEY; factory=internalText"
+    },
+    "X-TIKA:resourceNameExtensionInferred": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=RESOURCE_NAME_EXTENSION_INFERRED; factory=externalBoolean"
+    },
+    "X-TIKA:sourcePath": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=SOURCE_PATH; factory=internalText"
+    },
+    "X-TIKA:truncated_content_for_detection": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TRUNCATED_CONTENT_FOR_DETECTION; factory=internalBoolean"
+    },
+    "X-TIKA:versionCount": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=VERSION_COUNT; factory=externalInteger"
+    },
+    "X-TIKA:versionNumber": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=VERSION_NUMBER; factory=externalInteger"
+    },
+    "X-Tika-Handler": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.server.core.resource.TikaResource; constant=HANDLER_TYPE_HEADER; factory=String"
+    },
+    "X-Tika-OCR-Duration-Ms": {
+      "type": "string",
+      "description": "observed_count=6033"
+    },
+    "X-Tika-OCR-Skipped-Reason": {
+      "type": "string",
+      "description": "observed_count=1541"
+    },
+    "access_permission:assemble_document": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.AccessPermissions; constant=ASSEMBLE_DOCUMENT; factory=externalText; observed_count=462"
+    },
+    "access_permission:can_modify": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.AccessPermissions; constant=CAN_MODIFY; factory=externalTextBag; observed_count=462"
+    },
+    "access_permission:can_print": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.AccessPermissions; constant=CAN_PRINT; factory=externalText; observed_count=462"
+    },
+    "access_permission:can_print_faithful": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.AccessPermissions; constant=CAN_PRINT_FAITHFUL; factory=externalText; observed_count=462"
+    },
+    "access_permission:extract_content": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.AccessPermissions; constant=EXTRACT_CONTENT; factory=externalText; observed_count=462"
+    },
+    "access_permission:extract_for_accessibility": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.AccessPermissions; constant=EXTRACT_FOR_ACCESSIBILITY; factory=externalText; observed_count=462"
+    },
+    "access_permission:fill_in_form": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.AccessPermissions; constant=FILL_IN_FORM; factory=externalText; observed_count=462"
+    },
+    "access_permission:modify_annotations": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.AccessPermissions; constant=CAN_MODIFY_ANNOTATIONS; factory=externalText; observed_count=462"
+    },
+    "admin-language": {
+      "type": "string"
+    },
+    "application": {
+      "type": "string"
+    },
+    "barcode:error-correction-level": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Barcode; constant=BARCODE_ERROR_CORRECTION_LEVEL; factory=internalTextBag; observed_count=106"
+    },
+    "barcode:format": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Barcode; constant=BARCODE_FORMAT; factory=internalTextBag; observed_count=106"
+    },
+    "barcode:is-mirrored": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Barcode; constant=BARCODE_IS_MIRRORED; factory=internalTextBag; observed_count=106"
+    },
+    "barcode:position": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Barcode; constant=BARCODE_POSITION; factory=internalTextBag; observed_count=106"
+    },
+    "barcode:raw-bytes": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Barcode; constant=BARCODE_RAW_BYTES; factory=internalTextBag; observed_count=106"
+    },
+    "barcode:value": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Barcode; constant=BARCODE_VALUE; factory=internalTextBag; observed_count=106"
+    },
+    "bits": {
+      "type": "string",
+      "description": "observed_count=11"
+    },
+    "channels": {
+      "type": "string",
+      "description": "observed_count=18"
+    },
+    "cp:category": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLCore; constant=CATEGORY; factory=externalText; observed_count=13"
+    },
+    "cp:contentStatus": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLCore; constant=CONTENT_STATUS; factory=externalText; observed_count=130"
+    },
+    "cp:lastModifiedBy": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLCore; constant=LAST_MODIFIED_BY; factory=externalText"
+    },
+    "cp:lastPrinted": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLCore; constant=LAST_PRINTED; factory=externalDate"
+    },
+    "cp:revision": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLCore; constant=REVISION; factory=externalText; observed_count=1179"
+    },
+    "cp:subject": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLCore; constant=<inferred:externalText>; factory=externalText"
+    },
+    "cp:version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLCore; constant=VERSION; factory=externalText"
+    },
+    "createdOn": {
+      "type": "string"
+    },
+    "creation-tool": {
+      "type": "string"
+    },
+    "creation-tool-version": {
+      "type": "string"
+    },
+    "csv:delimiter": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.csv.TextAndCSVParser; constant=DELIMITER_PROPERTY; factory=externalText; observed_count=6"
+    },
+    "csv:num_columns": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.csv.TextAndCSVParser; constant=NUM_COLUMNS; factory=externalInteger; observed_count=6"
+    },
+    "csv:num_rows": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.csv.TextAndCSVParser; constant=NUM_ROWS; factory=externalInteger; observed_count=3"
+    },
+    "ctakes:schema": {
+      "type": "string"
+    },
+    "data-type": {
+      "type": "string"
+    },
+    "database:column_count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Database; constant=COLUMN_COUNT; factory=externalInteger"
+    },
+    "database:column_name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Database; constant=COLUMN_NAME; factory=externalTextBag"
+    },
+    "database:row_count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Database; constant=ROW_COUNT; factory=externalInteger"
+    },
+    "database:table_name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Database; constant=TABLE_NAME; factory=externalTextBag"
+    },
+    "dc:contributor": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=CONTRIBUTOR; factory=internalTextBag"
+    },
+    "dc:coverage": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=COVERAGE; factory=internalTextBag"
+    },
+    "dc:creator": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=CREATOR; factory=internalTextBag; observed_count=3265"
+    },
+    "dc:date": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=DATE; factory=internalDate"
+    },
+    "dc:description": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=DESCRIPTION; factory=internalTextBag; observed_count=431"
+    },
+    "dc:format": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=FORMAT; factory=internalText; observed_count=482"
+    },
+    "dc:identifier": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=IDENTIFIER; factory=internalTextBag; observed_count=12"
+    },
+    "dc:language": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=LANGUAGE; factory=internalTextBag; observed_count=116"
+    },
+    "dc:publisher": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=PUBLISHER; factory=internalTextBag; observed_count=370"
+    },
+    "dc:relation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=RELATION; factory=internalTextBag; observed_count=1"
+    },
+    "dc:rights": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=RIGHTS; factory=internalTextBag"
+    },
+    "dc:source": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=SOURCE; factory=internalTextBag"
+    },
+    "dc:subject": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=SUBJECT; factory=internalTextBag; observed_count=1140"
+    },
+    "dc:title": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=TITLE; factory=internalTextBag; observed_count=2029"
+    },
+    "dc:type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=TYPE; factory=internalTextBag"
+    },
+    "dcterms:created": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=CREATED; factory=internalDate; observed_count=5055"
+    },
+    "dcterms:modified": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DublinCore; constant=MODIFIED; factory=internalDate; observed_count=3599"
+    },
+    "divisionType": {
+      "type": "string"
+    },
+    "dwg:applicationComment": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DWG; constant=APPLICATION_COMMENT; factory=externalText"
+    },
+    "dwg:applicationName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DWG; constant=APPLICATION_NAME; factory=externalText"
+    },
+    "dwg:applicationVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DWG; constant=APPLICATION_VERSION; factory=externalText"
+    },
+    "dwg:productInfo": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.DWG; constant=PRODUCT_INFO; factory=externalText"
+    },
+    "editing-cycles": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentMetaParser; constant=<inferred:externalText>; factory=externalText; observed_count=4"
+    },
+    "embeddedResourceType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=EMBEDDED_RESOURCE_TYPE; factory=internalClosedChoise; observed_count=24238"
+    },
+    "emf:iconOnly": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.microsoft.EMFParser; constant=EMF_ICON_ONLY; factory=internalBoolean; observed_count=19"
+    },
+    "emf:iconString": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.microsoft.EMFParser; constant=EMF_ICON_STRING; factory=internalText; observed_count=19"
+    },
+    "encoding": {
+      "type": "string",
+      "description": "observed_count=11"
+    },
+    "endian": {
+      "type": "string"
+    },
+    "envi.lat/lon": {
+      "type": "string"
+    },
+    "epub:rendition:layout": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Epub; constant=RENDITION_LAYOUT; factory=externalClosedChoise"
+    },
+    "epub:version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Epub; constant=VERSION; factory=externalText"
+    },
+    "exif:DateTimeOriginal": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=ORIGINAL_DATE; factory=internalDate; observed_count=214"
+    },
+    "exif:ExposureTime": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=EXPOSURE_TIME; factory=internalRational; observed_count=32"
+    },
+    "exif:FNumber": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=F_NUMBER; factory=internalRational; observed_count=32"
+    },
+    "exif:Flash": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=FLASH_FIRED; factory=internalBoolean; observed_count=32"
+    },
+    "exif:FocalLength": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=FOCAL_LENGTH; factory=internalRational; observed_count=32"
+    },
+    "exif:IsoSpeedRatings": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=ISO_SPEED_RATINGS; factory=internalIntegerSequence; observed_count=31"
+    },
+    "exif:PageCount": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=EXIF_PAGE_COUNT; factory=externalInteger"
+    },
+    "extended-properties:AppVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=APP_VERSION; factory=externalText; observed_count=2058"
+    },
+    "extended-properties:Application": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=APPLICATION; factory=externalText; observed_count=2666"
+    },
+    "extended-properties:Company": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=COMPANY; factory=externalText; observed_count=525"
+    },
+    "extended-properties:DocSecurity": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=DOC_SECURITY; factory=externalInteger; observed_count=314"
+    },
+    "extended-properties:DocSecurityString": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=DOC_SECURITY_STRING; factory=externalClosedChoise; observed_count=2076"
+    },
+    "extended-properties:HiddedSlides": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=HIDDEN_SLIDES; factory=externalInteger"
+    },
+    "extended-properties:Manager": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=MANAGER; factory=externalTextBag; observed_count=19"
+    },
+    "extended-properties:Notes": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=NOTES; factory=externalInteger; observed_count=114"
+    },
+    "extended-properties:PresentationFormat": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=PRESENTATION_FORMAT; factory=externalText; observed_count=114"
+    },
+    "extended-properties:Template": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=TEMPLATE; factory=externalText; observed_count=961"
+    },
+    "extended-properties:TotalTime": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=TOTAL_TIME; factory=externalInteger; observed_count=1198"
+    },
+    "external-process:exit-value": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ExternalProcess; constant=EXIT_VALUE; factory=externalInteger"
+    },
+    "external-process:stderr": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ExternalProcess; constant=STD_ERR; factory=externalText"
+    },
+    "external-process:stderr-length": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ExternalProcess; constant=STD_ERR_LENGTH; factory=externalReal"
+    },
+    "external-process:stderr-truncated": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ExternalProcess; constant=STD_ERR_IS_TRUNCATED; factory=externalBoolean"
+    },
+    "external-process:stdout": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ExternalProcess; constant=STD_OUT; factory=externalText"
+    },
+    "external-process:stdout-length": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ExternalProcess; constant=STD_OUT_LENGTH; factory=externalReal"
+    },
+    "external-process:stdout-truncated": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ExternalProcess; constant=STD_OUT_IS_TRUNCATED; factory=externalBoolean"
+    },
+    "external-process:timeout": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ExternalProcess; constant=IS_TIMEOUT; factory=externalBoolean"
+    },
+    "file-count": {
+      "type": "string"
+    },
+    "file:mime": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.FileCommandDetector; constant=FILE_MIME; factory=externalText"
+    },
+    "fileType": {
+      "type": "string"
+    },
+    "font:name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Font; constant=FONT_NAME; factory=internalTextBag"
+    },
+    "format": {
+      "type": "string"
+    },
+    "fs:accessed": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.FileSystem; constant=ACCESSED; factory=externalDate"
+    },
+    "fs:created": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.FileSystem; constant=CREATED; factory=externalDate"
+    },
+    "fs:modified": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.FileSystem; constant=MODIFIED; factory=externalDate"
+    },
+    "fulltext": {
+      "type": "string"
+    },
+    "generator": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentMetaParser; constant=<inferred:externalText>; factory=externalText; observed_count=4"
+    },
+    "geo:alt": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Geographic; constant=ALTITUDE; factory=internalReal"
+    },
+    "geo:lat": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Geographic; constant=LATITUDE; factory=internalReal; observed_count=21"
+    },
+    "geo:long": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Geographic; constant=LONGITUDE; factory=internalReal; observed_count=21"
+    },
+    "geo:timestamp": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Geographic; constant=TIMESTAMP; factory=internalDate; observed_count=16"
+    },
+    "hasAudio": {
+      "type": "string"
+    },
+    "hasSignature": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=HAS_SIGNATURE; factory=internalBoolean; observed_count=9"
+    },
+    "hasVideo": {
+      "type": "string"
+    },
+    "html:scriptSrc": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.HTML; constant=SCRIPT_SOURCE; factory=internalText"
+    },
+    "html_unicode_qr:glyph_count": {
+      "type": "string",
+      "description": "observed_count=7"
+    },
+    "http-connection:fetch-truncated": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher; constant=HTTP_FETCH_TRUNCATED; factory=externalBoolean"
+    },
+    "http-connection:num-redirects": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher; constant=HTTP_NUM_REDIRECTS; factory=externalInteger"
+    },
+    "http-connection:target-ip-address": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher; constant=HTTP_TARGET_IP_ADDRESS; factory=externalText"
+    },
+    "http-connection:target-url": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher; constant=HTTP_TARGET_URL; factory=externalText"
+    },
+    "http-header:content-encoding": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher; constant=HTTP_CONTENT_ENCODING; factory=externalText"
+    },
+    "http-header:content-type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher; constant=HTTP_CONTENT_TYPE; factory=externalText"
+    },
+    "http-header:status-code": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.pipes.fetcher.atlassianjwt.AtlassianJwtFetcher; constant=HTTP_STATUS_CODE; factory=externalInteger"
+    },
+    "ical:alarm_action": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "ical:alarm_attach": {
+      "type": "string"
+    },
+    "ical:alarm_description": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "ical:alarm_trigger": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "ical:attach_html": {
+      "type": "string"
+    },
+    "ical:attach_mime": {
+      "type": "string"
+    },
+    "ical:attach_sha256": {
+      "type": "string"
+    },
+    "ical:attach_url": {
+      "type": "string"
+    },
+    "ical:brand_impersonation": {
+      "type": "string"
+    },
+    "ical:brand_keyword": {
+      "type": "string",
+      "description": "observed_count=1"
+    },
+    "ical:calendar_description": {
+      "type": "string"
+    },
+    "ical:calendar_name": {
+      "type": "string"
+    },
+    "ical:conference_host_abused": {
+      "type": "string"
+    },
+    "ical:event_attendee": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_attendee_partstat": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_categories": {
+      "type": "string",
+      "description": "observed_count=1"
+    },
+    "ical:event_class": {
+      "type": "string",
+      "description": "observed_count=3"
+    },
+    "ical:event_created": {
+      "type": "string",
+      "description": "observed_count=1"
+    },
+    "ical:event_description": {
+      "type": "string",
+      "description": "observed_count=3"
+    },
+    "ical:event_description_html": {
+      "type": "string"
+    },
+    "ical:event_dtend": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_dtstamp": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_dtstart": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_duration_hours": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "ical:event_last_modified": {
+      "type": "string"
+    },
+    "ical:event_location": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_organizer": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_phone": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "ical:event_revision": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "ical:event_rrule": {
+      "type": "string"
+    },
+    "ical:event_sequence": {
+      "type": "string",
+      "description": "observed_count=3"
+    },
+    "ical:event_status": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_summary": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_transp": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_uid": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:event_urgency_keyword": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "ical:event_url": {
+      "type": "string"
+    },
+    "ical:method": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:prodid": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:source_encoding": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:timezone_id": {
+      "type": "string",
+      "description": "observed_count=3"
+    },
+    "ical:todo_categories": {
+      "type": "string"
+    },
+    "ical:todo_description": {
+      "type": "string"
+    },
+    "ical:todo_dtstart": {
+      "type": "string"
+    },
+    "ical:todo_due": {
+      "type": "string"
+    },
+    "ical:todo_last_modified": {
+      "type": "string"
+    },
+    "ical:todo_percent_complete": {
+      "type": "string"
+    },
+    "ical:todo_priority": {
+      "type": "string"
+    },
+    "ical:todo_status": {
+      "type": "string"
+    },
+    "ical:todo_summary": {
+      "type": "string"
+    },
+    "ical:todo_uid": {
+      "type": "string"
+    },
+    "ical:url": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "ical:version": {
+      "type": "string",
+      "description": "observed_count=4"
+    },
+    "ical:warning": {
+      "type": "string"
+    },
+    "image:colorhash": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ImageHash; constant=COLORHASH; factory=internalText; observed_count=7800"
+    },
+    "image:phash": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.ImageHash; constant=PHASH; factory=internalText; observed_count=7800"
+    },
+    "imagereader:NumImages": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=NUM_IMAGES; factory=internalInteger; observed_count=5382"
+    },
+    "img:height": {
+      "type": "string",
+      "description": "observed_count=5371"
+    },
+    "img:width": {
+      "type": "string",
+      "description": "observed_count=5371"
+    },
+    "iworks:build-version-history": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.iwork.iwana.IWork13PackageParser; constant=IWORKS_BUILD_VERSION_HISTORY; factory=externalTextBag"
+    },
+    "iworks:document-id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.iwork.iwana.IWork13PackageParser; constant=IWORKS_DOC_ID; factory=externalText"
+    },
+    "language": {
+      "type": "string"
+    },
+    "lnk:warning": {
+      "type": "string",
+      "description": "observed_count=166"
+    },
+    "location": {
+      "type": "string"
+    },
+    "machine:architectureBits": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MachineMetadata; constant=ARCHITECTURE_BITS; factory=internalClosedChoise; observed_count=396"
+    },
+    "machine:endian": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MachineMetadata; constant=ENDIAN; factory=internalClosedChoise; observed_count=397"
+    },
+    "machine:machineType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MachineMetadata; constant=MACHINE_TYPE; factory=internalClosedChoise; observed_count=397"
+    },
+    "machine:platform": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MachineMetadata; constant=PLATFORM; factory=internalClosedChoise; observed_count=388"
+    },
+    "magika:description": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_DESCRIPTION; factory=externalText"
+    },
+    "magika:errors": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_ERRORS; factory=externalTextBag"
+    },
+    "magika:group": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_GROUP; factory=externalText"
+    },
+    "magika:is_text": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_IS_TEXT; factory=externalBoolean"
+    },
+    "magika:label": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_LABEL; factory=externalText"
+    },
+    "magika:mime_type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_MIME; factory=externalText"
+    },
+    "magika:score": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_SCORE; factory=externalReal"
+    },
+    "magika:status": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_STATUS; factory=externalText"
+    },
+    "magika:version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.magika.MagikaDetector; constant=MAGIKA_VERSION; factory=externalText"
+    },
+    "mapi:attach:content-id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_CONTENT_ID; factory=internalText; observed_count=603"
+    },
+    "mapi:attach:content-location": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_CONTENT_LOCATION; factory=internalText; observed_count=10"
+    },
+    "mapi:attach:display-name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_DISPLAY_NAME; factory=internalText; observed_count=516"
+    },
+    "mapi:attach:extension": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_EXTENSION; factory=internalText; observed_count=442"
+    },
+    "mapi:attach:file-name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_FILE_NAME; factory=internalText; observed_count=704"
+    },
+    "mapi:attach:flags": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_FLAGS; factory=internalInteger; observed_count=417"
+    },
+    "mapi:attach:hidden": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_HIDDEN; factory=internalBoolean; observed_count=308"
+    },
+    "mapi:attach:language": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_LANGUAGE; factory=internalText; observed_count=476"
+    },
+    "mapi:attach:long-file-name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_LONG_FILE_NAME; factory=internalText; observed_count=700"
+    },
+    "mapi:attach:long-path-name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_LONG_PATH_NAME; factory=internalText"
+    },
+    "mapi:attach:mime": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=ATTACH_MIME; factory=internalText; observed_count=702"
+    },
+    "mapi:body-types-processed": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=BODY_TYPES_PROCESSED; factory=internalTextBag; observed_count=342"
+    },
+    "mapi:conversation-index": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=CONVERSATION_INDEX; factory=internalText; observed_count=360"
+    },
+    "mapi:conversation-topic": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=CONVERSATION_TOPIC; factory=internalText; observed_count=357"
+    },
+    "mapi:from-representing-email": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=FROM_REPRESENTING_EMAIL; factory=internalText; observed_count=358"
+    },
+    "mapi:from-representing-name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=FROM_REPRESENTING_NAME; factory=internalText; observed_count=362"
+    },
+    "mapi:importance": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=IMPORTANCE; factory=internalInteger"
+    },
+    "mapi:in-reply-to-id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=IN_REPLY_TO_ID; factory=internalText; observed_count=97"
+    },
+    "mapi:internet-message-id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=INTERNET_MESSAGE_ID; factory=internalText; observed_count=359"
+    },
+    "mapi:internet-references": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=INTERNET_REFERENCES; factory=internalTextBag; observed_count=99"
+    },
+    "mapi:is-flagged": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=IS_FLAGGED; factory=internalBoolean"
+    },
+    "mapi:message-class": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=MESSAGE_CLASS; factory=internalText; observed_count=366"
+    },
+    "mapi:message-class-raw": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=MESSAGE_CLASS_RAW; factory=internalText; observed_count=366"
+    },
+    "mapi:msg-submission-accepted-at-time": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=SUBMISSION_ACCEPTED_AT_TIME; factory=internalDate; observed_count=2"
+    },
+    "mapi:msg-submission-id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=SUBMISSION_ID; factory=internalText; observed_count=2"
+    },
+    "mapi:priority": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=PRIORTY; factory=internalInteger"
+    },
+    "mapi:recipients-string": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=RECIPIENTS_STRING; factory=internalText"
+    },
+    "mapi:sent-by-server-type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.MAPI; constant=SENT_BY_SERVER_TYPE; factory=internalText; observed_count=268"
+    },
+    "meta:author": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=AUTHOR; factory=internalTextBag"
+    },
+    "meta:character-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=CHARACTER_COUNT; factory=internalInteger; observed_count=853"
+    },
+    "meta:character-count-with-spaces": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=CHARACTER_COUNT_WITH_SPACES; factory=internalInteger; observed_count=623"
+    },
+    "meta:creation-date": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=CREATION_DATE; factory=internalDate"
+    },
+    "meta:image-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=IMAGE_COUNT; factory=internalInteger; observed_count=2"
+    },
+    "meta:initial-author": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=INITIAL_AUTHOR; factory=internalText"
+    },
+    "meta:keyword": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=<inferred:internalTextBag>; factory=internalTextBag; observed_count=97"
+    },
+    "meta:last-author": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=LAST_AUTHOR; factory=internalText; observed_count=2143"
+    },
+    "meta:line-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=LINE_COUNT; factory=internalInteger; observed_count=655"
+    },
+    "meta:object-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OBJECT_COUNT; factory=internalInteger; observed_count=4"
+    },
+    "meta:page-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=PAGE_COUNT; factory=internalInteger; observed_count=1019"
+    },
+    "meta:paragraph-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=PARAGRAPH_COUNT; factory=internalInteger; observed_count=737"
+    },
+    "meta:print-date": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=PRINT_DATE; factory=internalDate; observed_count=251"
+    },
+    "meta:save-date": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=SAVE_DATE; factory=internalDate"
+    },
+    "meta:slide-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=SLIDE_COUNT; factory=internalInteger; observed_count=168"
+    },
+    "meta:table-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=TABLE_COUNT; factory=internalInteger; observed_count=3"
+    },
+    "meta:word-count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=WORD_COUNT; factory=internalInteger; observed_count=613"
+    },
+    "msc:binary_mime": {
+      "type": "string",
+      "description": "observed_count=20"
+    },
+    "msc:binary_sha256": {
+      "type": "string",
+      "description": "observed_count=20"
+    },
+    "msc:binary_type": {
+      "type": "string",
+      "description": "observed_count=20"
+    },
+    "msc:command": {
+      "type": "string",
+      "description": "observed_count=9"
+    },
+    "msc:snap_in_clsid": {
+      "type": "string",
+      "description": "observed_count=22"
+    },
+    "msc:snap_in_name": {
+      "type": "string",
+      "description": "observed_count=22"
+    },
+    "msc:string": {
+      "type": "string",
+      "description": "observed_count=22"
+    },
+    "msc:task_command": {
+      "type": "string"
+    },
+    "msc:task_description": {
+      "type": "string"
+    },
+    "msc:task_name": {
+      "type": "string"
+    },
+    "msc:url": {
+      "type": "string",
+      "description": "observed_count=13"
+    },
+    "msc:warning": {
+      "type": "string"
+    },
+    "msoffice:comment-person-display-name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=COMMENT_PERSONS; factory=internalTextBag; observed_count=174"
+    },
+    "msoffice:doc:has-attached-template": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_ATTACHED_TEMPLATE; factory=internalBoolean; observed_count=116"
+    },
+    "msoffice:doc:has-framesets": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_FRAMESETS; factory=internalBoolean; observed_count=62"
+    },
+    "msoffice:doc:has-hidden-text": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_HIDDEN_TEXT; factory=internalBoolean; observed_count=17"
+    },
+    "msoffice:doc:has-mail-merge": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_MAIL_MERGE; factory=internalBoolean"
+    },
+    "msoffice:doc:has-subdocuments": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_SUBDOCUMENTS; factory=internalBoolean"
+    },
+    "msoffice:embeddedStorageClassId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=EMBEDDED_STORAGE_CLASS_ID; factory=internalText; observed_count=169"
+    },
+    "msoffice:excel:has-data-connections": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_DATA_CONNECTIONS; factory=internalBoolean; observed_count=4"
+    },
+    "msoffice:excel:has-dde-links": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_DDE_LINKS; factory=internalBoolean"
+    },
+    "msoffice:excel:has-external-links": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_EXTERNAL_LINKS; factory=internalBoolean; observed_count=16"
+    },
+    "msoffice:excel:has-external-pivot-data": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_EXTERNAL_PIVOT_DATA; factory=internalBoolean"
+    },
+    "msoffice:excel:has-hidden-cols": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_HIDDEN_COLUMNS; factory=internalBoolean; observed_count=105"
+    },
+    "msoffice:excel:has-hidden-rows": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_HIDDEN_ROWS; factory=internalBoolean; observed_count=48"
+    },
+    "msoffice:excel:has-hidden-sheets": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_HIDDEN_SHEETS; factory=internalBoolean; observed_count=548"
+    },
+    "msoffice:excel:has-power-query": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_POWER_QUERY; factory=internalBoolean"
+    },
+    "msoffice:excel:has-very-hidden-sheets": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_VERY_HIDDEN_SHEETS; factory=internalBoolean; observed_count=38"
+    },
+    "msoffice:excel:has-web-queries": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_WEB_QUERIES; factory=internalBoolean; observed_count=2"
+    },
+    "msoffice:excel:has-xls4-auto-exec": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_XLS4_AUTO_EXEC; factory=internalBoolean; observed_count=2"
+    },
+    "msoffice:excel:has-xls4-macros": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_XLS4_MACROS; factory=internalBoolean; observed_count=17"
+    },
+    "msoffice:excel:hidden-sheet-names": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HIDDEN_SHEET_NAMES; factory=internalTextBag; observed_count=548"
+    },
+    "msoffice:excel:protected-worksheet": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=PROTECTED_WORKSHEET; factory=internalBoolean; observed_count=1344"
+    },
+    "msoffice:excel:very-hidden-sheet-names": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=VERY_HIDDEN_SHEET_NAMES; factory=internalTextBag; observed_count=38"
+    },
+    "msoffice:excel:workbook-codename": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=WORKBOOK_CODENAME; factory=internalText; observed_count=455"
+    },
+    "msoffice:excel:xls4-macro-sheet-names": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=XLS4_MACRO_SHEET_NAMES; factory=internalTextBag; observed_count=17"
+    },
+    "msoffice:has-comments": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_COMMENTS; factory=internalBoolean; observed_count=45"
+    },
+    "msoffice:has-external-chart-data": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_EXTERNAL_CHART_DATA; factory=internalBoolean"
+    },
+    "msoffice:has-external-ole-objects": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_EXTERNAL_OLE_OBJECTS; factory=internalBoolean; observed_count=41"
+    },
+    "msoffice:has-field-hyperlinks": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_FIELD_HYPERLINKS; factory=internalBoolean; observed_count=13"
+    },
+    "msoffice:has-hover-hyperlinks": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_HOVER_HYPERLINKS; factory=internalBoolean; observed_count=1"
+    },
+    "msoffice:has-linked-ole-objects": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_LINKED_OLE_OBJECTS; factory=internalBoolean; observed_count=34"
+    },
+    "msoffice:has-track-changes": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_TRACK_CHANGES; factory=internalBoolean; observed_count=7"
+    },
+    "msoffice:has-vml-hyperlinks": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_VML_HYPERLINKS; factory=internalBoolean"
+    },
+    "msoffice:link:action-type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_ACTION_TYPE; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:context": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_CONTEXT; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_ID; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:ocr-text": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_OCR_TEXT; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:relationship-type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_RELATIONSHIP_TYPE; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:source": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_SOURCE; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:text": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_TEXT; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:trigger": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_TRIGGER; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_TYPE; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:link:url": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OFFICE_LINK_URL; factory=internalTextBag; observed_count=372"
+    },
+    "msoffice:ocxName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OCX_NAME; factory=internalText; observed_count=9"
+    },
+    "msoffice:ooxml:ole-auto-exec": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OOXML_OLE_AUTO_EXEC; factory=internalBoolean; observed_count=303"
+    },
+    "msoffice:ooxml:ole-suspicious-progids": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=OOXML_OLE_SUSPICIOUS_PROG_IDS; factory=internalTextBag; observed_count=313"
+    },
+    "msoffice:ppt:has-animations": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_ANIMATIONS; factory=internalBoolean; observed_count=20"
+    },
+    "msoffice:ppt:has-hidden-slides": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=HAS_HIDDEN_SLIDES; factory=internalBoolean; observed_count=2"
+    },
+    "msoffice:ppt:num-hidden-slides": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=NUM_HIDDEN_SLIDES; factory=internalInteger; observed_count=2"
+    },
+    "msoffice:ppt:num-unlisted-slides": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=NUM_UNLISTED_SLIDES; factory=internalInteger"
+    },
+    "msoffice:ppt:unlisted-slide-names": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=UNLISTED_SLIDE_NAMES; factory=internalTextBag"
+    },
+    "msoffice:progID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=PROG_ID; factory=internalText; observed_count=399"
+    },
+    "msoffice:xlsb:has-xlm-macros": {
+      "type": "string",
+      "description": "observed_count=229"
+    },
+    "msoffice:xlsx:has-xlm-macros": {
+      "type": "string",
+      "description": "observed_count=242"
+    },
+    "odf:version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentMetaParser; constant=ODF_VERSION_KEY; factory=String; observed_count=4"
+    },
+    "onenote:buildNumberCreated": {
+      "type": "string"
+    },
+    "onenote:buildNumberLastWroteToFile": {
+      "type": "string"
+    },
+    "onenote:buildNumberNewestWritten": {
+      "type": "string"
+    },
+    "onenote:buildNumberOldestWritten": {
+      "type": "string"
+    },
+    "onenote:cTransactionsInLog": {
+      "type": "string"
+    },
+    "onenote:cbExpectedFileLength": {
+      "type": "string"
+    },
+    "onenote:cbFreeSpaceInFreeChunkList": {
+      "type": "string"
+    },
+    "onenote:cbLegacyExpectedFileLength": {
+      "type": "string"
+    },
+    "onenote:cbLegacyFreeSpaceInFreeChunkList": {
+      "type": "string"
+    },
+    "onenote:crcName": {
+      "type": "string"
+    },
+    "onenote:creationTimestamp": {
+      "type": "string"
+    },
+    "onenote:ffvLastCodeThatWroteToThisFile": {
+      "type": "string"
+    },
+    "onenote:ffvNewestCodeThatHasWrittenToThisFile": {
+      "type": "string"
+    },
+    "onenote:ffvOldestCodeThatHasWrittenToThisFile": {
+      "type": "string"
+    },
+    "onenote:ffvOldestCodeThatMayReadThisFile": {
+      "type": "string"
+    },
+    "onenote:grfDebugLogFlags": {
+      "type": "string"
+    },
+    "onenote:lastModifiedTimestamp": {
+      "type": "string"
+    },
+    "onenote:mostRecentAuthors": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.microsoft.onenote.OneNoteParser; constant=<inferred:externalTextBag>; factory=externalTextBag"
+    },
+    "onenote:nFileVersionGeneration": {
+      "type": "string"
+    },
+    "onenote:originalAuthors": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.microsoft.onenote.OneNoteParser; constant=<inferred:externalTextBag>; factory=externalTextBag"
+    },
+    "onenote:rgbPlaceholder": {
+      "type": "string"
+    },
+    "original": {
+      "type": "string"
+    },
+    "original-format-type": {
+      "type": "string"
+    },
+    "outlinks": {
+      "type": "string"
+    },
+    "patches": {
+      "type": "string"
+    },
+    "pdf:PDFExtensionVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDF_EXTENSION_VERSION; factory=internalRational; observed_count=4"
+    },
+    "pdf:PDFVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDF_VERSION; factory=internalRational; observed_count=462"
+    },
+    "pdf:actionTrigger": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=ACTION_TRIGGER; factory=internalText; observed_count=1"
+    },
+    "pdf:actionTriggers": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=ACTION_TRIGGERS; factory=internalTextBag"
+    },
+    "pdf:actionTypes": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=ACTION_TYPES; factory=internalTextBag"
+    },
+    "pdf:annotationSubtypes": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=ANNOTATION_SUBTYPES; factory=internalTextBag; observed_count=263"
+    },
+    "pdf:annotationTypes": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=ANNOTATION_TYPES; factory=internalTextBag; observed_count=263"
+    },
+    "pdf:associatedFileRelationship": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=ASSOCIATED_FILE_RELATIONSHIP; factory=internalText"
+    },
+    "pdf:charsPerPage": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=CHARACTERS_PER_PAGE; factory=internalIntegerSequence; observed_count=450"
+    },
+    "pdf:containsDamagedFont": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=CONTAINS_DAMAGED_FONT; factory=internalBoolean; observed_count=451"
+    },
+    "pdf:containsNonEmbeddedFont": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=CONTAINS_NON_EMBEDDED_FONT; factory=internalBoolean; observed_count=451"
+    },
+    "pdf:docinfo:created": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_CREATED; factory=internalDate; observed_count=369"
+    },
+    "pdf:docinfo:creator": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_CREATOR; factory=internalText; observed_count=125"
+    },
+    "pdf:docinfo:creator_tool": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_CREATOR_TOOL; factory=internalText; observed_count=253"
+    },
+    "pdf:docinfo:keywords": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_KEY_WORDS; factory=internalText; observed_count=23"
+    },
+    "pdf:docinfo:modified": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_MODIFICATION_DATE; factory=internalDate; observed_count=331"
+    },
+    "pdf:docinfo:producer": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_PRODUCER; factory=internalText; observed_count=395"
+    },
+    "pdf:docinfo:subject": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_SUBJECT; factory=internalText; observed_count=27"
+    },
+    "pdf:docinfo:title": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_TITLE; factory=internalText; observed_count=120"
+    },
+    "pdf:docinfo:trapped": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=DOC_INFO_TRAPPED; factory=internalText; observed_count=25"
+    },
+    "pdf:embeddedFileAnnotationType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=EMBEDDED_FILE_ANNOTATION_TYPE; factory=internalText"
+    },
+    "pdf:embeddedFileDescription": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=EMBEDDED_FILE_DESCRIPTION; factory=externalText; observed_count=3"
+    },
+    "pdf:embeddedFileSubtype": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=EMBEDDED_FILE_SUBTYPE; factory=internalText; observed_count=2"
+    },
+    "pdf:encrypted": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=IS_ENCRYPTED; factory=internalBoolean; observed_count=469"
+    },
+    "pdf:eofOffsets": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=EOF_OFFSETS; factory=externalRealSeq; observed_count=469"
+    },
+    "pdf:foundNonAdobeExtensionName": {
+      "type": "string",
+      "description": "observed_count=1"
+    },
+    "pdf:has3D": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=HAS_3D; factory=internalBoolean; observed_count=1"
+    },
+    "pdf:hasAcroFormFields": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=HAS_ACROFORM_FIELDS; factory=internalBoolean; observed_count=6"
+    },
+    "pdf:hasCollection": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=HAS_COLLECTION; factory=internalBoolean; observed_count=462"
+    },
+    "pdf:hasMarkedContent": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=HAS_MARKED_CONTENT; factory=internalBoolean; observed_count=462"
+    },
+    "pdf:hasXFA": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=HAS_XFA; factory=internalBoolean; observed_count=462"
+    },
+    "pdf:hasXMP": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=HAS_XMP; factory=internalBoolean; observed_count=1545"
+    },
+    "pdf:illustrator:type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=ILLUSTRATOR_TYPE; factory=internalText"
+    },
+    "pdf:incrementalUpdateCount": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=<inferred:externalInteger>; factory=externalInteger; observed_count=470"
+    },
+    "pdf:incrementalUpdateNumber": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=<inferred:internalInteger>; factory=internalInteger"
+    },
+    "pdf:jsName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=JS_NAME; factory=internalText"
+    },
+    "pdf:num3DAnnotations": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=NUM_3D_ANNOTATIONS; factory=internalInteger; observed_count=451"
+    },
+    "pdf:ocrPageCount": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=OCR_PAGE_COUNT; factory=externalInteger; observed_count=470"
+    },
+    "pdf:overallPercentageUnmappedUnicodeChars": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=OVERALL_PERCENTAGE_UNMAPPED_UNICODE_CHARS; factory=internalReal; observed_count=293"
+    },
+    "pdf:producer": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PRODUCER; factory=internalText; observed_count=395"
+    },
+    "pdf:totalUnmappedUnicodeChars": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=TOTAL_UNMAPPED_UNICODE_CHARS; factory=internalInteger; observed_count=451"
+    },
+    "pdf:unmappedUnicodeCharsPerPage": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=UNMAPPED_UNICODE_CHARS_PER_PAGE; factory=internalIntegerSequence; observed_count=450"
+    },
+    "pdf:xmpLocation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=XMP_LOCATION; factory=internalText"
+    },
+    "pdf_color_qr:dark_glyphs": {
+      "type": "string",
+      "description": "observed_count=251"
+    },
+    "pdf_color_qr:decode_count": {
+      "type": "string",
+      "description": "observed_count=24"
+    },
+    "pdf_color_qr:glyphs": {
+      "type": "string",
+      "description": "observed_count=392"
+    },
+    "pdf_color_qr:maxcols": {
+      "type": "string",
+      "description": "observed_count=251"
+    },
+    "pdf_color_qr:qualifying": {
+      "type": "string",
+      "description": "observed_count=251"
+    },
+    "pdf_color_qr:rows": {
+      "type": "string",
+      "description": "observed_count=251"
+    },
+    "pdf_color_qr:stage": {
+      "type": "string",
+      "description": "observed_count=383"
+    },
+    "pdfa:PDFVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFA_VERSION; factory=internalRational; observed_count=1"
+    },
+    "pdfaid:conformance": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFAID_CONFORMANCE; factory=internalText; observed_count=1"
+    },
+    "pdfaid:part": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFAID_PART; factory=internalInteger; observed_count=1"
+    },
+    "pdfuaid:part": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFUAID_PART; factory=internalInteger"
+    },
+    "pdfvt:modified": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFVT_MODIFIED; factory=internalDate"
+    },
+    "pdfvt:version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFVT_VERSION; factory=internalText"
+    },
+    "pdfx:conformance": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFX_CONFORMANCE; factory=internalText; observed_count=1"
+    },
+    "pdfx:version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFX_VERSION; factory=internalText; observed_count=1"
+    },
+    "pdfxid:version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PDF; constant=PDFXID_VERSION; factory=internalText; observed_count=1"
+    },
+    "phonenumbers": {
+      "type": "string"
+    },
+    "photoshop:AuthorsPosition": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=AUTHORS_POSITION; factory=internalText"
+    },
+    "photoshop:CaptionWriter": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=CAPTION_WRITER; factory=internalText"
+    },
+    "photoshop:Category": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=CATEGORY; factory=internalText"
+    },
+    "photoshop:City": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=CITY; factory=internalText"
+    },
+    "photoshop:ColorMode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=COLOR_MODE; factory=internalClosedChoise; observed_count=16"
+    },
+    "photoshop:Country": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=COUNTRY; factory=internalText"
+    },
+    "photoshop:Credit": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=CREDIT; factory=internalText"
+    },
+    "photoshop:DateCreated": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=DATE_CREATED; factory=internalDate"
+    },
+    "photoshop:Headline": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=HEADLINE; factory=internalText"
+    },
+    "photoshop:Instructions": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=INSTRUCTIONS; factory=internalText"
+    },
+    "photoshop:Source": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=SOURCE; factory=internalText"
+    },
+    "photoshop:State": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=STATE; factory=internalText"
+    },
+    "photoshop:SupplementalCategories": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=SUPPLEMENTAL_CATEGORIES; factory=internalTextBag"
+    },
+    "photoshop:TransmissionReference": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=TRANSMISSION_REFERENCE; factory=internalText"
+    },
+    "photoshop:Urgency": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Photoshop; constant=URGENCY; factory=internalText"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "plus:CopyrightOwner": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=COPYRIGHT_OWNER; factory=internalTextBag"
+    },
+    "plus:CopyrightOwnerID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=<inferred:internalTextBag>; factory=internalTextBag"
+    },
+    "plus:CopyrightOwnerId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=<inferred:internalTextBag>; factory=internalTextBag"
+    },
+    "plus:CopyrightOwnerName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=COPYRIGHT_OWNER_NAME; factory=internalTextBag"
+    },
+    "plus:ImageCreator": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=IMAGE_CREATOR; factory=internalTextBag"
+    },
+    "plus:ImageCreatorID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=<inferred:internalTextBag>; factory=internalTextBag"
+    },
+    "plus:ImageCreatorId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=<inferred:internalTextBag>; factory=internalTextBag"
+    },
+    "plus:ImageCreatorName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=IMAGE_CREATOR_NAME; factory=internalTextBag"
+    },
+    "plus:ImageSupplier": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=IMAGE_SUPPLIER; factory=internalText"
+    },
+    "plus:ImageSupplierID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=<inferred:internalText>; factory=internalText"
+    },
+    "plus:ImageSupplierId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=<inferred:internalText>; factory=internalText"
+    },
+    "plus:ImageSupplierImageID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=IMAGE_SUPPLIER_IMAGE_ID; factory=internalText"
+    },
+    "plus:ImageSupplierName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=IMAGE_SUPPLIER_NAME; factory=internalText"
+    },
+    "plus:Licensor": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR; factory=internalTextBag"
+    },
+    "plus:LicensorCity": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_CITY; factory=internalTextBag"
+    },
+    "plus:LicensorCountry": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_COUNTRY; factory=internalTextBag"
+    },
+    "plus:LicensorEmail": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_EMAIL; factory=internalTextBag"
+    },
+    "plus:LicensorExtendedAddress": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_EXTENDED_ADDRESS; factory=internalTextBag"
+    },
+    "plus:LicensorID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=<inferred:internalTextBag>; factory=internalTextBag"
+    },
+    "plus:LicensorId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=<inferred:internalTextBag>; factory=internalTextBag"
+    },
+    "plus:LicensorName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_NAME; factory=internalTextBag"
+    },
+    "plus:LicensorPostalCode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_POSTAL_CODE; factory=internalTextBag"
+    },
+    "plus:LicensorRegion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_REGION; factory=internalTextBag"
+    },
+    "plus:LicensorStreetAddress": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_STREET_ADDRESS; factory=internalTextBag"
+    },
+    "plus:LicensorTelephone1": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_TELEPHONE_1; factory=internalTextBag"
+    },
+    "plus:LicensorTelephone2": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_TELEPHONE_2; factory=internalTextBag"
+    },
+    "plus:LicensorURL": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=LICENSOR_URL; factory=internalTextBag"
+    },
+    "plus:MinorModelAgeDisclosure": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=MINOR_MODEL_AGE_DISCLOSURE; factory=internalText"
+    },
+    "plus:ModelReleaseID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=MODEL_RELEASE_ID; factory=internalTextBag"
+    },
+    "plus:ModelReleaseStatus": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=MODEL_RELEASE_STATUS; factory=internalText"
+    },
+    "plus:PropertyReleaseID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=PROPERTY_RELEASE_ID; factory=internalTextBag"
+    },
+    "plus:PropertyReleaseStatus": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=PROPERTY_RELEASE_STATUS; factory=internalText"
+    },
+    "plus:Version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.IPTC; constant=PLUS_VERSION; factory=internalText"
+    },
+    "ppkg:command": {
+      "type": "string"
+    },
+    "ppkg:data_asset": {
+      "type": "string"
+    },
+    "ppkg:data_asset_ref": {
+      "type": "string"
+    },
+    "ppkg:embedded_file_md5": {
+      "type": "string"
+    },
+    "ppkg:embedded_file_mime": {
+      "type": "string"
+    },
+    "ppkg:embedded_file_name": {
+      "type": "string"
+    },
+    "ppkg:embedded_file_sha1": {
+      "type": "string"
+    },
+    "ppkg:embedded_file_sha256": {
+      "type": "string"
+    },
+    "ppkg:embedded_file_size": {
+      "type": "string"
+    },
+    "ppkg:warning": {
+      "type": "string"
+    },
+    "pst:discriptorNodeId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PST; constant=DESCRIPTOR_NODE_ID; factory=internalText"
+    },
+    "pst:isValid": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PST; constant=IS_VALID; factory=internalBoolean"
+    },
+    "rdp:pcb_cert_issuer": {
+      "type": "string"
+    },
+    "rdp:pcb_cert_san": {
+      "type": "string"
+    },
+    "rdp:pcb_cert_self_signed": {
+      "type": "string"
+    },
+    "rdp:pcb_cert_subject": {
+      "type": "string"
+    },
+    "rdp:pcb_chain_depth": {
+      "type": "string"
+    },
+    "rdp:pcb_warning": {
+      "type": "string"
+    },
+    "rdp:signature_raw": {
+      "type": "string",
+      "description": "observed_count=5"
+    },
+    "rdp:signature_sha1": {
+      "type": "string",
+      "description": "observed_count=5"
+    },
+    "rdp:signature_sha256": {
+      "type": "string",
+      "description": "observed_count=5"
+    },
+    "rdp:signature_warning": {
+      "type": "string"
+    },
+    "rdp:signscope_but_missing_sig": {
+      "type": "string"
+    },
+    "rendering:Rendered-By": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Rendering; constant=RENDERED_BY; factory=externalTextBag"
+    },
+    "rendering:pdfbox-image-writing-ms": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.renderer.pdf.pdfbox.PDFBoxRenderer; constant=PDFBOX_IMAGE_WRITING_TIME_MS; factory=externalReal"
+    },
+    "rendering:pdfbox-rendering-ms": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.renderer.pdf.pdfbox.PDFBoxRenderer; constant=PDFBOX_RENDERING_TIME_MS; factory=externalReal"
+    },
+    "rendering:rendering-time-ms": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Rendering; constant=RENDERED_MS; factory=externalReal"
+    },
+    "rtf:hyperlinkUrl": {
+      "type": "string",
+      "description": "declared_in=io.redtusk.worker.RtfIocScanner; constant=KEY_HYPERLINK_URL; factory=String; observed_count=3"
+    },
+    "rtf:nullByteUrl": {
+      "type": "string",
+      "description": "declared_in=io.redtusk.worker.RtfIocScanner; constant=KEY_NULL_BYTE_URL; factory=String"
+    },
+    "rtf:objdataMixedCase": {
+      "type": "string",
+      "description": "declared_in=io.redtusk.worker.RtfIocScanner; constant=KEY_OBJDATA_MIXEDCASE; factory=String; observed_count=68"
+    },
+    "rtf:protocolHandler": {
+      "type": "string",
+      "description": "declared_in=io.redtusk.worker.RtfIocScanner; constant=KEY_PROTOCOL_HANDLER; factory=String; observed_count=3"
+    },
+    "rtf:templateUrl": {
+      "type": "string",
+      "description": "declared_in=io.redtusk.worker.RtfIocScanner; constant=KEY_TEMPLATE_URL; factory=String"
+    },
+    "rtf:uncPath": {
+      "type": "string",
+      "description": "declared_in=io.redtusk.worker.RtfIocScanner; constant=KEY_UNC_PATH; factory=String; observed_count=4"
+    },
+    "rtf_color_qr:colortbl_size": {
+      "type": "string",
+      "description": "observed_count=432"
+    },
+    "rtf_color_qr:enabled": {
+      "type": "string",
+      "description": "observed_count=432"
+    },
+    "rtf_color_qr:error": {
+      "type": "string"
+    },
+    "rtf_color_qr:rows_captured": {
+      "type": "string",
+      "description": "observed_count=432"
+    },
+    "rtf_meta:contains_encapsulated_html": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=CONTAINS_ENCAPSULATED_HTML; factory=internalBoolean; observed_count=297"
+    },
+    "rtf_meta:emb_app_version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_APP_VERSION; factory=internalText; observed_count=140"
+    },
+    "rtf_meta:emb_class": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_CLASS; factory=internalText; observed_count=140"
+    },
+    "rtf_meta:emb_class_obfuscated": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_CLASS_OBFUSCATED; factory=internalBoolean; observed_count=321"
+    },
+    "rtf_meta:emb_clsid": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_CLSID; factory=internalText; observed_count=89"
+    },
+    "rtf_meta:emb_clsid_name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_CLSID_NAME; factory=internalText; observed_count=84"
+    },
+    "rtf_meta:emb_item": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_ITEM; factory=internalText"
+    },
+    "rtf_meta:emb_label": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_LABEL; factory=internalText"
+    },
+    "rtf_meta:emb_ole2link_url": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_OLE2LINK_URL; factory=internalText; observed_count=65"
+    },
+    "rtf_meta:emb_source_path": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_SOURCE_PATH; factory=internalText; observed_count=47"
+    },
+    "rtf_meta:emb_topic": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_TOPIC; factory=internalText"
+    },
+    "rtf_meta:hex_escape_in_objdata": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_HEX_ESCAPE_IN_OBJDATA; factory=internalBoolean"
+    },
+    "rtf_meta:malformed_rtf_header": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=MALFORMED_RTF_HEADER; factory=internalBoolean; observed_count=169"
+    },
+    "rtf_meta:objdata_decoy_count": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_OBJDATA_DECOY_COUNT; factory=internalInteger"
+    },
+    "rtf_meta:thumbnail": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=THUMBNAIL; factory=internalBoolean; observed_count=206"
+    },
+    "rtf_meta:unicode_in_objdata": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.RTFMetadata; constant=EMB_UNICODE_IN_OBJDATA; factory=internalBoolean"
+    },
+    "samplerate": {
+      "type": "string",
+      "description": "observed_count=18"
+    },
+    "segment-type": {
+      "type": "string"
+    },
+    "sf:errors": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.siegfried.SiegfriedDetector; constant=SIEGFRIED_ERRORS; factory=externalTextBag"
+    },
+    "sf:identifiers_details": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.siegfried.SiegfriedDetector; constant=SIEGFRIED_IDENTIFIERS_DETAILS; factory=externalTextBag"
+    },
+    "sf:identifiers_name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.siegfried.SiegfriedDetector; constant=SIEGFRIED_IDENTIFIERS_NAME; factory=externalTextBag"
+    },
+    "sf:sf_version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.siegfried.SiegfriedDetector; constant=SIEGFRIED_VERSION; factory=externalText"
+    },
+    "sf:signature": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.siegfried.SiegfriedDetector; constant=SIEGFRIED_SIGNATURE; factory=externalText"
+    },
+    "sf:status": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.detect.siegfried.SiegfriedDetector; constant=SIEGFRIED_STATUS; factory=externalText"
+    },
+    "sheetNames": {
+      "type": "string"
+    },
+    "signature:contact-info": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=SIGNATURE_CONTACT_INFO; factory=internalTextBag"
+    },
+    "signature:date": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=SIGNATURE_DATE; factory=internalDateBag; observed_count=2"
+    },
+    "signature:filter": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=SIGNATURE_FILTER; factory=internalTextBag; observed_count=2"
+    },
+    "signature:location": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=SIGNATURE_LOCATION; factory=internalTextBag; observed_count=2"
+    },
+    "signature:name": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=SIGNATURE_NAME; factory=internalTextBag"
+    },
+    "signature:reason": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=SIGNATURE_REASON; factory=internalTextBag; observed_count=2"
+    },
+    "slides-height": {
+      "type": "string"
+    },
+    "slides-width": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "source-language": {
+      "type": "string"
+    },
+    "sqlite3:application_id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.sqlite3.SQLite3Parser; constant=SQLITE_APPLICATION_ID; factory=internalText"
+    },
+    "sqlite3:user_version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.sqlite3.SQLite3Parser; constant=SQLITE_USER_VERSION; factory=internalText"
+    },
+    "standard_references": {
+      "type": "string"
+    },
+    "streams-total": {
+      "type": "string"
+    },
+    "strings:encoding": {
+      "type": "string"
+    },
+    "strings:file_output": {
+      "type": "string"
+    },
+    "strings:length": {
+      "type": "string"
+    },
+    "strings:min-len": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "svg:externalScript": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "svg:externalUseRef": {
+      "type": "string"
+    },
+    "svg:hasEventHandlers": {
+      "type": "string",
+      "description": "observed_count=3"
+    },
+    "svg:hasForeignObject": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "svg:hasZeroWidthChars": {
+      "type": "string"
+    },
+    "svg:link": {
+      "type": "string"
+    },
+    "target-language": {
+      "type": "string"
+    },
+    "tess:image_magick_processed": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.ocr.TesseractOCRParser; constant=IMAGE_MAGICK; factory=externalBooleanSeq"
+    },
+    "tess:orientation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.ocr.TesseractOCRParser; constant=PSM0_ORIENTATION; factory=externalInteger"
+    },
+    "tess:orientation_confidence": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.ocr.TesseractOCRParser; constant=PSM0_ORIENTATION_CONFIDENCE; factory=externalReal"
+    },
+    "tess:page_number": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.ocr.TesseractOCRParser; constant=PSM0_PAGE_NUMBER; factory=externalInteger"
+    },
+    "tess:rotate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.ocr.TesseractOCRParser; constant=PSM0_ROTATE; factory=externalInteger"
+    },
+    "tess:rotation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.ocr.TesseractOCRParser; constant=IMAGE_ROTATION; factory=externalRealSeq"
+    },
+    "tess:script": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.ocr.TesseractOCRParser; constant=PSM0_SCRIPT; factory=externalText"
+    },
+    "tess:script_confidence": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.ocr.TesseractOCRParser; constant=PSM0_SCRIPT_CONFIDENCE; factory=externalReal"
+    },
+    "tiff:BitsPerSample": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=BITS_PER_SAMPLE; factory=internalIntegerSequence; observed_count=7413"
+    },
+    "tiff:ImageLength": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=IMAGE_LENGTH; factory=internalInteger; observed_count=7860"
+    },
+    "tiff:ImageWidth": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=IMAGE_WIDTH; factory=internalInteger; observed_count=7860"
+    },
+    "tiff:Make": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=EQUIPMENT_MAKE; factory=internalText; observed_count=40"
+    },
+    "tiff:Model": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=EQUIPMENT_MODEL; factory=internalText; observed_count=49"
+    },
+    "tiff:Orientation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=ORIENTATION; factory=internalClosedChoise; observed_count=438"
+    },
+    "tiff:ResolutionUnit": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=RESOLUTION_UNIT; factory=internalClosedChoise; observed_count=359"
+    },
+    "tiff:SamplesPerPixel": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=SAMPLES_PER_PIXEL; factory=internalInteger; observed_count=126"
+    },
+    "tiff:Software": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=SOFTWARE; factory=internalText; observed_count=317"
+    },
+    "tiff:XResolution": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=RESOLUTION_HORIZONTAL; factory=internalRational; observed_count=358"
+    },
+    "tiff:YResolution": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TIFF; constant=RESOLUTION_VERTICAL; factory=internalRational; observed_count=358"
+    },
+    "tika-eval:lang": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=LANGUAGE; factory=externalText"
+    },
+    "tika-eval:langConfidence": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=LANGUAGE_CONFIDENCE; factory=externalReal"
+    },
+    "tika-eval:languageness": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=LANGUAGENESS; factory=externalReal"
+    },
+    "tika-eval:numAlphaTokens": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=NUM_ALPHA_TOKENS; factory=externalInteger"
+    },
+    "tika-eval:numCommonTokens": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=NUM_COMMON_TOKENS; factory=externalInteger"
+    },
+    "tika-eval:numTokens": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=NUM_TOKENS; factory=externalInteger"
+    },
+    "tika-eval:numUniqueAlphaTokens": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=NUM_UNIQUE_ALPHA_TOKENS; factory=externalInteger"
+    },
+    "tika-eval:numUniqueTokens": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=NUM_UNIQUE_TOKENS; factory=externalInteger"
+    },
+    "tika-eval:oov": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.eval.core.metadata.TikaEvalMetadataFilter; constant=OUT_OF_VOCABULARY; factory=externalReal"
+    },
+    "tika:chunks": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaCoreProperties; constant=TIKA_CHUNKS; factory=String"
+    },
+    "tika:link": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.mime.MimeTypesReaderMetKeys; constant=TIKA_LINK_TAG; factory=String"
+    },
+    "tika:uti": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.mime.MimeTypesReaderMetKeys; constant=TIKA_UTI_TAG; factory=String"
+    },
+    "tika_pg:page_number": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaPagedText; constant=PAGE_NUMBER; factory=internalInteger; observed_count=1330"
+    },
+    "tika_pg:page_rotation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.TikaPagedText; constant=PAGE_ROTATION; factory=internalRational"
+    },
+    "tracks": {
+      "type": "string"
+    },
+    "tu-count": {
+      "type": "string"
+    },
+    "tuv-count": {
+      "type": "string"
+    },
+    "unicode_qr:glyph_count": {
+      "type": "string",
+      "description": "observed_count=11231"
+    },
+    "unicode_qr:warning": {
+      "type": "string"
+    },
+    "url:hot_key": {
+      "type": "string",
+      "description": "observed_count=9"
+    },
+    "url:icon_file": {
+      "type": "string",
+      "description": "observed_count=24"
+    },
+    "url:icon_index": {
+      "type": "string",
+      "description": "observed_count=24"
+    },
+    "url:idlist_hex_length": {
+      "type": "string"
+    },
+    "url:modified": {
+      "type": "string"
+    },
+    "url:show_command": {
+      "type": "string",
+      "description": "observed_count=8"
+    },
+    "url:source_encoding": {
+      "type": "string",
+      "description": "observed_count=53"
+    },
+    "url:url": {
+      "type": "string",
+      "description": "observed_count=53"
+    },
+    "url:url_wide": {
+      "type": "string"
+    },
+    "url:url_wide_raw": {
+      "type": "string"
+    },
+    "url:warning": {
+      "type": "string",
+      "description": "observed_count=2"
+    },
+    "url:working_directory": {
+      "type": "string"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentBodyHandler; constant=DRAW_NS; factory=String"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:meta:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Office; constant=NAMESPACE_URI_DOC_META; factory=String"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:office:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentBodyHandler; constant=OFFICE_NS; factory=String"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:presentation:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentBodyHandler; constant=PRESENTATION_NS; factory=String"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:style:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentBodyHandler; constant=STYLE_NS; factory=String"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentBodyHandler; constant=SVG_NS; factory=String"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:table:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentBodyHandler; constant=TABLE_NS; factory=String"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:text:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentBodyHandler; constant=TEXT_NS; factory=String"
+    },
+    "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.odf.OpenDocumentBodyHandler; constant=FORMATTING_OBJECTS_NS; factory=String"
+    },
+    "urn:schemas-microsoft-com:office:office": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.microsoft.ooxml.OOXMLWordAndPowerPointTextHandler; constant=O_NS; factory=String"
+    },
+    "urn:schemas-microsoft-com:office:spreadsheet": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.microsoft.xml.AbstractXML2003Parser; constant=MS_SPREADSHEET_URN; factory=String"
+    },
+    "urn:schemas-microsoft-com:vml": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.microsoft.ooxml.OOXMLWordAndPowerPointTextHandler; constant=V_NS; factory=String"
+    },
+    "vendor": {
+      "type": "string",
+      "description": "observed_count=3"
+    },
+    "version": {
+      "type": "string",
+      "description": "observed_count=10"
+    },
+    "vlm:completion_tokens": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.vlm.AbstractVLMParser; constant=VLM_COMPLETION_TOKENS; factory=externalInteger"
+    },
+    "vlm:model": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.vlm.AbstractVLMParser; constant=VLM_MODEL; factory=externalText"
+    },
+    "vlm:prompt_tokens": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.vlm.AbstractVLMParser; constant=VLM_PROMPT_TOKENS; factory=externalInteger"
+    },
+    "w:Comments": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.OfficeOpenXMLExtended; constant=COMMENTS; factory=externalTextBag; observed_count=143"
+    },
+    "warc:WARC-Record-ID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WARC; constant=WARC_RECORD_ID; factory=externalText"
+    },
+    "warc:http:status": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.warc.WARCParser; constant=WARC_HTTP_STATUS; factory=String"
+    },
+    "warc:http:status:reason": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.warc.WARCParser; constant=WARC_HTTP_STATUS_REASON; factory=String"
+    },
+    "warc:payload-content-type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WARC; constant=WARC_PAYLOAD_CONTENT_TYPE; factory=externalText"
+    },
+    "warc:record-content-type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WARC; constant=WARC_RECORD_CONTENT_TYPE; factory=externalText"
+    },
+    "warc:warning": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WARC; constant=WARC_WARNING; factory=externalTextBag"
+    },
+    "wim:descriptor_xml": {
+      "type": "string"
+    },
+    "wim:image_count": {
+      "type": "string"
+    },
+    "wordperfect:Build": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.QuattroPro; constant=BUILD; factory=internalInteger"
+    },
+    "wordperfect:Encrypted": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WordPerfect; constant=ENCRYPTED; factory=internalBoolean"
+    },
+    "wordperfect:FileId": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WordPerfect; constant=FILE_ID; factory=internalText"
+    },
+    "wordperfect:FileSize": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WordPerfect; constant=FILE_SIZE; factory=internalText"
+    },
+    "wordperfect:FileType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WordPerfect; constant=FILE_TYPE; factory=internalInteger"
+    },
+    "wordperfect:Id": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.QuattroPro; constant=ID; factory=internalText"
+    },
+    "wordperfect:LowestVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.QuattroPro; constant=LOWEST_VERSION; factory=internalInteger"
+    },
+    "wordperfect:MajorVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WordPerfect; constant=MAJOR_VERSION; factory=internalInteger"
+    },
+    "wordperfect:MinorVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WordPerfect; constant=MINOR_VERSION; factory=internalInteger"
+    },
+    "wordperfect:ProductType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.WordPerfect; constant=PRODUCT_TYPE; factory=internalInteger"
+    },
+    "wordperfect:Version": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.QuattroPro; constant=VERSION; factory=internalInteger"
+    },
+    "xmlprofiler:entity_local_names": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.xml.XMLProfiler; constant=ENTITY_LOCAL_NAMES; factory=internalTextBag"
+    },
+    "xmlprofiler:entity_uris": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.xml.XMLProfiler; constant=ENTITY_URIS; factory=internalTextBag"
+    },
+    "xmlprofiler:root_entity": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.parser.xml.XMLProfiler; constant=ROOT_ENTITY; factory=internalText"
+    },
+    "xmp:About": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=ABOUT; factory=externalTextBag; observed_count=10"
+    },
+    "xmp:Advisory": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=ADVISORY; factory=externalTextBag"
+    },
+    "xmp:CreateDate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=CREATE_DATE; factory=externalDate; observed_count=114"
+    },
+    "xmp:CreatorTool": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=CREATOR_TOOL; factory=externalText; observed_count=268"
+    },
+    "xmp:Identifier": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=IDENTIFIER; factory=externalTextBag"
+    },
+    "xmp:Label": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=LABEL; factory=externalText; observed_count=1"
+    },
+    "xmp:MetadataDate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=METADATA_DATE; factory=externalDate; observed_count=64"
+    },
+    "xmp:ModifyDate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=MODIFY_DATE; factory=externalDate; observed_count=112"
+    },
+    "xmp:NickName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=NICKNAME; factory=externalText"
+    },
+    "xmp:Rating": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=RATING; factory=externalInteger; observed_count=1"
+    },
+    "xmp:Title": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMP; constant=TITLE; factory=externalText"
+    },
+    "xmp:dc": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=PREFIX_DC; factory=String"
+    },
+    "xmp:dc:contributor": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=CONTRIBUTOR; factory=internalTextBag"
+    },
+    "xmp:dc:coverage": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=COVERAGE; factory=internalText"
+    },
+    "xmp:dc:creator": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=CREATOR; factory=internalTextBag; observed_count=53"
+    },
+    "xmp:dc:date": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=DATE; factory=internalDate"
+    },
+    "xmp:dc:description": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=DESCRIPTION; factory=internalText; observed_count=8"
+    },
+    "xmp:dc:format": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=FORMAT; factory=internalText"
+    },
+    "xmp:dc:identifier": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=IDENTIFIER; factory=internalText"
+    },
+    "xmp:dc:language": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=LANGUAGE; factory=internalText"
+    },
+    "xmp:dc:publisher": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=PUBLISHER; factory=internalText"
+    },
+    "xmp:dc:relation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=RELATION; factory=internalText"
+    },
+    "xmp:dc:rights": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=RIGHTS; factory=internalText"
+    },
+    "xmp:dc:source": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=SOURCE; factory=internalText"
+    },
+    "xmp:dc:subject": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=SUBJECT; factory=internalTextBag; observed_count=9"
+    },
+    "xmp:dc:title": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=TITLE; factory=internalText; observed_count=39"
+    },
+    "xmp:dc:type": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=TYPE; factory=internalText"
+    },
+    "xmp:dcterms": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=PREFIX_DC_TERMS; factory=String"
+    },
+    "xmp:dcterms:created": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=CREATED; factory=internalDate"
+    },
+    "xmp:dcterms:modified": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDC; constant=MODIFIED; factory=internalDate"
+    },
+    "xmp:pdf:About": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPPDF; constant=ABOUT; factory=externalTextBag"
+    },
+    "xmp:pdf:Keywords": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPPDF; constant=KEY_WORDS; factory=externalTextBag; observed_count=6"
+    },
+    "xmp:pdf:PDFVersion": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPPDF; constant=PDF_VERSION; factory=externalText; observed_count=1"
+    },
+    "xmp:pdf:Producer": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPPDF; constant=PRODUCER; factory=externalText; observed_count=111"
+    },
+    "xmpDM:absPeakAudioFilePath": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=ABS_PEAK_AUDIO_FILE_PATH; factory=internalURI"
+    },
+    "xmpDM:album": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=ALBUM; factory=externalText; observed_count=1"
+    },
+    "xmpDM:albumArtist": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=ALBUM_ARTIST; factory=externalText"
+    },
+    "xmpDM:altTapeName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=ALT_TAPE_NAME; factory=externalText"
+    },
+    "xmpDM:artist": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=ARTIST; factory=externalText; observed_count=3"
+    },
+    "xmpDM:audioChannelType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=AUDIO_CHANNEL_TYPE; factory=internalClosedChoise; observed_count=11"
+    },
+    "xmpDM:audioCompressor": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=AUDIO_COMPRESSOR; factory=internalText; observed_count=10"
+    },
+    "xmpDM:audioModDate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=AUDIO_MOD_DATE; factory=internalDate"
+    },
+    "xmpDM:audioSampleRate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=AUDIO_SAMPLE_RATE; factory=internalInteger; observed_count=22"
+    },
+    "xmpDM:audioSampleType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=AUDIO_SAMPLE_TYPE; factory=internalClosedChoise; observed_count=11"
+    },
+    "xmpDM:compilation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=COMPILATION; factory=externalInteger"
+    },
+    "xmpDM:composer": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=COMPOSER; factory=externalText"
+    },
+    "xmpDM:copyright": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=COPYRIGHT; factory=externalText"
+    },
+    "xmpDM:discNumber": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=DISC_NUMBER; factory=externalInteger"
+    },
+    "xmpDM:duration": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=DURATION; factory=externalReal; observed_count=11"
+    },
+    "xmpDM:engineer": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=ENGINEER; factory=externalText"
+    },
+    "xmpDM:fileDataRate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=FILE_DATA_RATE; factory=internalRational"
+    },
+    "xmpDM:genre": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=GENRE; factory=externalText; observed_count=1"
+    },
+    "xmpDM:instrument": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=INSTRUMENT; factory=externalText"
+    },
+    "xmpDM:key": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=KEY; factory=internalClosedChoise"
+    },
+    "xmpDM:logComment": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=LOG_COMMENT; factory=externalText; observed_count=1"
+    },
+    "xmpDM:loop": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=LOOP; factory=internalBoolean"
+    },
+    "xmpDM:metadataModDate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=METADATA_MOD_DATE; factory=internalDate"
+    },
+    "xmpDM:numberOfBeats": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=NUMBER_OF_BEATS; factory=internalReal"
+    },
+    "xmpDM:pullDown": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=PULL_DOWN; factory=internalClosedChoise"
+    },
+    "xmpDM:relativePeakAudioFilePath": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=RELATIVE_PEAK_AUDIO_FILE_PATH; factory=internalURI"
+    },
+    "xmpDM:releaseDate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=RELEASE_DATE; factory=externalDate; observed_count=1"
+    },
+    "xmpDM:scaleType": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=SCALE_TYPE; factory=internalClosedChoise"
+    },
+    "xmpDM:scene": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=SCENE; factory=externalText"
+    },
+    "xmpDM:shotDate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=SHOT_DATE; factory=externalDate"
+    },
+    "xmpDM:shotLocation": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=SHOT_LOCATION; factory=externalText"
+    },
+    "xmpDM:shotName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=SHOT_NAME; factory=externalText"
+    },
+    "xmpDM:speakerPlacement": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=SPEAKER_PLACEMENT; factory=externalText"
+    },
+    "xmpDM:stretchMode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=STRETCH_MODE; factory=internalClosedChoise"
+    },
+    "xmpDM:tapeName": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=TAPE_NAME; factory=externalText"
+    },
+    "xmpDM:tempo": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=TEMPO; factory=internalReal"
+    },
+    "xmpDM:timeSignature": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=TIME_SIGNATURE; factory=internalClosedChoise"
+    },
+    "xmpDM:trackNumber": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=TRACK_NUMBER; factory=externalInteger"
+    },
+    "xmpDM:videoAlphaMode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_ALPHA_MODE; factory=externalClosedChoise"
+    },
+    "xmpDM:videoAlphaUnityIsTransparent": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_ALPHA_UNITY_IS_TRANSPARENT; factory=internalBoolean"
+    },
+    "xmpDM:videoColorSpace": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_COLOR_SPACE; factory=internalClosedChoise"
+    },
+    "xmpDM:videoCompressor": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_COMPRESSOR; factory=internalText"
+    },
+    "xmpDM:videoFieldOrder": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_FIELD_ORDER; factory=internalClosedChoise"
+    },
+    "xmpDM:videoFrameRate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_FRAME_RATE; factory=internalOpenChoise"
+    },
+    "xmpDM:videoModDate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_MOD_DATE; factory=internalDate"
+    },
+    "xmpDM:videoPixelAspectRatio": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_PIXEL_ASPECT_RATIO; factory=internalRational"
+    },
+    "xmpDM:videoPixelDepth": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPDM; constant=VIDEO_PIXEL_DEPTH; factory=internalClosedChoise"
+    },
+    "xmpMM:DerivedFrom:DocumentID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=DERIVED_FROM_DOCUMENTID; factory=externalText; observed_count=17"
+    },
+    "xmpMM:DerivedFrom:InstanceID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=DERIVED_FROM_INSTANCEID; factory=externalText; observed_count=17"
+    },
+    "xmpMM:DocumentID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=DOCUMENTID; factory=externalText; observed_count=186"
+    },
+    "xmpMM:History:Action": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=HISTORY_ACTION; factory=externalTextBag; observed_count=12"
+    },
+    "xmpMM:History:InstanceID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=HISTORY_EVENT_INSTANCEID; factory=externalTextBag; observed_count=12"
+    },
+    "xmpMM:History:SoftwareAgent": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=HISTORY_SOFTWARE_AGENT; factory=externalTextBag; observed_count=12"
+    },
+    "xmpMM:History:When": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=HISTORY_WHEN; factory=externalTextBag; observed_count=12"
+    },
+    "xmpMM:InstanceID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=INSTANCEID; factory=externalText; observed_count=143"
+    },
+    "xmpMM:OriginalDocumentID": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=ORIGINAL_DOCUMENTID; factory=externalText"
+    },
+    "xmpMM:RenditionClass": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=RENDITION_CLASS; factory=externalOpenChoise"
+    },
+    "xmpMM:RenditionParams": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPMM; constant=RENDITION_PARAMS; factory=externalText"
+    },
+    "xmpRights:Certificate": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPRights; constant=CERTIFICATE; factory=internalText"
+    },
+    "xmpRights:Marked": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPRights; constant=MARKED; factory=internalBoolean"
+    },
+    "xmpRights:Owner": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPRights; constant=OWNER; factory=internalTextBag"
+    },
+    "xmpRights:UsageTerms": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPRights; constant=USAGE_TERMS; factory=internalText"
+    },
+    "xmpRights:WebStatement": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPRights; constant=WEB_STATEMENT; factory=internalText"
+    },
+    "xmpTPg:NPages": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.PagedText; constant=N_PAGES; factory=internalInteger; observed_count=1538"
+    },
+    "xmpidq:Scheme": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.XMPIdq; constant=SCHEME; factory=externalText"
+    },
+    "zip:centralDirectoryOnlyEntries": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=CENTRAL_DIRECTORY_ONLY_ENTRIES; factory=internalTextBag; observed_count=25"
+    },
+    "zip:comment": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=COMMENT; factory=externalText"
+    },
+    "zip:compressedSize": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=COMPRESSED_SIZE; factory=externalText"
+    },
+    "zip:compressionMethod": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=COMPRESSION_METHOD; factory=externalInteger"
+    },
+    "zip:crc32": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=CRC32; factory=externalText"
+    },
+    "zip:detectorDataDescriptorRequired": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=DETECTOR_DATA_DESCRIPTOR_REQUIRED; factory=internalBoolean"
+    },
+    "zip:detectorZipFileOpened": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=DETECTOR_ZIPFILE_OPENED; factory=internalBoolean; observed_count=2672"
+    },
+    "zip:duplicateEntryNames": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=DUPLICATE_ENTRY_NAMES; factory=internalTextBag; observed_count=22"
+    },
+    "zip:encrypted": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=ENCRYPTED; factory=externalBoolean"
+    },
+    "zip:integrityCheckResult": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=INTEGRITY_CHECK_RESULT; factory=internalText; observed_count=694"
+    },
+    "zip:localHeaderOnlyEntries": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=LOCAL_HEADER_ONLY_ENTRIES; factory=internalTextBag; observed_count=20"
+    },
+    "zip:platform": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=PLATFORM; factory=externalInteger"
+    },
+    "zip:salvaged": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=SALVAGED; factory=internalBoolean; observed_count=17"
+    },
+    "zip:uncompressedSize": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=UNCOMPRESSED_SIZE; factory=externalText"
+    },
+    "zip:unixMode": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=UNIX_MODE; factory=externalInteger"
+    },
+    "zip:versionMadeBy": {
+      "type": "string",
+      "description": "declared_in=org.apache.tika.metadata.Zip; constant=VERSION_MADE_BY; factory=externalInteger"
+    }
+  },
+  "patternProperties": {
+    "^.+:decode_count$": {
+      "type": "string",
+      "description": "templated field matching *:decode_count"
+    },
+    "^.+:maxcols$": {
+      "type": "string",
+      "description": "templated field matching *:maxcols"
+    },
+    "^.+:rows$": {
+      "type": "string",
+      "description": "templated field matching *:rows"
+    },
+    "^.+:x\\-default$": {
+      "type": "string",
+      "description": "templated field matching *:x-default"
+    },
+    "^ICC:.+$": {
+      "type": "string",
+      "description": "templated field matching ICC:*"
+    },
+    "^MboxParser\\-.+$": {
+      "type": "string",
+      "description": "templated field matching MboxParser-*"
+    },
+    "^Message:.+$": {
+      "type": "string",
+      "description": "templated field matching Message:*"
+    },
+    "^custom:.+$": {
+      "type": "string",
+      "description": "templated field matching custom:*"
+    },
+    "^html:.+$": {
+      "type": "string",
+      "description": "templated field matching html:*"
+    },
+    "^img:.+$": {
+      "type": "string",
+      "description": "templated field matching img:*"
+    },
+    "^lnk:.+$": {
+      "type": "string",
+      "description": "templated field matching lnk:*"
+    },
+    "^mapi:.+$": {
+      "type": "string",
+      "description": "templated field matching mapi:*"
+    },
+    "^pdf:.+$": {
+      "type": "string",
+      "description": "templated field matching pdf:*"
+    },
+    "^rdp:.+$": {
+      "type": "string",
+      "description": "templated field matching rdp:*"
+    },
+    "^rtf_pict:.+$": {
+      "type": "string",
+      "description": "templated field matching rtf_pict:*"
+    }
+  },
+  "$id": "https://redtusk.local/schemas/metadata.json",
+  "x-generated-at": "2026-05-25T12:48:20.375567+00:00",
+  "x-registry-summary": {
+    "total_fields": 4586,
+    "declared_and_observed": 276,
+    "declared_only": 400,
+    "undeclared_literal_observed": 79,
+    "templated_observed": 3622,
+    "observed_only_unknown_source": 0
+  },
+  "x-counts": {
+    "properties": 964,
+    "pattern_properties": 15
+  }
+}

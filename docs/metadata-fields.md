@@ -1,10 +1,10 @@
 # RedTusk Metadata Field Registry
 
-Combined static + runtime inventory. Generated 2026-05-25T07:31:00.785503+00:00.
+Combined static + runtime inventory. Generated 2026-05-25T12:48:20.275196+00:00.
 
-- **4674** total fields seen across sources
+- **4586** total fields seen across sources
 - **276** declared + observed (the healthy core)
-- **488** declared but not observed (rare formats / unwalked code paths)
+- **400** declared but not observed (rare formats / unwalked code paths)
 - **79** observed undeclared string literals (migration targets)
 - **0** observed but no source trace (investigation queue)
 
@@ -12,10 +12,6 @@ Combined static + runtime inventory. Generated 2026-05-25T07:31:00.785503+00:00.
 
 | Field | Status | Type | Declared in | Observed in (top 3 MIMEs) |
 |---|---|---|---|---|
-| `(?i:.*APPLICABLE\sDOCUMENTS|REFERENCE|STANDARD|REQUIREMENT|GUIDELINE|COMPLIANCE.*)` | declared,not-observed | `String` | `StandardsText` | _-_ |
-| `([A-Za-z][A-Za-z0-9+.-]{1,120}:[A-Za-z0-9/](([A-Za-z0-9$_.+!*,;/?:@&~=-])|%[A-Fa-f0-9]{2}){1,333}(#([a-zA-Z0-9][a-zA-Z0-9$_.+!*,;/?:@&~=%-]{0,1000}))?)` | declared,not-observed | `String` | `RegexUtils` | _-_ |
-| `([^\c\(\)<>@,;:\\"/\[\]\?=\s]+)` | declared,not-observed | `String` | `MediaType` | _-_ |
-| `(\s(?i:Publication|Standard))` | declared,not-observed | `String` | `StandardsText` | _-_ |
 | `Abstract` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `AccessContraints ` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `Address` | undeclared-literal,not-observed | `-` | `-` | _-_ |
@@ -2444,7 +2440,6 @@ Combined static + runtime inventory. Generated 2026-05-25T07:31:00.785503+00:00.
 | `X-Tika-Handler` | declared,not-observed | `String` | `TikaResource` | _-_ |
 | `X-Tika-OCR-Duration-Ms` | undeclared-literal,observed | `-` | `-` | `image/bmp`, `image/gif`, `image/jpeg` |
 | `X-Tika-OCR-Skipped-Reason` | undeclared-literal,observed | `-` | `-` | `image/bmp`, `image/gif`, `image/jpeg` |
-| `\(?(?<mainOrganization>[A-Z]\w{1,64}+)\)?((\s?(?<separator>\/)\s?)(\w{1,64}+\s)*\(?(?<secondOrganization>[A-Z]\w{1,64}+)\)?)?(\s(?i:Publication|Standard))?(-|\s)?(?<identifier>([0-9]{3,64}+|([A-Z]{1,64}+(-|_|\.)?[0-9]{2,64}+))((-|_|\.)?[A-Z0-9]{1,64}+){0,64}+)` | declared,not-observed | `String` | `StandardsText` | _-_ |
 | `access_permission:assemble_document` | declared,observed | `externalText` | `AccessPermissions` | `application/illustrator`, `application/pdf` |
 | `access_permission:can_modify` | declared,observed | `externalTextBag` | `AccessPermissions` | `application/illustrator`, `application/pdf` |
 | `access_permission:can_print` | declared,observed | `externalText` | `AccessPermissions` | `application/illustrator`, `application/pdf` |
@@ -3192,89 +3187,6 @@ Combined static + runtime inventory. Generated 2026-05-25T07:31:00.785503+00:00.
 | `http-header:content-encoding` | declared,not-observed | `externalText` | `AtlassianJwtFetcher` | _-_ |
 | `http-header:content-type` | declared,not-observed | `externalText` | `AtlassianJwtFetcher` | _-_ |
 | `http-header:status-code` | declared,not-observed | `externalInteger` | `AtlassianJwtFetcher` | _-_ |
-| `http://apache.org/xml/properties/security-manager` | declared,not-observed | `String` | `XMLReaderUtils` | _-_ |
-| `http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/` | declared,not-observed | `String` | `IPTC` | _-_ |
-| `http://iptc.org/std/Iptc4xmpExt/2008-02-29/` | declared,not-observed | `String` | `IPTC` | _-_ |
-| `http://localhost:6060` | declared,not-observed | `String` | `RTGTranslator` | _-_ |
-| `http://localhost:8000` | declared,not-observed | `String` | `TextLangDetector` | _-_ |
-| `http://localhost:8060` | declared,not-observed | `String` | `GrobidNERecogniser` | _-_ |
-| `http://localhost:8070` | declared,not-observed | `String` | `GrobidRESTParser` | _-_ |
-| `http://localhost:8881` | declared,not-observed | `String` | `NLTKNERecogniser` | _-_ |
-| `http://ns.adobe.com/illustrator/1.0/` | declared,not-observed | `String` | `XMPSchemaIllustrator` | _-_ |
-| `http://ns.adobe.com/pdfx/1.3/` | declared,not-observed | `String` | `XMPSchemaPDFX` | _-_ |
-| `http://ns.adobe.com/photoshop/1.0/` | declared,not-observed | `String` | `Photoshop` | _-_ |
-| `http://ns.adobe.com/xap/1.0/` | declared,not-observed | `String` | `XMP` | _-_ |
-| `http://ns.adobe.com/xap/1.0/mm/` | declared,not-observed | `String` | `XMPMM` | _-_ |
-| `http://ns.adobe.com/xap/1.0/rights/` | declared,not-observed | `String` | `XMPRights` | _-_ |
-| `http://ns.adobe.com/xmp/identifier/qual/1.0/` | declared,not-observed | `String` | `XMPIdq` | _-_ |
-| `http://ns.useplus.org/ldf/xmp/1.0/` | declared,not-observed | `String` | `IPTC` | _-_ |
-| `http://openoffice.org/2000/` | declared,not-observed | `String` | `NSNormalizerContentHandler` | _-_ |
-| `http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument` | declared,not-observed | `String` | `OOXMLExtractorFactory` | _-_ |
-| `http://purl.org/dc/elements/1.1` | declared,not-observed | `String` | `CorePropertiesHandler` | _-_ |
-| `http://purl.org/dc/elements/1.1/` | declared,not-observed | `String` | `DublinCore` | _-_ |
-| `http://purl.org/dc/terms` | declared,not-observed | `String` | `CorePropertiesHandler` | _-_ |
-| `http://purl.org/dc/terms/` | declared,not-observed | `String` | `DublinCore` | _-_ |
-| `http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel` | declared,not-observed | `String` | `OPCPackageDetector` | _-_ |
-| `http://schemas.microsoft.com/office/2006/xmlPackage` | declared,not-observed | `String` | `Word2006MLDocHandler` | _-_ |
-| `http://schemas.microsoft.com/office/2007/relationships/media` | declared,not-observed | `String` | `AbstractOOXMLExtractor` | _-_ |
-| `http://schemas.microsoft.com/office/2017/10/relationships/person` | declared,not-observed | `String` | `OPCPackageWrapper` | _-_ |
-| `http://schemas.microsoft.com/office/2017/10/relationships/threadedComment` | declared,not-observed | `String` | `OPCPackageWrapper` | _-_ |
-| `http://schemas.microsoft.com/office/visio/2012/main` | declared,not-observed | `String` | `VSDXExtractorDecorator` | _-_ |
-| `http://schemas.microsoft.com/office/word/2003/wordml` | declared,not-observed | `String` | `AbstractXML2003Parser` | _-_ |
-| `http://schemas.microsoft.com/visio/2010/relationships/document` | declared,not-observed | `String` | `VSDXExtractorDecorator` | _-_ |
-| `http://schemas.microsoft.com/visio/2010/relationships/page` | declared,not-observed | `String` | `VSDXExtractorDecorator` | _-_ |
-| `http://schemas.microsoft.com/visio/2010/relationships/pages` | declared,not-observed | `String` | `VSDXExtractorDecorator` | _-_ |
-| `http://schemas.microsoft.com/xps/2005/06/fixedrepresentation` | declared,not-observed | `String` | `OPCPackageDetector` | _-_ |
-| `http://schemas.openxmlformats.org/drawingml/2006/chart` | declared,not-observed | `String` | `OOXMLWordAndPowerPointTextHandler` | _-_ |
-| `http://schemas.openxmlformats.org/drawingml/2006/main` | declared,not-observed | `String` | `OOXMLWordAndPowerPointTextHandler` | _-_ |
-| `http://schemas.openxmlformats.org/drawingml/2006/picture` | declared,not-observed | `String` | `OOXMLWordAndPowerPointTextHandler` | _-_ |
-| `http://schemas.openxmlformats.org/markup-compatibility/2006` | declared,not-observed | `String` | `OOXMLWordAndPowerPointTextHandler` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes` | declared,not-observed | `String` | `SAXBasedMetadataExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/extended-properties` | declared,not-observed | `String` | `ExtendedPropertiesHandler` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/extended-properties/` | declared,not-observed | `String` | `OfficeOpenXMLExtended` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships` | declared,not-observed | `String` | `OOXMLWordAndPowerPointTextHandler` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk` | declared,not-observed | `String` | `AbstractOOXMLExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate` | declared,not-observed | `String` | `SXWPFWordExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/audio` | declared,not-observed | `String` | `AbstractOOXMLExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart` | declared,not-observed | `String` | `XSSFExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments` | declared,not-observed | `String` | `XSSFBExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/connections` | declared,not-observed | `String` | `XSSFExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties` | declared,not-observed | `String` | `SAXBasedMetadataExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData` | declared,not-observed | `String` | `AbstractOOXMLExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing` | declared,not-observed | `String` | `XSSFExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties` | declared,not-observed | `String` | `SAXBasedMetadataExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink` | declared,not-observed | `String` | `XSSFExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/handoutMaster` | declared,not-observed | `String` | `SXSLFPowerPointExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink` | declared,not-observed | `String` | `XSSFExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument` | declared,not-observed | `String` | `OOXMLExtractorFactory` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject` | declared,not-observed | `String` | `AbstractOOXMLExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/package` | declared,not-observed | `String` | `AbstractOOXMLExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition` | declared,not-observed | `String` | `XSSFExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/queryTable` | declared,not-observed | `String` | `XSSFExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings` | declared,not-observed | `String` | `SXWPFWordExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/subDocument` | declared,not-observed | `String` | `SXWPFWordExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/video` | declared,not-observed | `String` | `AbstractOOXMLExtractor` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing` | declared,not-observed | `String` | `XSSFExcelExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/officeDocument/2006/relationships/webSettings` | declared,not-observed | `String` | `SXWPFWordExtractorDecorator` | _-_ |
-| `http://schemas.openxmlformats.org/package/2006/metadata/core-properties` | declared,not-observed | `String` | `CorePropertiesHandler` | _-_ |
-| `http://schemas.openxmlformats.org/package/2006/metadata/core-properties/` | declared,not-observed | `String` | `OfficeOpenXMLCore` | _-_ |
-| `http://schemas.openxmlformats.org/package/2006/relationships` | declared,not-observed | `String` | `RelationshipsHandler` | _-_ |
-| `http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin` | declared,not-observed | `String` | `OOXMLParser` | _-_ |
-| `http://schemas.openxmlformats.org/spreadsheetml/2006/main` | declared,not-observed | `String` | `TikaSheetXMLHandler` | _-_ |
-| `http://schemas.openxmlformats.org/wordprocessingml/2006/main` | declared,not-observed | `String` | `OfficeOpenXMLExtended` | _-_ |
-| `http://schemas.openxps.org/oxps/v1.0/fixedrepresentation` | declared,not-observed | `String` | `OPCPackageDetector` | _-_ |
-| `http://www.aiim.org/pdfua/ns/id/` | declared,not-observed | `String` | `XMPSchemaPDFUA` | _-_ |
-| `http://www.npes.org/pdfvt/ns/id/` | declared,not-observed | `String` | `XMPSchemaPDFVT` | _-_ |
-| `http://www.npes.org/pdfx/ns/id/` | declared,not-observed | `String` | `XMPSchemaPDFXId` | _-_ |
-| `http://www.w3.org/1999/02/22-rdf-syntax-ns#` | declared,not-observed | `String` | `XMPContentHandler` | _-_ |
-| `http://www.w3.org/1999/xhtml` | declared,not-observed | `String` | `XHTMLContentHandler` | _-_ |
-| `http://www.w3.org/1999/xlink` | declared,not-observed | `String` | `OpenDocumentBodyHandler` | _-_ |
-| `http://www.xfa.org/schema/xfa-data/1.0/` | declared,not-observed | `String` | `XFAExtractor` | _-_ |
-| `https://api.lingo24.com/mt/v1/` | declared,not-observed | `String` | `Lingo24LangDetector` | _-_ |
-| `https://api.lingo24.com/mt/v1/translate` | declared,not-observed | `String` | `Lingo24Translator` | _-_ |
-| `https://translate.yandex.net/api/v1.5/tr.json/translate` | declared,not-observed | `String` | `YandexTranslator` | _-_ |
-| `https://wiki.apache.org/tika/TikaJAXRS` | declared,not-observed | `String` | `TikaWelcome` | _-_ |
-| `https://www.googleapis.com/language/translate/v2` | declared,not-observed | `String` | `GoogleTranslator` | _-_ |
 | `ical:alarm_action` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
 | `ical:alarm_attach` | undeclared-literal,not-observed | `-` | `-` | _-_ |
 | `ical:alarm_description` | undeclared-literal,observed | `-` | `-` | `text/calendar` |
