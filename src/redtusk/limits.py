@@ -73,8 +73,15 @@ class Limits:
 
     # Deployment profile
     profile: str = "default"
-    # Worker container runtime override. Empty = auto-detect (prefer runsc if available).
-    # Set to "runc" on hosts where runsc/gVisor's 9p filesystem blocks FIFO IPC.
+    # Worker container runtime override. Empty = auto-detect (prefer runsc).
+    # Recognized values: "" (auto), "runc", "runsc", "kata".
+    #   runc  - Linux namespaces + seccomp + cap-drop; shared host kernel.
+    #   runsc - gVisor userspace kernel; default when available; required when
+    #           Docker's 9p propagation isn't an issue for the slot's FIFO IPC.
+    #   kata  - Kata Containers microVM (Firecracker/QEMU under KVM);
+    #           hardware-enforced boundary. Requires /dev/kvm — works on
+    #           bare-metal hosts and on AWS C8i/M8i/R8i with the
+    #           NestedVirtualization=true API parameter. Strongest sandbox.
     worker_runtime: str = ""
     # Optional runc-only host profiles. Leave empty for portability; runsc/gVisor
     # uses its own sandbox and should not be combined with these Docker options.

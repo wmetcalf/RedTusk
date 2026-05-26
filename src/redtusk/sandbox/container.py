@@ -5,7 +5,18 @@ from pathlib import Path
 
 from redtusk.limits import _VALID_PROFILES, Limits
 
-_VALID_RUNTIMES = {"runsc", "runc"}
+# Recognized OCI runtime names. The dispatcher delegates to the Docker daemon
+# which must have the runtime registered (visible in `docker info | grep Runtimes`).
+#   runc   — Linux namespaces + seccomp + cap-drop. Shared host kernel.
+#   runsc  — gVisor: userspace kernel intercepts syscalls. Stronger than runc;
+#            weaker than microVM. Default when available.
+#   kata   — Kata Containers: each container gets its own microVM (Firecracker
+#            or QEMU), hardware-enforced boundary via KVM. Requires KVM access
+#            (bare metal, or AWS C8i/M8i/R8i with NestedVirtualization=true,
+#            or any Linux host with /dev/kvm). Strongest of the three; opt-in
+#            via REDTUSK_WORKER_RUNTIME=kata (auto-detect prefers runsc to
+#            keep behavior unchanged for existing deployments).
+_VALID_RUNTIMES = {"runsc", "runc", "kata"}
 
 
 def build_run_argv(
@@ -76,8 +87,12 @@ def build_run_argv(
         "--mount", f"type=bind,source={scratch_dir}/out,target=/out",
     ]
 
-    if runtime == "runsc":
-        argv += ["--runtime", "runsc"]
+    # runc is Docker's default; passing --runtime=runc is a no-op but harmless.
+    # For runsc and kata, the runtime must be registered with the Docker daemon
+    # and the host must satisfy its requirements (gVisor binaries for runsc;
+    # /dev/kvm + kata-containers packages for kata).
+    if runtime in ("runsc", "kata"):
+        argv += ["--runtime", runtime]
 
     argv += [
         "--user", "10001:10001",
