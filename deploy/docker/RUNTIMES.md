@@ -67,6 +67,45 @@ For local dev → AWS parity: same Dockerfile, same `--runtime` setting,
 just different host. The worker image (`redtusk-worker:default`) is
 runtime-agnostic — it works under all three.
 
+## Empirical notes from production testing
+
+Tested on toolz2 (Ubuntu 24.04, Intel Xeon, KVM available) with Kata
+Containers 3.31.0 + the redtusk-worker:default image and a 200-file
+.lnk benchmark vs the gVisor baseline:
+
+| metric                 | gVisor (default)   | Kata + QEMU + virtio-fs |
+|------------------------|--------------------|-------------------------|
+| parse_ms p50           | 2.11s              | 1.67s  (-21%)           |
+| processing_ms p50      | 4.76s              | 3.79s  (-20%)           |
+| spawn_duration mean    | ~15s               | **64.75s**              |
+| pool_wait_ms p50       | 0.05s              | **48.02s**              |
+| throughput (batch)     | ~30 jobs/min       | ~24 jobs/min            |
+
+**Per-job parse work is genuinely faster under Kata** (likely because
+the JVM runs against a real Linux kernel instead of gVisor's userspace
+emulation). **But spawn cost dominates under load** — 16 concurrent
+QEMU boots serialize on the Docker daemon and KVM resource setup, and
+each fresh VM kernel-init costs several seconds.
+
+VM templating (Kata's [factory] section) would normally fix this, but
+it is **incompatible with virtio-fs / file-backed memory** by design
+(memory cloning vs host fd-sharing conflict). To use templating you'd
+have to redesign worker IPC to use vsock + a block-device rootfs
+instead of bind mounts — a significant change to the dispatcher and
+worker contract.
+
+Firecracker (`configuration-fc.toml`) doesn't ship with virtio-fs in
+this Kata build either, so it needs a containerd snapshotter swap
+(devmapper or nydus) before it can run a container with bind mounts.
+Also significant infra work.
+
+**Net recommendation**: stay on `runsc` for production today. Use
+`kata` only if you want the stronger sandbox AND can tolerate the
+~20% throughput hit. The microVM-isolation upgrade is most worthwhile
+when paired with a future IPC redesign (vsock + block-device rootfs);
+at that point templating or Firecracker become viable and Kata can
+beat gVisor on throughput AND security simultaneously.
+
 ## Verifying which runtime processed a job
 
 Each job result includes a sandbox subsection:
