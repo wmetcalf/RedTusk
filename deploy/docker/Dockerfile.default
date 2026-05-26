@@ -129,20 +129,38 @@ COPY --from=build /build/worker_jvm/native/libksm_helper.so    /app/libksm_helpe
 COPY --from=build /build/worker_jvm/native/libcap_dropper.so   /app/libcap_dropper.so
 COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
 
-# AppCDS is intentionally NOT used in this image — JDK 25 will not load an
-# archive that was dumped without the same --enable-native-access value as
-# runtime, and Tika/POI/our native libs need that flag at runtime. Setting
-# the flag at dump time does not produce a usable archive either: JDK 25
-# appears to omit the property from the archive metadata regardless, so
-# every runtime startup hits
-#   [error][cds] Mismatched values for property jdk.module.enable.native.access
-#   [error][cds] Disabling optimized module handling
-# and falls back to no-CDS under -Xshare:auto (or refuses to start under
-# -Xshare:on). Both runc and runsc reproduce this — it is not a gVisor
-# issue despite earlier comments to the contrary. Skipping the dump
-# entirely is honest: cold-start cost is paid every worker spawn, the
-# RmetaWriter sandbox.appcds field is reported as False, and the UI no
-# longer claims "AppCDS active" when it isn't.
+# Use JDK 25's AOT cache (the successor to AppCDS). Unlike classic CDS,
+# AOT cache correctly preserves --enable-native-access=ALL-UNNAMED in the
+# archive's module-property metadata — verified via -Xlog:aot:
+#   [info][aot] archived module property jdk.module.enable.native.access: ALL-UNNAMED
+#   [info][aot] optimized module handling: enabled
+#   [info][aot] full module graph: enabled
+# Whereas classic CDS records that property as (null) regardless of how it
+# was passed at dump time, causing a fatal runtime mismatch we have no way
+# to suppress.
+#
+# Two-phase build:
+#   1. RECORD: run the warmup corpus through the worker with -XX:AOTMode=record;
+#      JVM captures loaded classes + invocation profile into a config file.
+#   2. CREATE: use the config to build the final .aot cache file.
+# Runtime then loads the cache via -XX:AOTCache (no mode flag needed; defaults
+# to auto-detect). Same --enable-native-access flag MUST be on all three
+# invocations for the property recording to match at load time.
+RUN java \
+    --enable-native-access=ALL-UNNAMED \
+    -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
+    -Xmx800m -Djava.library.path=/app \
+    -jar /app/redtusk-worker.jar \
+    --appcds-warmup /app/corpus && \
+    java \
+    --enable-native-access=ALL-UNNAMED \
+    -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
+    -Xmx800m -Djava.library.path=/app \
+    -jar /app/redtusk-worker.jar && \
+    rm -f /app/redtusk.aotconf && \
+    test -f /app/redtusk.aot && \
+    echo "AOT cache created: $(du -sh /app/redtusk.aot | cut -f1)"
+
 RUN rm -rf /app/corpus
 
 # /scratch, /in, /out must exist in the image for Docker bind-mount overlays
@@ -153,11 +171,8 @@ USER 10001:10001
 
 ENV REDTUSK_LOG_LEVEL=INFO
 
-# -Xshare:off — explicitly disable CDS. See the comment on the removed dump
-# step above for why. Better to spend the cold-start cost openly than to
-# claim AppCDS is active when it isn't.
 ENTRYPOINT ["java", \
-    "-Xshare:off", \
+    "-XX:AOTCache=/app/redtusk.aot", \
     "-Xmx800m", \
     "-Djava.library.path=/app", \
     "--enable-native-access=ALL-UNNAMED", \

@@ -165,12 +165,11 @@ class DockerWorkerRuntime:
             "ocr_psm": limits.ocr_psm,
             "sandbox_profile": limits.profile,
             "sandbox_runtime": effective_runtime,
-            # AppCDS is currently disabled in Dockerfile.default (and the high-
-            # density variant inherits from it) — see the AppCDS comment in
-            # deploy/docker/Dockerfile.default for the JDK-25 + CDS root cause.
-            # When AppCDS is re-enabled, flip this back to True and the UI's
-            # "Sandbox: default / runsc + AppCDS" label becomes accurate again.
-            "appcds": False,
+            # The image uses JDK 25's AOT cache (the successor to AppCDS) —
+            # see deploy/docker/Dockerfile.default for the dump/runtime args.
+            # We report this as appcds=True for UI label compatibility; both
+            # mechanisms produce the same class-data pre-loading effect.
+            "appcds": True,
             "ksm": not limits.disable_ksm,
             "crac": limits.profile == "high-density",
             "redtusk_version": __version__,
