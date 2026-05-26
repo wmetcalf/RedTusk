@@ -12,7 +12,17 @@ from typing import Any
 
 from redtusk.errors import ConfigurationError
 
-_VALID_PROFILES = {"default", "high-density"}
+# Recognized deployment profiles.
+#   default      — bind-mount file IPC. Works under runc, runsc, kata-with-virtio-fs.
+#                  Per-job worker container shares state via /scratch, /in, /out.
+#   high-density — runc + CRaC checkpoint/restore. Same file IPC as default.
+#   microvm      — vsock IPC. Kata + Firecracker snapshots / VM templating
+#                  compatible. No bind mounts; worker gets job + input over
+#                  AF_VSOCK, streams metadata + artifacts back over the same
+#                  socket. Strongest sandbox + fastest spawn (when templating
+#                  is on); pre-requisite for the Phase 3 Kata config that
+#                  removes virtio-fs.
+_VALID_PROFILES = {"default", "high-density", "microvm"}
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off", ""}
 

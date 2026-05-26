@@ -117,13 +117,36 @@ def build_run_argv(
         "--cpus", str(limits.worker_cpus),
         "--tmpfs", "/tmp:rw,exec,nosuid,size=512m",
         "--tmpfs", "/var/lib/redtusk:rw,nosuid,size=64m,uid=10001,gid=10001",
-        # /scratch: rw bind mount for control.fifo + job.json (visible on host)
-        "--mount", f"type=bind,source={scratch_dir},target=/scratch",
-        # /in: readonly bind mount for input files (referenced by job.json input_path)
-        "--mount", f"type=bind,source={scratch_dir}/in,target=/in,readonly",
-        # /out: writable bind mount for worker output (metadata.json, per-entry text)
-        "--mount", f"type=bind,source={scratch_dir}/out,target=/out",
     ]
+
+    if profile == "microvm":
+        # Vsock IPC mode: no host bind-mounts. Job descriptor + input bytes
+        # flow over AF_VSOCK from the dispatcher's per-slot VsockSlotServer
+        # to the worker's VsockIpcChannel; metadata + artifacts stream back
+        # the same way. This is what unblocks Kata VM templating + Firecracker
+        # snapshots, which are incompatible with virtio-fs.
+        #
+        # Configuration is passed via env vars (REDTUSK_WORKER_IPC=vsock,
+        # REDTUSK_VSOCK_PORT=<slot's port>). The CMD just runs the worker
+        # JAR — no `--run /scratch` arg, since there's no scratch directory.
+        port_for_slot = _vsock_port_for_slot(container_name)
+        argv += [
+            "--env", "REDTUSK_WORKER_IPC=vsock",
+            "--env", f"REDTUSK_VSOCK_PORT={port_for_slot}",
+            "--env", f"REDTUSK_VSOCK_HOST_CID=2",
+        ]
+    else:
+        # File-IPC profiles (default, high-density): bind-mount the per-slot
+        # scratch dir so the worker's FileIpcChannel can read job.json and
+        # write metadata.json + artifacts.
+        argv += [
+            # /scratch: rw bind mount for control.fifo + job.json (visible on host)
+            "--mount", f"type=bind,source={scratch_dir},target=/scratch",
+            # /in: readonly bind mount for input files (referenced by job.json input_path)
+            "--mount", f"type=bind,source={scratch_dir}/in,target=/in,readonly",
+            # /out: writable bind mount for worker output (metadata.json, per-entry text)
+            "--mount", f"type=bind,source={scratch_dir}/out,target=/out",
+        ]
 
     # runc is Docker's default; passing --runtime=runc is a no-op but harmless.
     # For runsc and kata, the runtime must be registered with the Docker daemon
@@ -132,12 +155,33 @@ def build_run_argv(
     if runtime in ("runsc", "kata"):
         argv += ["--runtime", runtime]
 
-    argv += [
-        "--user", "10001:10001",
-        image,
-        # Override the image's default CMD; tells Main.java to use /scratch for
-        # control.fifo and job.json, with /in and /out for input/output.
-        "--run", "/scratch",
-    ]
+    argv += ["--user", "10001:10001", image]
+
+    if profile == "microvm":
+        # Microvm worker has no scratch dir; it gets the job over vsock.
+        # The image's ENTRYPOINT runs the worker JAR in "vsock-listening"
+        # mode (Main.java picks up REDTUSK_WORKER_IPC=vsock and routes
+        # all IPC through VsockIpcChannel). No CMD args needed — the
+        # worker doesn't take a scratch path.
+        pass
+    else:
+        # File-IPC profiles: override the image's default CMD with `--run
+        # /scratch`. Main.java parses this and runs the worker against
+        # the bind-mounted scratch dir.
+        argv += ["--run", "/scratch"]
 
     return argv
+
+
+def _vsock_port_for_slot(slot_name: str) -> int:
+    """Deterministic per-slot vsock port derivation.
+
+    Uses a low-collision hash on the slot UUID string clamped into the
+    user range [49152, 65535) so we don't collide with privileged ports
+    or common service ports. Per-slot ports keep concurrent workers
+    isolated even when the dispatcher binds AF_VSOCK with CID_ANY.
+    """
+    h = 0
+    for c in slot_name:
+        h = (h * 31 + ord(c)) & 0xFFFFFFFF
+    return 49152 + (h % (65535 - 49152))
