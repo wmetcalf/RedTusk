@@ -37,4 +37,22 @@ public record JobDescriptor(
         @JsonProperty("max_extracted_bytes")    long maxExtractedBytes,
         @JsonProperty("ocr_timeout_s")          int ocrTimeoutS
     ) {}
+
+    /**
+     * Return a copy of this descriptor with {@code inputPath} and
+     * {@code outputDir} replaced. Used by VsockIpcChannel after staging
+     * vsock-received input bytes to a worker-local tmpfs location: the
+     * dispatcher's notion of {@code input_path} is a host-side path that
+     * doesn't resolve inside the microVM, so we rewrite both fields to
+     * point at the local tmpfs staging before handing the descriptor
+     * back to Main.processJob.
+     */
+    public JobDescriptor withPaths(String newInputPath, String newOutputDir) {
+        return new JobDescriptor(
+            newInputPath, newOutputDir, sha256, filenameHint, limits,
+            enableQr, enableOcr, ocrLang, ocrPsm,
+            sandboxProfile, sandboxRuntime, appcds, ksm, crac,
+            redtuskVersion, zxingPath, tesseractPath,
+            ocrMaxImageDim, ocrSkipBlank, enableThumbnails);
+    }
 }

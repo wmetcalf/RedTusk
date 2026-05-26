@@ -7,6 +7,7 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -136,12 +137,11 @@ public final class Main {
         String signal = ipc.awaitGoSignal();
         LOG.info("Received signal: " + signal.trim());
 
-        File jobFile = new File(new File(scratchDir, FifoLoop.CONTROL_DIR), "job.json");
-        if (!jobFile.exists()) {
-            LOG.severe("job.json not found at: " + jobFile);
-            System.exit(2);
-        }
-        JobDescriptor job = OM.readValue(jobFile, JobDescriptor.class);
+        // Channel-driven job intake: FileIpcChannel reads scratchDir/control/job.json
+        // and returns the descriptor verbatim; VsockIpcChannel reads JOB+INPUT
+        // frames from the socket, stages the input bytes to /tmp/redtusk-in/,
+        // and returns a descriptor with locally-resolved input_path/output_dir.
+        JobDescriptor job = ipc.receiveJob();
 
         File inputFile = new File(job.inputPath());
         File outDir = new File(job.outputDir());
@@ -265,6 +265,40 @@ public final class Main {
 
         new RmetaWriter(job, result, durationMs).write(outDir);
         LOG.info("Wrote metadata.json (" + result.entries().size() + " entries, " + durationMs + " ms)");
+
+        // For file-based IPC the dispatcher reads outDir directly from the
+        // bind-mounted /out — these calls are no-ops. For vsock-based IPC
+        // we stream metadata.json + every output file back to the
+        // dispatcher; the channel implementation handles the framing.
+        java.nio.file.Path metadataFile = outDir.toPath().resolve("metadata.json");
+        if (java.nio.file.Files.exists(metadataFile)) {
+            ipc.sendResult(java.nio.file.Files.readAllBytes(metadataFile));
+        } else {
+            LOG.warning("metadata.json not produced; sending empty result frame");
+            ipc.sendResult(new byte[0]);
+        }
+
+        // Stream all auxiliary outputs (thumbnails, embedded files, per-entry
+        // text). Skip metadata.json itself (already sent). Skip draft snapshot
+        // tempfiles. Use the relative path from outDir as the artifact key
+        // so the dispatcher can recreate the directory layout on the host.
+        try (java.util.stream.Stream<java.nio.file.Path> walk =
+                java.nio.file.Files.walk(outDir.toPath())) {
+            walk.filter(java.nio.file.Files::isRegularFile)
+                .filter(p -> !p.equals(metadataFile))
+                .filter(p -> !p.getFileName().toString().startsWith(".metadata.json.draft"))
+                .forEach(p -> {
+                    try {
+                        String rel = outDir.toPath().relativize(p).toString();
+                        ipc.sendArtifact(rel, java.nio.file.Files.readAllBytes(p));
+                    } catch (IOException e) {
+                        LOG.warning("Failed to send artifact " + p + ": " + e.getMessage());
+                    }
+                });
+        }
+
+        ipc.signalDone();
+        ipc.close();
     }
 
     /**
