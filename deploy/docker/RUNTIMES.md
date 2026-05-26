@@ -67,6 +67,56 @@ For local dev → AWS parity: same Dockerfile, same `--runtime` setting,
 just different host. The worker image (`redtusk-worker:default`) is
 runtime-agnostic — it works under all three.
 
+## microvm profile — code-complete, infrastructure-blocked
+
+The dispatcher's `microvm` profile (commits `3d50bfb` → `5efb418`) replaces
+file-IPC over bind-mounted scratch with vsock IPC over AF_VSOCK. This is
+the prerequisite for Kata VM templating + Firecracker snapshots — both
+require the absence of virtio-fs and file-backed shared memory.
+
+**What's done end-to-end:**
+
+| Half | Implementation | Status |
+|---|---|---|
+| Java worker (VsockIpcChannel) | junixsocket AF_VSOCK client w/ retry, line-framed binary protocol | shipped + tested |
+| Python dispatcher (VsockSlotServer) | per-slot AF_VSOCK listener, JOB + INPUT + RESULT + ARTIFACT + DONE | shipped + tested |
+| Worker runtime integration | per-slot vsock listener bound on spawn; signal_job sends GO + JOB; receive_result drains before container exit | shipped |
+| container.py microvm profile | no bind mounts, REDTUSK_WORKER_IPC=vsock env vars, --runtime kata | shipped |
+| Cross-validated protocol | matching AF_UNIX tests on both Java and Python sides | shipped |
+
+**What blocks actual deployment:**
+
+Kata's `factory init` (the step that pre-boots a donor VM for templating)
+refuses to run when `shared_fs` is any of `virtio-fs`, `virtio-fs-nydus`,
+or `virtio-9p` — the templating mechanism is incompatible with all of
+them. Setting `shared_fs = "none"` lets factory init succeed but breaks
+container start: Kata has nowhere to source the container rootfs from.
+
+The only paths from here are:
+
+1. **nydus snapshotter** (`containerd-nydus-grpc`) — full plugin install
+   in containerd, image conversion pipeline (nydus format), containerd
+   config registering the snapshotter, Kata config pointing at it.
+   Multi-day infrastructure work.
+
+2. **devmapper snapshotter** — alternative block-device rootfs. Requires
+   a dedicated thin-pool LV or loopback file, containerd config changes,
+   image conversion. Similar scope to nydus.
+
+3. **Pure-initrd rootfs** — bake the redtusk-worker JAR + AOT cache +
+   native scanners directly into Kata's initrd. Loses container
+   semantics entirely (no `docker run image-tag` model); image is
+   baked at host-setup time.
+
+For all three, the IPC code we shipped is what runs on the JVM side
+once the rootfs delivery is in place. The host-side dispatcher is
+already calling `VsockSlotServer.send_job(descriptor, input_bytes)`
+for any slot whose profile is `microvm` — the existing default and
+high-density profiles are untouched.
+
+If/when one of those snapshotters lands, flipping `REDTUSK_PROFILE=microvm`
+plus `REDTUSK_WORKER_RUNTIME=kata` is the only deploy-side change needed.
+
 ## Empirical notes from production testing
 
 Tested on toolz2 (Ubuntu 24.04, Intel Xeon, KVM available) with Kata
