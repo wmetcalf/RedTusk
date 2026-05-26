@@ -151,17 +151,38 @@ COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
 # class-init time at runtime startup. Must be set on the CREATE step (so the
 # cache is built with linked classes) and is automatically honored at runtime
 # when loading a cache built that way.
+# Cold-start tuning bundle (applies to all three AOT invocations so the
+# cache stays consistent with runtime — JDK 25 rejects an AOT cache built
+# under different GC / verification settings than the load):
+#
+#   -XX:+UseSerialGC         G1 has notable startup cost; SerialGC wins
+#                            for our short-lived ~800m heap one-shot worker.
+#   -Xverify:none            Skip per-class bytecode verification at load.
+#                            Safe — our classpath is trusted (local JAR +
+#                            AOT cache built from same JAR). Saves 100-500ms.
+#   -XX:TieredStopAtLevel=1  Stop JIT at C1 (interpreter + simple compiler).
+#                            C2 needs sustained warmup we never get with
+#                            ~4s parse jobs, so C2 cost is wasted. Worth
+#                            ~200-500ms startup; small steady-state cost.
+#   -Xms800m -Xmx800m + AlwaysPreTouch
+#                            Pre-allocate the heap upfront; avoids heap-grow
+#                            pauses mid-parse. AlwaysPreTouch pages the heap
+#                            in at startup so first allocation is fast.
 RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
-    -Xmx800m -Djava.library.path=/app \
+    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
+    -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \
     --appcds-warmup /app/corpus && \
     java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
-    -Xmx800m -Djava.library.path=/app \
+    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
+    -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar && \
     rm -f /app/redtusk.aotconf && \
     test -f /app/redtusk.aot && \
@@ -179,7 +200,12 @@ ENV REDTUSK_LOG_LEVEL=INFO
 
 ENTRYPOINT ["java", \
     "-XX:AOTCache=/app/redtusk.aot", \
+    "-XX:+UseSerialGC", \
+    "-Xverify:none", \
+    "-XX:TieredStopAtLevel=1", \
+    "-Xms800m", \
     "-Xmx800m", \
+    "-XX:+AlwaysPreTouch", \
     "-Djava.library.path=/app", \
     "--enable-native-access=ALL-UNNAMED", \
     "-jar", "/app/redtusk-worker.jar"]
