@@ -87,12 +87,41 @@ public final class Main {
         } catch (UnsupportedOperationException e) {
             LOG.warning("CRaC checkpoint not supported on this JVM (non-CRaC JDK): " + e.getMessage());
             // On non-CRaC JVM, fall through and process the job normally (for testing).
-        } catch (Exception e) {
-            LOG.severe("CRaC checkpoint failed: " + e.getMessage());
+        } catch (org.crac.RestoreException e) {
+            // Restore-side notification raised — warp restored memory state but
+            // one or more registered jdk.crac.Resource threw during their
+            // afterRestore callback. Surface the suppressed exceptions instead
+            // of letting "checkpoint failed: null" hide the real cause. Don't
+            // fail the worker: the process IS restored and can still process
+            // a job; we just lost some Resource's restore-time work.
+            LOG.warning("CRaC restore notification raised: " + e + " ; suppressed=" + java.util.Arrays.toString(e.getSuppressed()));
+            for (Throwable s : e.getSuppressed()) {
+                LOG.log(java.util.logging.Level.WARNING, "  suppressed", s);
+            }
+        } catch (org.crac.CheckpointException e) {
+            // Pre-checkpoint notification raised — execution continues in the
+            // ORIGINAL instance (no restore). Only relevant at build/checkpoint
+            // time; at runtime restore we don't take this branch.
+            LOG.severe("CRaC checkpoint notification raised: " + e + " ; suppressed=" + java.util.Arrays.toString(e.getSuppressed()));
+            System.exit(2);
+        } catch (Throwable t) {
+            // Anything else — log full stack trace before exiting so we can
+            // see what's actually wrong instead of "null".
+            LOG.log(java.util.logging.Level.SEVERE,
+                    "CRaC checkpoint/restore failed unexpectedly: " + t.getClass().getName() + " / " + t.getMessage(), t);
             System.exit(2);
         }
 
         CapDropper.dropCheckpointRestoreCapability();
+
+        // POST-RESTORE FIXUP: the dispatcher bind-mounts a fresh per-slot
+        // scratch dir at the same path used at checkpoint time, which hides
+        // the in-image control.ready we created above. Re-create the ready
+        // signal in the now-mounted scratch dir so the dispatcher's pool
+        // poll_fifo can see it and transition the slot to IDLE.
+        scratchDir.mkdirs();
+        FifoLoop.createFifo(scratchDir);
+
         processJob(scratchDir);
     }
 

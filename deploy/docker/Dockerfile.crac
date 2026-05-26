@@ -1,0 +1,197 @@
+# RedTusk worker — CRaC profile (Azul Zulu warp engine, runc-only).
+#
+# This image trades the userspace-kernel boundary (gVisor) for sub-second
+# JVM restore via CRaC. It is intended for runc, NOT gVisor — CRaC depends
+# on kernel-level process introspection (mmap fixed-address, set_last_pid,
+# ptrace) that gVisor's userspace kernel does not provide. With gVisor,
+# warp fails at restore with "Cannot mmap range ... Cannot allocate memory"
+# and at checkpoint with "set_last_pid: No such file or directory".
+#
+# Security boundary inside this profile:
+#   - runc + seccomp + AppArmor + cap-drop + namespaces + per-job container
+# Security boundary in the default profile:
+#   - runsc (gVisor userspace kernel) + everything above
+#
+# Use this image only when throughput matters more than the userspace-kernel
+# boundary for a given deployment.
+
+# ── Stage 0-a: ZXing-CPP (reused from default profile) ────────────────────────
+FROM ubuntu:jammy AS zxing-build
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        git cmake build-essential ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch v3.0.2 --recurse-submodules \
+        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp \
+    || git clone --depth 1 --recurse-submodules \
+        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp
+RUN cmake -S /src/zxing-cpp -B /build/zxing \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DZXING_EXAMPLES=ON \
+        -DZXING_PYTHON_MODULE=OFF \
+        -DZXING_BLACKBOX_TESTS=OFF \
+        -DZXING_UNIT_TESTS=OFF \
+    && cmake --build /build/zxing -j$(nproc) \
+    && find /build/zxing -name "ZXingReader" -type f | head -1
+
+# ── Stage 0-b: Tika fork build (Temurin is fine for compile) ─────────────────
+FROM eclipse-temurin:25-jdk-jammy AS tika-build
+ARG MAVEN_VERSION=3.9.16
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL \
+        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+        | tar -xz -C /opt \
+    && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+
+ARG TIKA_FORK_SHA=71800e4826c726cb7ebad0b5a0fd8550788ce655
+RUN git clone --branch 4.0-upstream-office-links \
+        https://github.com/wmetcalf/tika.git /src/tika \
+    && git -C /src/tika checkout "$TIKA_FORK_SHA"
+
+RUN cd /src/tika && \
+    sed -i '/^[[:space:]]*#/d;/^[[:space:]]*$/d' .mvn/maven.config 2>/dev/null || true && \
+    rm -f .mvn/extensions.xml && \
+    mvn install -DskipTests -pl '!tika-grpc' -q
+
+# ── Stage 1: build worker JAR + JNI libs ──────────────────────────────────────
+FROM eclipse-temurin:25-jdk-jammy AS build
+ARG MAVEN_VERSION=3.9.16
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc libc-dev curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL \
+        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+        | tar -xz -C /opt \
+    && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+
+COPY --from=tika-build /root/.m2/repository/org/apache/tika \
+                       /root/.m2/repository/org/apache/tika
+
+WORKDIR /build
+COPY worker_jvm/ ./worker_jvm/
+RUN cd worker_jvm && mvn package -DskipTests -q
+
+RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" && \
+    gcc -fPIC -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE \
+        -I"${JDK_HOME}/include" -I"${JDK_HOME}/include/linux" \
+        -shared -o worker_jvm/native/libksm_helper.so \
+        worker_jvm/native/ksm_helper.c && \
+    gcc -fPIC -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE \
+        -I"${JDK_HOME}/include" -I"${JDK_HOME}/include/linux" \
+        -shared -o worker_jvm/native/libcap_dropper.so \
+        worker_jvm/native/cap_dropper.c
+
+# ── Stage 2: runtime — Azul Zulu CRaC 25 + AOT cache + warp checkpoint ────────
+# Azul Zulu CRaC 25 ships both the JDK and the warp engine. We need the JDK
+# (not JRE) tag because the checkpoint build phase calls `java -XX:CRaCEngine=warp
+# -XX:CRaCCheckpointTo=...` which is JDK-only territory.
+FROM azul/zulu-openjdk:25-jdk-crac AS runtime
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        tesseract-ocr tesseract-ocr-eng libheif-examples libwps-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=bind,from=zxing-build,source=/build/zxing,target=/zxing-build \
+    find /zxing-build -name "ZXingReader" -type f -exec install -m 755 {} /usr/local/bin/ZXingReader.real \;
+RUN printf '#!/bin/sh\n/usr/local/bin/ZXingReader.real "$@" | sed '\''s/"Type":"\([^"]*\)"/"Type":"\1","Format":"\1"/g'\''\n' \
+    > /usr/local/bin/ZXingReader && chmod 755 /usr/local/bin/ZXingReader
+
+RUN groupadd -r -g 10001 redtusk && \
+    useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk
+
+WORKDIR /app
+COPY --from=build /build/worker_jvm/target/redtusk-worker.jar  /app/redtusk-worker.jar
+COPY --from=build /build/worker_jvm/native/libksm_helper.so    /app/libksm_helper.so
+COPY --from=build /build/worker_jvm/native/libcap_dropper.so   /app/libcap_dropper.so
+COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
+
+# Build AOT cache (same tuning bundle as the default profile, plus warp-engine
+# selection so the cache is recorded with the same JVM args used at runtime).
+RUN java \
+    -XX:CRaCEngine=warp \
+    --enable-native-access=ALL-UNNAMED \
+    -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
+    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
+    -Djava.library.path=/app \
+    -jar /app/redtusk-worker.jar \
+    --appcds-warmup /app/corpus && \
+    java \
+    -XX:CRaCEngine=warp \
+    --enable-native-access=ALL-UNNAMED \
+    -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
+    -XX:+AOTClassLinking \
+    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
+    -Djava.library.path=/app \
+    -jar /app/redtusk-worker.jar && \
+    rm -f /app/redtusk.aotconf && \
+    test -f /app/redtusk.aot && \
+    echo "AOT cache created: $(du -sh /app/redtusk.aot | cut -f1)"
+
+# /scratch must exist (and be writable by 10001) at checkpoint time — the
+# JVM creates control.ready there before calling Core.checkpointRestore().
+# At runtime the dispatcher bind-mounts a fresh per-slot dir on top of this
+# path; Main.java re-creates control.ready post-restore so the dispatcher
+# sees a ready signal in the bind-mounted dir.
+RUN mkdir -p /scratch /in /out /var/lib/redtusk /app/checkpoint && \
+    chown 10001:10001 /scratch /in /out /var/lib/redtusk /app/checkpoint
+
+USER 10001:10001
+
+# Take the warp checkpoint at build time.
+#
+# When --checkpoint runs, Main.java:
+#   1. KsmHelper.markHeapMergeable()
+#   2. FifoLoop.createFifo(/scratch)            ← creates /scratch/control/control.ready
+#   3. Core.checkpointRestore()                 ← warp snapshots process to /app/checkpoint
+#                                                  and EXITS with non-zero. Hence `|| true`.
+# At runtime, the restored process resumes at step 4 onward:
+#   4. CapDropper.dropCheckpointRestoreCapability()
+#   5. FifoLoop.createFifo(/scratch)            ← re-creates (mount has hidden the build-time one)
+#   6. processJob(/scratch)
+RUN java \
+    -XX:CRaCEngine=warp \
+    -XX:CRaCCheckpointTo=/app/checkpoint \
+    -XX:AOTCache=/app/redtusk.aot \
+    --enable-native-access=ALL-UNNAMED \
+    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
+    -Djava.library.path=/app \
+    -jar /app/redtusk-worker.jar \
+    --checkpoint /scratch \
+    || true && \
+    test -d /app/checkpoint && \
+    test -n "$(ls /app/checkpoint/)" && \
+    echo "warp checkpoint captured: $(du -sh /app/checkpoint | cut -f1)"
+
+# Remove warmup corpus only AFTER checkpoint completes — the warmup files
+# must exist for the warmup phase that primes the JVM before checkpoint.
+USER root
+RUN rm -rf /app/corpus
+USER 10001:10001
+
+ENV REDTUSK_LOG_LEVEL=INFO
+
+# Runtime ENTRYPOINT: warp restore. The JVM resumes execution at the point
+# Core.checkpointRestore() returned in the build-time process — main() does
+# NOT re-enter, but `-jar redtusk-worker.jar` must still be present so the
+# JVM's option parser accepts the trailing CMD args the dispatcher injects
+# (`--run /scratch`). Without `-jar`, Java treats `--run` as an unrecognized
+# JVM flag and exits before reaching the restore path.
+ENTRYPOINT ["java", \
+    "-XX:CRaCEngine=warp", \
+    "-XX:CRaCRestoreFrom=/app/checkpoint", \
+    "-jar", "/app/redtusk-worker.jar"]
+
+# Dispatcher overrides CMD with `--run /scratch` per slot. These args are
+# parsed by the JAR's main() only at checkpoint-build time; at restore time
+# the JVM resumes inside the already-running process and ignores them.
+CMD []
+
+LABEL org.opencontainers.image.title="redtusk-worker-crac" \
+      org.opencontainers.image.description="Sandboxed Tika worker (CRaC profile, runc-only)" \
+      org.opencontainers.image.version="0.1.0"
