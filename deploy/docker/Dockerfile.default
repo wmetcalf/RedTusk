@@ -146,6 +146,11 @@ COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
 # Runtime then loads the cache via -XX:AOTCache (no mode flag needed; defaults
 # to auto-detect). Same --enable-native-access flag MUST be on all three
 # invocations for the property recording to match at load time.
+# -XX:+AOTClassLinking — pre-link archived classes (vs only loading them).
+# JDK 25 feature; defaults to false but explicitly enabling shaves additional
+# class-init time at runtime startup. Must be set on the CREATE step (so the
+# cache is built with linked classes) and is automatically honored at runtime
+# when loading a cache built that way.
 RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
@@ -155,6 +160,7 @@ RUN java \
     java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
+    -XX:+AOTClassLinking \
     -Xmx800m -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar && \
     rm -f /app/redtusk.aotconf && \
