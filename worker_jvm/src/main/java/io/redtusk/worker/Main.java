@@ -79,8 +79,8 @@ public final class Main {
 
     private static void runCheckpoint(File scratchDir) throws Exception {
         KsmHelper.markHeapMergeable();
-        scratchDir.mkdirs();
-        FifoLoop.createFifo(scratchDir);
+        IpcChannel ipc = IpcChannelFactory.forScratchDir(scratchDir);
+        ipc.announceReady();
 
         try {
             Core.checkpointRestore();
@@ -116,25 +116,24 @@ public final class Main {
 
         // POST-RESTORE FIXUP: the dispatcher bind-mounts a fresh per-slot
         // scratch dir at the same path used at checkpoint time, which hides
-        // the in-image control.ready we created above. Re-create the ready
-        // signal in the now-mounted scratch dir so the dispatcher's pool
-        // poll_fifo can see it and transition the slot to IDLE.
-        scratchDir.mkdirs();
-        FifoLoop.createFifo(scratchDir);
+        // the in-image control.ready we created above. Re-announce on the
+        // (now-mounted) scratch dir so the dispatcher's pool poll_fifo can
+        // see the ready signal and transition the slot to IDLE.
+        ipc.announceReady();
 
-        processJob(scratchDir);
+        processJob(scratchDir, ipc);
     }
 
     /** Package-private so MainIntegrationTest can call it directly. */
     static void runJob(File scratchDir) throws Exception {
         KsmHelper.markHeapMergeable();
-        scratchDir.mkdirs();
-        FifoLoop.createFifo(scratchDir);
-        processJob(scratchDir);
+        IpcChannel ipc = IpcChannelFactory.forScratchDir(scratchDir);
+        ipc.announceReady();
+        processJob(scratchDir, ipc);
     }
 
-    private static void processJob(File scratchDir) throws Exception {
-        String signal = FifoLoop.waitForSignal(scratchDir);
+    private static void processJob(File scratchDir, IpcChannel ipc) throws Exception {
+        String signal = ipc.awaitGoSignal();
         LOG.info("Received signal: " + signal.trim());
 
         File jobFile = new File(new File(scratchDir, FifoLoop.CONTROL_DIR), "job.json");

@@ -1,9 +1,24 @@
 """Docker run argv builder for RedTusk worker containers."""
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 
 from redtusk.limits import _VALID_PROFILES, Limits
+
+_logger = logging.getLogger(__name__)
+
+# Optional host-side path to a shipped default seccomp profile, auto-applied
+# to runc containers when REDTUSK_WORKER_SECCOMP_PROFILE is unset. Use this
+# in deployments where you can't easily set REDTUSK_WORKER_SECCOMP_PROFILE
+# per-container but want runc-mode workers to have something stricter than
+# Docker's default seccomp. Empty/unset = no auto-apply (warning logged).
+_DEFAULT_RUNC_SECCOMP = os.environ.get("REDTUSK_DEFAULT_RUNC_SECCOMP", "")
+
+# Track whether we've already warned about runc-without-seccomp this run, so
+# the log doesn't get spammed once per spawn.
+_warned_runc_no_seccomp = False
 
 # Recognized OCI runtime names. The dispatcher delegates to the Docker daemon
 # which must have the runtime registered (visible in `docker info | grep Runtimes`).
@@ -67,8 +82,31 @@ def build_run_argv(
         argv += ["--cap-add", "CHECKPOINT_RESTORE", "--cap-add", "SETPCAP"]
 
     if runtime == "runc":
-        if limits.worker_seccomp_profile:
-            argv += ["--security-opt", f"seccomp={limits.worker_seccomp_profile}"]
+        # Under runc the worker shares the host kernel — local kernel CVEs
+        # (e.g. CVE-2026-31431 "CopyFail" in algif_aead) are reachable from
+        # the container unless seccomp blocks the relevant entry point.
+        # Our shipped deploy/seccomp/redtusk.seccomp.json is default-deny
+        # and does not allow `socket()` at all, which closes AF_ALG along
+        # with every other network family the worker doesn't need. To use
+        # it, point REDTUSK_WORKER_SECCOMP_PROFILE at the host-side path,
+        # OR set REDTUSK_DEFAULT_RUNC_SECCOMP to apply it whenever runc is
+        # selected. When neither is set, the worker ships with Docker's
+        # default seccomp — which DOES NOT BLOCK AF_ALG and is therefore
+        # exposed to CopyFail-class kernel bugs. Warn loudly so the
+        # deployment posture is visible in the logs.
+        seccomp_path = limits.worker_seccomp_profile or _DEFAULT_RUNC_SECCOMP
+        if seccomp_path:
+            argv += ["--security-opt", f"seccomp={seccomp_path}"]
+        else:
+            global _warned_runc_no_seccomp
+            if not _warned_runc_no_seccomp:
+                _logger.warning(
+                    "container.runc_default_seccomp",
+                    extra={"action": "consider setting REDTUSK_WORKER_SECCOMP_PROFILE",
+                           "risk": "Docker default seccomp permits socket(AF_ALG, ...) — "
+                                   "container is reachable from CopyFail-class kernel CVEs"},
+                )
+                _warned_runc_no_seccomp = True
         if limits.worker_apparmor_profile:
             argv += ["--security-opt", f"apparmor={limits.worker_apparmor_profile}"]
 

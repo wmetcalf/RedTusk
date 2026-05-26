@@ -106,6 +106,28 @@ when paired with a future IPC redesign (vsock + block-device rootfs);
 at that point templating or Firecracker become viable and Kata can
 beat gVisor on throughput AND security simultaneously.
 
+## Kernel-CVE exposure per runtime
+
+A worker that runs under `runc` shares the host kernel. Local-privilege-
+escalation CVEs in the Linux kernel (e.g. **CVE-2026-31431 "CopyFail"**
+in `algif_aead`) are reachable from inside the container unless seccomp
+explicitly blocks the entry point. Specifically: `socket(AF_ALG, ...)`
+is **NOT blocked by Docker's default seccomp profile** — verified
+empirically.
+
+| Runtime | Default exposure | How to harden |
+|---|---|---|
+| `runsc` (gVisor) | safe — gVisor's userspace kernel does not implement AF_ALG; `socket(AF_ALG, ...)` returns EAFNOSUPPORT | no action required |
+| `kata` | safe — guest microVM has its own kernel; host kernel CVEs don't traverse the hypervisor boundary | no action required |
+| `runc` | **VULNERABLE** with Docker default seccomp | set `REDTUSK_WORKER_SECCOMP_PROFILE=/host/path/to/redtusk.seccomp.json` (shipped under `deploy/seccomp/`); or set `REDTUSK_DEFAULT_RUNC_SECCOMP` to auto-apply it for every runc spawn |
+
+Our shipped `deploy/seccomp/redtusk.seccomp.json` is default-deny and
+does not allow `socket()` at all — it closes AF_ALG along with every
+other network family the worker doesn't need. The dispatcher logs a
+`container.runc_default_seccomp` warning at first spawn when runc is
+selected with no profile, so the exposure is visible in operational
+logs.
+
 ## Verifying which runtime processed a job
 
 Each job result includes a sandbox subsection:
