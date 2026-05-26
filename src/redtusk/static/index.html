@@ -46,10 +46,22 @@
     #search-clear { background: none; border: none; color: #555; font-size: 1rem; cursor: pointer; padding: 0 0.25rem; line-height: 1; }
     #search-clear:hover { color: #aaa; }
     #search-count { font-size: 0.75rem; color: #555; white-space: nowrap; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    /* table-layout:fixed pins each column to the width in <colgroup>,
+       so a long filename can't push the State/Submitted/Duration/QR
+       columns off-screen. .jobs-scroll is a safety net for narrow
+       viewports — the table never expands beyond the viewport without
+       a horizontal scrollbar showing up. */
+    .jobs-scroll { width: 100%; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: fixed; min-width: 720px; }
     thead tr { border-bottom: 1px solid #c0392b; }
     th { text-align: left; padding: 0.5rem 0.6rem; color: #c0392b; font-weight: normal; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.78rem; }
     td { padding: 0.45rem 0.6rem; border-bottom: 1px solid #222; vertical-align: top; }
+    /* Cells that should never wrap and should ellipsize when too long
+       to fit their column. The Filename column carries this — long
+       malicious filenames otherwise push the right-hand columns
+       off-screen. Hover for the full name. */
+    td.cell-truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    td.cell-id { font-family: 'Courier New', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     tbody tr.job-row { cursor: pointer; transition: background 0.1s; }
     tbody tr.job-row:hover { background: #333; }
     tbody tr.job-row.expanded { background: #2f2f2f; }
@@ -232,14 +244,24 @@
       <span id="search-count"></span>
     </div>
     <div id="state-pills" style="margin-top:0.4rem;display:flex;gap:0.4rem;flex-wrap:wrap;font-size:0.78rem"></div>
-    <table style="margin-top:0.25rem">
-      <thead>
-        <tr><th>ID</th><th>Filename</th><th>State</th><th>Submitted</th><th>Duration</th><th>QR</th></tr>
-      </thead>
-      <tbody id="jobs-body">
-        <tr><td colspan="6" class="no-jobs">Loading…</td></tr>
-      </tbody>
-    </table>
+    <div class="jobs-scroll" style="margin-top:0.25rem">
+      <table>
+        <colgroup>
+          <col style="width: 18ch">    <!-- ID (UUID prefix, ellipsized) -->
+          <col>                         <!-- Filename (flexes to fill) -->
+          <col style="width: 9rem">    <!-- State -->
+          <col style="width: 9rem">    <!-- Submitted -->
+          <col style="width: 6.5rem">  <!-- Duration -->
+          <col style="width: 4.5rem">  <!-- QR -->
+        </colgroup>
+        <thead>
+          <tr><th>ID</th><th>Filename</th><th>State</th><th>Submitted</th><th>Duration</th><th>QR</th></tr>
+        </thead>
+        <tbody id="jobs-body">
+          <tr><td colspan="6" class="no-jobs">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
     <div id="pager"></div>
   </div>
 
@@ -1143,8 +1165,10 @@
     }
 
     function rowCells(job) {
-      return '<td style="font-size:0.72rem;letter-spacing:-0.01em">'+esc(job.id||'')+'</td>'+
-        '<td>'+esc(job.filename_hint||'—')+'</td>'+
+      const fullId = job.id || '';
+      const fullName = job.filename_hint || '—';
+      return '<td class="cell-id" title="'+esc(fullId)+'" style="font-size:0.72rem;letter-spacing:-0.01em">'+esc(fullId)+'</td>'+
+        '<td class="cell-truncate" title="'+esc(fullName)+'">'+esc(fullName)+'</td>'+
         '<td>'+stateCell(job.state)+'</td>'+
         '<td>'+relativeTime(job.submitted_at)+'</td>'+
         '<td>'+duration(job)+'</td>'+
