@@ -464,3 +464,72 @@ async def test_submit_sync_worker_crash(tmp_path: Path) -> None:
         await dispatcher.submit_sync(b"data", "doc.txt", limits)
 
     pool.release.assert_called_once_with(slot, success=False)
+
+
+@pytest.mark.asyncio
+async def test_recover_orphaned_running_jobs() -> None:
+    """Dispatcher.start() marks every RUNNING job as failed before the claim loop starts.
+
+    RUNNING rows whose worker container did not survive a dispatcher restart
+    would otherwise block forever — list endpoints would keep returning them
+    and the pool would mis-account capacity.
+    """
+    pool = MagicMock()
+    pool.start = AsyncMock()
+    pool.stop = AsyncMock()
+    runtime = MagicMock()
+
+    stuck1 = JobRecord(
+        id="stuck-1",
+        submitted_at=datetime.now(UTC),
+        state=JobState.RUNNING,
+        input_sha256=_SHA256,
+        input_size_bytes=10,
+        filename_hint="a.xls",
+        started_at=datetime.now(UTC),
+    )
+    stuck2 = JobRecord(
+        id="stuck-2",
+        submitted_at=datetime.now(UTC),
+        state=JobState.RUNNING,
+        input_sha256=_SHA256,
+        input_size_bytes=10,
+        filename_hint="b.xls",
+        started_at=datetime.now(UTC),
+    )
+
+    store = AsyncMock()
+    store.list_recent = AsyncMock(return_value=[stuck1, stuck2])
+    store.update = AsyncMock()
+
+    dispatcher = make_dispatcher(pool, store, runtime)
+    try:
+        await dispatcher._recover_orphaned_running_jobs()
+    finally:
+        # No claim loop / pool was started — just exercising the helper.
+        pass
+
+    # Both jobs were re-stamped as FAILED with the canonical code.
+    store.list_recent.assert_awaited_once_with(limit=10000, state="running")
+    assert store.update.await_count == 2
+    for job in (stuck1, stuck2):
+        assert job.state == JobState.FAILED
+        assert job.error_code == "dispatcher_restart"
+        assert job.error_detail and "restart" in job.error_detail
+        assert job.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_recover_orphaned_running_jobs_no_stuck() -> None:
+    """No RUNNING rows means no store.update calls — fast, quiet, idempotent."""
+    pool = MagicMock()
+    runtime = MagicMock()
+    store = AsyncMock()
+    store.list_recent = AsyncMock(return_value=[])
+    store.update = AsyncMock()
+
+    dispatcher = make_dispatcher(pool, store, runtime)
+    await dispatcher._recover_orphaned_running_jobs()
+
+    store.list_recent.assert_awaited_once_with(limit=10000, state="running")
+    store.update.assert_not_called()

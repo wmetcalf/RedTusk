@@ -52,9 +52,56 @@ class Dispatcher:
         except Exception as exc:
             _logger.warning("dispatcher.cleanup_sync_error", error=str(exc))
 
+        await self._recover_orphaned_running_jobs()
+
         await self._pool.start()
         self._tasks.append(asyncio.create_task(self._claim_loop()))
         self._tasks.append(asyncio.create_task(self._cleanup_loop()))
+
+    async def _recover_orphaned_running_jobs(self) -> None:
+        """Mark RUNNING jobs as failed on dispatcher startup.
+
+        A RUNNING row in the store corresponds to an in-flight worker
+        container. When the dispatcher process restarts (deploy, OOM,
+        SIGKILL, host reboot), its worker containers are torn down with
+        it — but the DB row keeps state=RUNNING forever, because nothing
+        else updates that field. The job then occupies the pool's
+        accounting and shows up in `state=running` API queries indefinitely.
+        Sweep them on startup and mark failed with a distinctive
+        error_code so consumers can distinguish "your job was running
+        when the dispatcher restarted" from a real worker crash.
+        """
+        try:
+            stuck = await self._store.list_recent(
+                limit=10000, state=JobState.RUNNING.value
+            )
+        except Exception as exc:
+            _logger.warning(
+                "dispatcher.orphan_recovery_list_error", error=str(exc)
+            )
+            return
+        if not stuck:
+            return
+        now = datetime.now(UTC)
+        recovered = 0
+        for job in stuck:
+            job.state = JobState.FAILED
+            job.completed_at = now
+            job.error_code = "dispatcher_restart"
+            job.error_detail = (
+                "Job was in RUNNING state when the dispatcher started; "
+                "its worker container did not survive the restart and no "
+                "result was recorded."
+            )
+            try:
+                await self._store.update(job)
+                recovered += 1
+            except Exception as exc:
+                _logger.warning(
+                    "dispatcher.orphan_recovery_update_error",
+                    job_id=job.id, error=str(exc),
+                )
+        _logger.info("dispatcher.orphan_recovery", recovered=recovered)
 
     async def stop(self) -> None:
         for t in self._tasks:
