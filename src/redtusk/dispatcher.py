@@ -248,6 +248,24 @@ class Dispatcher:
             job.worker_started_at = datetime.now(UTC)
             await self._store.update(job)
             await self._runtime.signal_job(slot, job, self._limits)
+
+            # For microvm profile: drain the vsock stream into the slot's
+            # scratch /out dir BEFORE we wait for the container to exit.
+            # The worker sends DONE then closes its socket then exits;
+            # we have to receive BEFORE the connection dies, otherwise we
+            # block forever. File-IPC profile: this is a no-op (artifacts
+            # were written directly to the bind-mounted /out).
+            try:
+                await asyncio.wait_for(
+                    self._runtime.receive_result(slot),
+                    timeout=float(self._limits.job_timeout_s),
+                )
+            except (TimeoutError, Exception) as exc:
+                # Don't fail the whole dispatch yet — the wait() below will
+                # surface the worker exit code. Log so the cause is visible.
+                _logger.warning("dispatcher.receive_result_error",
+                                job_id=job.id, error=str(exc))
+
             exit_code = await self._runtime.wait(
                 slot, timeout=float(self._limits.job_timeout_s)
             )
@@ -504,6 +522,17 @@ class Dispatcher:
 
             job.worker_started_at = datetime.now(UTC)
             await self._runtime.signal_job(slot, job, limits)
+            # Drain vsock result BEFORE the container exits (microvm only;
+            # no-op for file-IPC). Mirrors the async dispatch path so both
+            # the queued and the sync submission flows handle microvm.
+            try:
+                await asyncio.wait_for(
+                    self._runtime.receive_result(slot),
+                    timeout=float(limits.job_timeout_s),
+                )
+            except (TimeoutError, Exception) as exc:
+                _logger.warning("dispatcher.sync_receive_result_error",
+                                job_id=job.id, error=str(exc))
             exit_code = await self._runtime.wait(
                 slot, timeout=float(limits.job_timeout_s)
             )
