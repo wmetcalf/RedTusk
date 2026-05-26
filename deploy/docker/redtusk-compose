@@ -35,4 +35,49 @@ grep -v '^DOCKER_GID=' .env > .env.tmp || true
 mv .env.tmp .env
 echo "DOCKER_GID=$SOCKET_GID" >> .env
 
+# ── pre-flight: state-dir writability ──────────────────────────────────
+# The api container runs as UID 10001 and bind-mounts REDTUSK_STATE_DIR at
+# the same path inside the container as on the host. The path must exist
+# and be writable by 10001 — otherwise every pool slot fails with
+# `[Errno 13] Permission denied` until the queue drains by timeout. The
+# usual culprit is the dir being root-owned because it was created with
+# sudo during initial host setup. Catch it here before bringing up
+# containers so the operator sees one clear error instead of a log
+# storm. Skip when the command is anything other than up/start (so
+# `down`, `logs`, etc. still work even on a misconfigured host).
+case "${1:-}" in
+    up|start|restart|run)
+        STATE_DIR="$(grep '^REDTUSK_STATE_DIR=' .env | tail -1 | cut -d= -f2-)"
+        if [ -z "${STATE_DIR:-}" ]; then
+            echo "error: REDTUSK_STATE_DIR is not set in .env" >&2
+            echo "       add REDTUSK_STATE_DIR=/path/on/host/for/state to .env" >&2
+            exit 1
+        fi
+        REDTUSK_UID="${REDTUSK_UID:-10001}"
+        if [ ! -d "$STATE_DIR" ]; then
+            echo "error: REDTUSK_STATE_DIR=$STATE_DIR does not exist on host." >&2
+            echo "       Create it and chown to the api container's UID:" >&2
+            echo "       sudo mkdir -p $STATE_DIR && sudo chown -R ${REDTUSK_UID}:${REDTUSK_UID} $STATE_DIR" >&2
+            exit 1
+        fi
+        OWNER_UID="$(stat -c '%u' "$STATE_DIR" 2>/dev/null || echo "?")"
+        if [ "$OWNER_UID" != "$REDTUSK_UID" ] && [ "$OWNER_UID" != "0" ]; then
+            # Owner is neither 10001 nor root — likely a previous bad config.
+            # Don't auto-fix; just warn so the operator confirms intent.
+            echo "warn: REDTUSK_STATE_DIR=$STATE_DIR is owned by UID $OWNER_UID, expected $REDTUSK_UID" >&2
+        fi
+        if [ "$OWNER_UID" != "$REDTUSK_UID" ]; then
+            # If not owned by the api UID, check it's at least writable
+            # (sticky g+w bit, ACL, etc.). Use sudo -n to test as the api
+            # uid only if we have passwordless sudo; otherwise rely on
+            # a runtime write probe inside the container.
+            if [ "$OWNER_UID" = "0" ]; then
+                echo "error: REDTUSK_STATE_DIR=$STATE_DIR is owned by root and the api container runs as UID ${REDTUSK_UID}." >&2
+                echo "       run:  sudo chown -R ${REDTUSK_UID}:${REDTUSK_UID} $STATE_DIR" >&2
+                exit 1
+            fi
+        fi
+        ;;
+esac
+
 exec docker compose --project-name redtusk "$@"

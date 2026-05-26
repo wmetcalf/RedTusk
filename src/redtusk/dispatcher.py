@@ -12,7 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from redtusk.errors import PoolExhaustedError, SchemaValidationError, WorkerError
+from redtusk.errors import (
+    DispatchError,
+    PoolExhaustedError,
+    SchemaValidationError,
+    WorkerError,
+)
 from redtusk.jobs.base import JobStore
 from redtusk.jobs.retention import prune_orphaned_artifacts
 from redtusk.limits import Limits
@@ -46,6 +51,8 @@ class Dispatcher:
         self._in_flight: set[str] = set()  # job IDs currently being dispatched
 
     async def start(self) -> None:
+        self._preflight_state_dirs()
+
         sync_dir = Path(self._limits.scratch_root) / "_sync"
         try:
             shutil.rmtree(sync_dir, ignore_errors=True)
@@ -57,6 +64,47 @@ class Dispatcher:
         await self._pool.start()
         self._tasks.append(asyncio.create_task(self._claim_loop()))
         self._tasks.append(asyncio.create_task(self._cleanup_loop()))
+
+    def _preflight_state_dirs(self) -> None:
+        """Verify scratch_root and artifact_root exist + are writable.
+
+        Fails fast with a clear, actionable error message instead of letting
+        every pool slot fail with "Permission denied" in a tight retry loop
+        until the queue drains by timeout. The bind-mount setup in compose
+        mode requires that the host dir referenced by REDTUSK_STATE_DIR be
+        owned by (or writable by) UID 10001 — the redtusk user inside the
+        api container. A common failure mode is the dir being root-owned
+        because it was created with sudo during initial host setup.
+        """
+        for label, p in (
+            ("scratch_root", self._limits.scratch_root),
+            ("artifact_root", self._limits.artifact_root),
+        ):
+            path = Path(p)
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except PermissionError as exc:
+                msg = (
+                    f"{label}={p!r} cannot be created: {exc}. "
+                    f"In compose deployments the api container runs as UID "
+                    f"10001. Run `chown -R 10001:10001 {p}` on the host."
+                )
+                _logger.error("dispatcher.preflight_failed", error=msg)
+                raise DispatchError(msg) from exc
+            # Write probe — even if mkdir succeeded, the parent may be
+            # writable but the dir itself a remnant with different perms.
+            probe = path / ".redtusk.write_probe"
+            try:
+                probe.write_bytes(b"")
+                probe.unlink()
+            except OSError as exc:
+                msg = (
+                    f"{label}={p!r} exists but is not writable: {exc}. "
+                    f"Inside the api container the uid is 10001; on the "
+                    f"host run `chown -R 10001:10001 {p}`."
+                )
+                _logger.error("dispatcher.preflight_failed", error=msg)
+                raise DispatchError(msg) from exc
 
     async def _recover_orphaned_running_jobs(self) -> None:
         """Mark RUNNING jobs as failed on dispatcher startup.

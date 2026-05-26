@@ -533,3 +533,60 @@ async def test_recover_orphaned_running_jobs_no_stuck() -> None:
 
     store.list_recent.assert_awaited_once_with(limit=10000, state="running")
     store.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_preflight_state_dirs_creates_and_passes(tmp_path: Path) -> None:
+    """Pre-flight succeeds when scratch/artifact roots are writable."""
+    pool = MagicMock()
+    runtime = MagicMock()
+    store = AsyncMock()
+
+    limits = Limits(
+        job_timeout_s=10,
+        sync_queue_timeout_s=5,
+        artifact_root=str(tmp_path / "art"),
+        scratch_root=str(tmp_path / "scr"),
+        max_metadata_bytes=64 * 1024 * 1024,
+    )
+    dispatcher = Dispatcher(pool=pool, store=store, worker_runtime=runtime, limits=limits)
+
+    # Should be a clean no-op + mkdir; no exception.
+    dispatcher._preflight_state_dirs()
+    assert (tmp_path / "art").is_dir()
+    assert (tmp_path / "scr").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_preflight_state_dirs_unwritable_raises(tmp_path: Path) -> None:
+    """Pre-flight raises a clear DispatchError when a state dir isn't writable."""
+    import os
+    pool = MagicMock()
+    runtime = MagicMock()
+    store = AsyncMock()
+
+    # Lock down the artifact root so we can't write to it.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    # Drop write bits for owner/group/other. mkdir() inside still succeeds
+    # (because exist_ok=True on an existing dir is a no-op), but the
+    # write-probe will fail. 0o555 = read+execute, no write.
+    os.chmod(locked, 0o555)
+
+    limits = Limits(
+        job_timeout_s=10,
+        sync_queue_timeout_s=5,
+        artifact_root=str(locked),
+        scratch_root=str(tmp_path / "scr"),
+        max_metadata_bytes=64 * 1024 * 1024,
+    )
+    dispatcher = Dispatcher(pool=pool, store=store, worker_runtime=runtime, limits=limits)
+
+    from redtusk.errors import DispatchError
+    # Running as root in CI defeats chmod-based denial — only assert the
+    # rejection when we are NOT root.
+    if os.geteuid() != 0:
+        with pytest.raises(DispatchError, match="not writable"):
+            dispatcher._preflight_state_dirs()
+
+    os.chmod(locked, 0o755)  # restore so tmp cleanup works
