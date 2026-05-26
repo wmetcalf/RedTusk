@@ -84,6 +84,15 @@ require the absence of virtio-fs and file-backed shared memory.
 | container.py microvm profile | no bind mounts, REDTUSK_WORKER_IPC=vsock env vars, --runtime kata | shipped |
 | Cross-validated protocol | matching AF_UNIX tests on both Java and Python sides | shipped |
 
+**Vsock IPC verified through Kata's microVM boundary**
+
+A direct test on toolz2 (May 2026): host runs
+`scripts/vsock_dispatcher_probe.py --port 50001`; an alpine container
+launched with `--runtime=kata` opens AF_VSOCK CID 2 port 50001 from
+inside the guest, sends `READY\n`, receives `GO\n`. Handshake completes
+cleanly. So both halves of our protocol cross the hypervisor boundary
+correctly — the code is right.
+
 **What blocks actual deployment:**
 
 Kata's `factory init` (the step that pre-boots a donor VM for templating)
