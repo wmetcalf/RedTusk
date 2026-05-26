@@ -33,12 +33,27 @@ public final class IpcChannelFactory {
             case "file":
                 return new FileIpcChannel(scratchDir);
             case "vsock":
-                throw new UnsupportedOperationException(
-                    "REDTUSK_WORKER_IPC=vsock is reserved for the microvm profile " +
-                    "and not yet implemented (Phase 2). Use 'file' or unset the variable.");
+                return buildVsockChannel();
             default:
                 LOG.warning("Unknown REDTUSK_WORKER_IPC=" + requested + "; falling back to file");
                 return new FileIpcChannel(scratchDir);
         }
+    }
+
+    private static IpcChannel buildVsockChannel() {
+        String portRaw = System.getenv("REDTUSK_VSOCK_PORT");
+        if (portRaw == null || portRaw.isEmpty()) {
+            throw new IllegalStateException(
+                "REDTUSK_WORKER_IPC=vsock requires REDTUSK_VSOCK_PORT to be set " +
+                "(must match the port the dispatcher binds)");
+        }
+        int port = Integer.parseInt(portRaw.trim());
+        int hostCid = VsockIpcChannel.DEFAULT_HOST_CID;
+        String cidRaw = System.getenv("REDTUSK_VSOCK_HOST_CID");
+        if (cidRaw != null && !cidRaw.isEmpty()) {
+            hostCid = Integer.parseInt(cidRaw.trim());
+        }
+        String unixPath = System.getenv("REDTUSK_VSOCK_UNIX_PATH");
+        return new VsockIpcChannel(hostCid, port, unixPath);
     }
 }

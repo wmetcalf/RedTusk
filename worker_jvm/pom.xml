@@ -67,6 +67,26 @@
       <artifactId>batik-codec</artifactId>
       <version>1.17</version>
     </dependency>
+    <!-- AF_VSOCK socket support for the microvm profile's worker↔dispatcher IPC.
+         junixsocket-common provides the AF_UNIX API used in tests as a portable
+         stand-in; junixsocket-native-common bundles the native shim libs;
+         junixsocket-vsock adds AF_VSOCK on top. -->
+    <dependency>
+      <groupId>com.kohlschutter.junixsocket</groupId>
+      <artifactId>junixsocket-common</artifactId>
+      <version>2.10.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.kohlschutter.junixsocket</groupId>
+      <artifactId>junixsocket-native-common</artifactId>
+      <version>2.10.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.kohlschutter.junixsocket</groupId>
+      <artifactId>junixsocket-vsock</artifactId>
+      <version>2.10.1</version>
+    </dependency>
+
     <!-- Testing -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
