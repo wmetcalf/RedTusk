@@ -183,7 +183,10 @@ async def test_signal_job_writes_job_json(
     assert job_json["ocr_psm"] == limits.ocr_psm
     assert job_json["sandbox_profile"] == limits.profile
     assert job_json["sandbox_runtime"] == "runc"
-    assert job_json["appcds"] is True
+    # AppCDS is intentionally disabled in Dockerfile.default — JDK 25
+    # rejects the shared archive on a flag-value mismatch we can't fix
+    # at dump time. See the Dockerfile comment for full root cause.
+    assert job_json["appcds"] is False
     assert "redtusk_version" in job_json
 
 

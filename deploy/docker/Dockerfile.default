@@ -129,21 +129,20 @@ COPY --from=build /build/worker_jvm/native/libksm_helper.so    /app/libksm_helpe
 COPY --from=build /build/worker_jvm/native/libcap_dropper.so   /app/libcap_dropper.so
 COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
 
-# Build AppCDS archive using the runtime JRE (guarantees checksum match at startup).
-# --enable-native-access is OMITTED from the dump step: JDK 25 records this flag
-# inconsistently in the archive when running under gVisor (runsc), causing a property
-# mismatch at runtime and degraded CDS.  The ENTRYPOINT keeps the flag; the mismatch
-# triggers "Disabling optimized module handling" rather than a hard crash thanks to
-# -Xshare:auto below, but having both sides consistent eliminates the degradation.
-RUN java \
-    -XX:ArchiveClassesAtExit=/app/redtusk.jsa \
-    -Xmx800m \
-    -Djava.library.path=/app \
-    -jar /app/redtusk-worker.jar \
-    --appcds-warmup /app/corpus && \
-    test -f /app/redtusk.jsa && \
-    echo "AppCDS archive created: $(du -sh /app/redtusk.jsa | cut -f1)"
-
+# AppCDS is intentionally NOT used in this image — JDK 25 will not load an
+# archive that was dumped without the same --enable-native-access value as
+# runtime, and Tika/POI/our native libs need that flag at runtime. Setting
+# the flag at dump time does not produce a usable archive either: JDK 25
+# appears to omit the property from the archive metadata regardless, so
+# every runtime startup hits
+#   [error][cds] Mismatched values for property jdk.module.enable.native.access
+#   [error][cds] Disabling optimized module handling
+# and falls back to no-CDS under -Xshare:auto (or refuses to start under
+# -Xshare:on). Both runc and runsc reproduce this — it is not a gVisor
+# issue despite earlier comments to the contrary. Skipping the dump
+# entirely is honest: cold-start cost is paid every worker spawn, the
+# RmetaWriter sandbox.appcds field is reported as False, and the UI no
+# longer claims "AppCDS active" when it isn't.
 RUN rm -rf /app/corpus
 
 # /scratch, /in, /out must exist in the image for Docker bind-mount overlays
@@ -154,9 +153,11 @@ USER 10001:10001
 
 ENV REDTUSK_LOG_LEVEL=INFO
 
+# -Xshare:off — explicitly disable CDS. See the comment on the removed dump
+# step above for why. Better to spend the cold-start cost openly than to
+# claim AppCDS is active when it isn't.
 ENTRYPOINT ["java", \
-    "-Xshare:auto", \
-    "-XX:SharedArchiveFile=/app/redtusk.jsa", \
+    "-Xshare:off", \
     "-Xmx800m", \
     "-Djava.library.path=/app", \
     "--enable-native-access=ALL-UNNAMED", \
