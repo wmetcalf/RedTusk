@@ -93,6 +93,76 @@ inside the guest, sends `READY\n`, receives `GO\n`. Handshake completes
 cleanly. So both halves of our protocol cross the hypervisor boundary
 correctly — the code is right.
 
+**Final session findings — May 27 2026 part 2**
+
+After the partial setup, kept pushing on the nydus + Kata mount path
+through three distinct configurations. All hit the same class of issue:
+
+1. **fusedev mode** (default) — Mount fails with "failed to find image
+   ref of snapshot N, labels: [containerd.io/snapshot.ref:...,
+   nydus-bootstrap:true, nydus-fs-version:6]". The snapshotter looks
+   up `snpkg.TargetRefLabel` ("containerd.io/snapshot/cri.image-ref"),
+   which is set by Kubernetes' CRI plugin during image preparation but
+   NOT set by ctr or nerdctl. `disable_snapshot_annotations=false`
+   alone doesn't help — the label simply isn't being propagated by
+   the non-CRI client. `ctr run --label X=Y` sets container labels,
+   not snapshot labels.
+
+2. **proxy mode** (`fs_driver = "proxy"`, `enable_kata_volume = true`)
+   — Mount fails with "failed to find RAFS instance for snapshot N".
+   In proxy mode the snapshotter is supposed to pass mount info via
+   `extraoption` to the runtime, but containerd's snapshot metadata
+   tracking gets out of sync with the snapshotter's RAFS instance
+   table after the first failed attempt; subsequent pulls hit
+   "target snapshot already exists" because containerd thinks the
+   prepare succeeded.
+
+3. **shared_fs = virtio-fs-nydus + virtio_fs_daemon = nydusd**
+   — Same as (1), kata's daemon swap doesn't change the snapshotter
+   side of the label propagation issue.
+
+The root cause is a known-fragile compatibility triangle between
+versions of nerdctl, nydus-snapshotter, and containerd. The
+nydus-snapshotter project's CI matrix tests specific combinations
+that DO work together; iterating without matching one of those
+triplets is essentially a random walk. We have nerdctl 2.3.0,
+nydus-snapshotter 0.15.15, containerd 2.2.1 — combinations not
+all on the same CI lane.
+
+**Realistic paths forward for whoever picks this up:**
+
+1. Pin to a known-working version triplet from the nydus-snapshotter
+   CI logs (https://github.com/containerd/nydus-snapshotter/actions);
+   downgrade containerd or nerdctl as needed.
+
+2. Use the CRI path (k3s/k0s/k8s) instead of nerdctl. The nydus
+   snapshotter is primarily tested against the CRI workflow — that's
+   why all the labels it expects are CRI labels. RedTusk's
+   dispatcher could call ctr-cri or kubelet directly.
+
+3. Patch nydus-snapshotter locally to also accept a fallback label
+   that nerdctl DOES set (e.g. `containerd.io/snapshot.ref`'s value
+   as a synthetic image-ref). Trivial diff; takes 10 minutes; lives
+   as a vendored fork.
+
+4. Use Kata's own native nydus integration (kata-deploy) which sets
+   up containerd-shim-kata-v2 to talk to nydusd directly without
+   going through the proxy snapshotter — bypasses the label issue
+   entirely. The kata-deploy script is K8s-flavored but the host
+   plumbing it generates works standalone too.
+
+Toolz2 state RESTORED (production-stable):
+  - `shared_fs = "virtio-fs"`, `enable_template = false`,
+    `virtio_fs_daemon = /opt/kata/libexec/virtiofsd` (default)
+  - `REDTUSK_PROFILE=default`, gVisor + AOT bundle
+  - parse_ms 3.1s on the post-restore smoke test
+
+The nydus snapshotter + image registry + converted image all REMAIN
+installed on the host (the systemd service, the `localhost:5000`
+registry container, the `localhost:5000/redtusk-worker:nydus` image
+in it). They cost nothing while idle and are ready to fire once the
+version triangulation is resolved.
+
 **Followup session (May 27 2026) — nerdctl + nydus + image conversion**
 
 Pushed further on the cleanest-portable path: keep Docker untouched
