@@ -93,6 +93,68 @@ inside the guest, sends `READY\n`, receives `GO\n`. Handshake completes
 cleanly. So both halves of our protocol cross the hypervisor boundary
 correctly — the code is right.
 
+**Followup session (May 27 2026) — nerdctl + nydus + image conversion**
+
+Pushed further on the cleanest-portable path: keep Docker untouched
+for `default`/`high-density` profiles, use `nerdctl --snapshotter=nydus`
+to drive containerd directly for `microvm`.
+
+Got working on toolz2 this session:
+  - nerdctl 2.3.0 installed at /usr/local/bin/nerdctl
+  - local OCI registry running (`docker run -d --name redtusk-registry
+    -p 5000:5000 registry:2`)
+  - `redtusk-worker:default` converted to nydus format via
+    `nydusify convert --source localhost:5000/redtusk-worker:default
+    --target localhost:5000/redtusk-worker:nydus` (succeeded; nydus
+    bootstrap + blobs pushed to local registry)
+  - containerd 2.x `unpack_config` added to
+    `[plugins.'io.containerd.transfer.v1.local']` so containerd can
+    unpack via the nydus snapshotter
+  - nydusd-config.json updated for the insecure http localhost:5000
+    registry (`skip_verify = true`, `scheme = "http"`)
+  - Kata factory init under `shared_fs=none` + `enable_template=true`
+    succeeded — "vm factory is on"
+  - `nerdctl --snapshotter=nydus pull` of the converted image:
+    succeeds, image extracted via nydus
+
+What's still failing (the last 5%):
+  ```
+  nerdctl --snapshotter=nydus run --runtime=io.containerd.kata.v2 ...
+  → fatal: "mount rafs, instance id 18: failed to find image ref of
+     snapshot 18, labels map[containerd.io/snapshot.ref:...
+     containerd.io/snapshot/nydus-bootstrap:true ...]"
+  ```
+
+The nydus snapshotter's mount step doesn't find an `image-ref` label
+on the prepared snapshot. The standard nerdctl pull doesn't set this
+label the way the snapshotter expects — likely a version-compatibility
+issue between nerdctl 2.3.0 / nydus-snapshotter v0.15.15 / containerd
+2.2.1 (config-format-mismatch between schema versions, probably).
+
+This is a real debug rather than blind iteration — needs reading the
+nydus-snapshotter source to see what label key it actually expects,
+then either using a wrapper around `nerdctl pull` that sets the label,
+or downgrading one of the three versions to a known-compatible combo
+(the nydus snapshotter ships test matrices against specific containerd
+versions in CI; matching those would likely resolve this).
+
+What's installed and ready on toolz2 for the next session:
+  - `/etc/nydus/{config.toml,nydusd-config.json}`
+  - `/etc/systemd/system/nydus-snapshotter.service` (active)
+  - `/etc/containerd/config.toml` (default + nydus proxy plugin +
+    unpack_config)
+  - `/opt/nydus-snapshotter/` (binaries)
+  - `localhost:5000` registry container (running)
+  - `localhost:5000/redtusk-worker:nydus` (converted image in registry)
+
+The teardown is simple if needed: stop nydus-snapshotter, remove
+/etc/containerd/config.toml (containerd falls back to defaults),
+docker rm -f redtusk-registry.
+
+Production state is RESTORED: `shared_fs=virtio-fs`,
+`enable_template=false`, REDTUSK_PROFILE=default, gVisor + AOT bundle
+running normally (parse_ms 2.9s post-restore).
+
 **Host setup script: `scripts/setup_microvm_host.sh`**
 
 Installs the prerequisites and validates each step:
