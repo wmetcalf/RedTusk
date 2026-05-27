@@ -93,6 +93,26 @@ inside the guest, sends `READY\n`, receives `GO\n`. Handshake completes
 cleanly. So both halves of our protocol cross the hypervisor boundary
 correctly — the code is right.
 
+**Host setup script: `scripts/setup_microvm_host.sh`**
+
+Installs the prerequisites and validates each step:
+  - downloads nydus snapshotter v0.15.15 + nydus tools v2.4.3
+  - writes `/etc/nydus/{config.toml,nydusd-config.json}`
+  - installs the systemd unit `nydus-snapshotter.service`
+  - writes a minimal `/etc/containerd/config.toml` registering nydus as
+    a proxy snapshotter (verified with `ctr plugins ls | grep nydus`)
+  - configures Kata for templating-compatible boot (initrd, no virtio-fs)
+  - confirms `kata-runtime factory init` succeeds with `shared_fs=none`
+
+What it deliberately **doesn't** do (because each touches the wider host):
+  - convert worker images to nydus format (needs a local registry)
+  - enable Docker's containerd image store (restarts every Docker container
+    on the host; an alternative is rewriting the dispatcher's spawn path
+    to use `nerdctl run --snapshotter=nydus` instead of `docker run`)
+
+The deferred steps are documented inside the script's output so the
+operator knows exactly what's left.
+
 **What blocks actual deployment:**
 
 Kata's `factory init` (the step that pre-boots a donor VM for templating)
