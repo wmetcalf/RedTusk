@@ -81,6 +81,10 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
      *  ASCII control lines. BufferedReader would consume too aggressively. */
     private DataInputStream din;
     private OutputStream writer;
+    /** Decided by afterRestore() from REDTUSK_VSOCK_DISK_OUTPUT. When true,
+     *  sendResult/sendArtifact are no-ops (output lives on a virtio-blk disk
+     *  the host reads back); when false, they stream over vsock as before. */
+    private boolean diskOutputMode;
 
     /** Constructed via {@link IpcChannelFactory}; package-private for tests. */
     VsockIpcChannel(int hostCid, int port, String unixPathOverride) {
@@ -187,7 +191,17 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
         if (cidRaw != null && !cidRaw.isEmpty()) {
             try { this.hostCid = Integer.parseInt(cidRaw.trim()); } catch (NumberFormatException ignore) {}
         }
-        LOG.info("VsockIpcChannel.afterRestore: reconnecting to " + describePeer());
+        // Disk-output mode: FC attaches a per-slot virtio-blk output disk;
+        // Docker-microvm (kata) does not. Detect by /dev/vdb existence — this
+        // is the actual environmental difference. We tried REDTUSK_VSOCK_DISK_OUTPUT
+        // via /proc/self/environ first, but /proc/self/environ on a CRaC-restored
+        // process reflects the BUILD-time environ, not the restore-time environ
+        // (the existing PORT/CID reads "work" only because the build sets them to
+        // the same values the FC init does). /dev/vdb is a real filesystem check
+        // at restore time, so it reads the actual FC microVM state.
+        this.diskOutputMode = new java.io.File("/dev/vdb").exists();
+        LOG.info("VsockIpcChannel.afterRestore: reconnecting to " + describePeer()
+                + " diskOutputMode=" + this.diskOutputMode);
         announceReady();
     }
 
@@ -293,19 +307,28 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
 
     @Override
     public void sendResult(byte[] metadataJson) throws IOException {
-        // No-op. Output (metadata.json + artifacts) is written to
-        // WORKER_OUTPUT_DIR (/tmp/redtusk-out), which is a virtio-blk ext4
-        // disk the host reads back after the VM powers off. Streaming large
-        // payloads over vsock corrupts them under concurrent host load
-        // (guest virtio-vsock race), so output bypasses vsock entirely; only
-        // the control handshake + job descriptor + input + DONE use vsock.
-        LOG.fine("VsockIpcChannel.sendResult: no-op (output on virtio-blk disk)");
+        if (diskOutputMode) {
+            // FC disk-output mode: WORKER_OUTPUT_DIR (/tmp/redtusk-out) is a
+            // virtio-blk ext4 the host reads back after the VM powers off.
+            // Streaming large payloads over vsock corrupts them under
+            // concurrent host load (guest virtio-vsock race), so output
+            // bypasses vsock entirely; only the control handshake + job +
+            // input + DONE go over vsock.
+            return;
+        }
+        sendBlobFrame("RESULT", null, metadataJson);
     }
 
     @Override
     public void sendArtifact(String relPath, byte[] payload) throws IOException {
-        // No-op — see sendResult. The artifact is already on the output disk.
+        if (diskOutputMode) return;
+        sendBlobFrame("ARTIFACT", relPath, payload);
     }
+
+    /** False in disk-output mode — Main can skip Files.readAllBytes that
+     *  would feed a no-op send. True otherwise (legacy streaming path). */
+    @Override
+    public boolean outputsOverIpc() { return !diskOutputMode; }
 
     @Override
     public void signalDone() throws IOException {

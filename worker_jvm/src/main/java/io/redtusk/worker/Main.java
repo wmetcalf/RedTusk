@@ -266,35 +266,41 @@ public final class Main {
         new RmetaWriter(job, result, durationMs).write(outDir);
         LOG.info("Wrote metadata.json (" + result.entries().size() + " entries, " + durationMs + " ms)");
 
-        // For file-based IPC the dispatcher reads outDir directly from the
-        // bind-mounted /out — these calls are no-ops. For vsock-based IPC
-        // we stream metadata.json + every output file back to the
-        // dispatcher; the channel implementation handles the framing.
+        // Skip the read+send loop entirely when the channel doesn't ship
+        // bytes over IPC (FileIpcChannel: output is on bind-mounted /out;
+        // VsockIpcChannel in disk-output mode: output is on a virtio-blk
+        // disk the host reads back). Reading file contents into a byte[]
+        // only to hand it to a no-op send wastes I/O + a megabyte+ of GC
+        // pressure per artifact.
         java.nio.file.Path metadataFile = outDir.toPath().resolve("metadata.json");
-        if (java.nio.file.Files.exists(metadataFile)) {
-            ipc.sendResult(java.nio.file.Files.readAllBytes(metadataFile));
-        } else {
-            LOG.warning("metadata.json not produced; sending empty result frame");
-            ipc.sendResult(new byte[0]);
-        }
-
-        // Stream all auxiliary outputs (thumbnails, embedded files, per-entry
-        // text). Skip metadata.json itself (already sent). Skip draft snapshot
-        // tempfiles. Use the relative path from outDir as the artifact key
-        // so the dispatcher can recreate the directory layout on the host.
-        try (java.util.stream.Stream<java.nio.file.Path> walk =
-                java.nio.file.Files.walk(outDir.toPath())) {
-            walk.filter(java.nio.file.Files::isRegularFile)
-                .filter(p -> !p.equals(metadataFile))
-                .filter(p -> !p.getFileName().toString().startsWith(".metadata.json.draft"))
-                .forEach(p -> {
-                    try {
-                        String rel = outDir.toPath().relativize(p).toString();
-                        ipc.sendArtifact(rel, java.nio.file.Files.readAllBytes(p));
-                    } catch (IOException e) {
-                        LOG.warning("Failed to send artifact " + p + ": " + e.getMessage());
-                    }
-                });
+        if (ipc.outputsOverIpc()) {
+            // Streaming channel: read metadata + every aux output and frame
+            // them over the wire. The channel implementation handles framing.
+            if (java.nio.file.Files.exists(metadataFile)) {
+                ipc.sendResult(java.nio.file.Files.readAllBytes(metadataFile));
+            } else {
+                LOG.warning("metadata.json not produced; sending empty result frame");
+                ipc.sendResult(new byte[0]);
+            }
+            // Stream all auxiliary outputs (thumbnails, embedded files,
+            // per-entry text). Skip metadata.json itself (already sent) and
+            // any orphan draft-snapshot tempfile.
+            try (java.util.stream.Stream<java.nio.file.Path> walk =
+                    java.nio.file.Files.walk(outDir.toPath())) {
+                walk.filter(java.nio.file.Files::isRegularFile)
+                    .filter(p -> !p.equals(metadataFile))
+                    .filter(p -> !p.getFileName().toString().startsWith(".metadata.json.draft"))
+                    .forEach(p -> {
+                        try {
+                            String rel = outDir.toPath().relativize(p).toString();
+                            ipc.sendArtifact(rel, java.nio.file.Files.readAllBytes(p));
+                        } catch (IOException e) {
+                            LOG.warning("Failed to send artifact " + p + ": " + e.getMessage());
+                        }
+                    });
+            }
+        } else if (!java.nio.file.Files.exists(metadataFile)) {
+            LOG.warning("metadata.json not produced (disk/file IPC); dispatcher will see metadata_missing");
         }
 
         ipc.signalDone();

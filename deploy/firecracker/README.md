@@ -91,12 +91,39 @@ does **not** wait for a vsock DONE frame, because the worker closes vsock on
 exit and a premature close would look like corruption and trigger a spurious
 retry.
 
+## How "disk-output mode" is detected at runtime
+
+There is **no config flag** to turn disk-output on or off. The worker
+auto-detects at restore time by checking whether `/dev/vdb` exists:
+
+* **Firecracker** attaches a per-slot virtio-blk → `/dev/vdb` is present →
+  `diskOutputMode=true` → `VsockIpcChannel.sendResult` /  `sendArtifact` are
+  no-ops, and `Main.java` skips the `Files.readAllBytes` that would have
+  fed them (`IpcChannel.outputsOverIpc() == false`).
+* **Docker-`microvm`/kata** does not attach an extra drive → no `/dev/vdb`
+  → `diskOutputMode=false` → `VsockIpcChannel` streams `RESULT`/`ARTIFACT`
+  frames the way it always did, so that path keeps working unchanged.
+
+The same `VsockIpcChannel` class (and the same checkpointed JVM image)
+serves both flavors. `afterRestore` logs `diskOutputMode=<bool>` so you can
+confirm which mode a slot picked up from its `fc.log`.
+
 Critical gotchas discovered + fixed:
 
 1. **virtio-vsock corrupts large transfers under concurrency** — see "Why
    output is on a disk" above. Output moved to virtio-blk; `fc_vcpu_count=1`.
-2. **CRaC caches env vars**: `System.getenv()` returns the build-time env
-   after restore. `VsockIpcChannel.afterRestore` reads `/proc/self/environ`.
+2. **`/proc/self/environ` on a CRaC-restored process reflects the BUILD
+   environ, not the restore environ.** `System.getenv()` caches at JVM start,
+   which is well-known; less obvious is that `/proc/self/environ` is set by
+   the kernel at `execve` and isn't rewritten by `CRaCRestoreFrom`, so it
+   still shows the values the Dockerfile's `RUN java …` was launched with.
+   The PORT/CID `getEnvFromProc` reads in `VsockIpcChannel.afterRestore`
+   "work" only because `build-vsock-checkpoint.sh` sets them to the same
+   values FC's `init-vsock` sets at runtime — a coincidence, not a
+   propagation. **Don't trust `/proc/self/environ` for a value that differs
+   between build and restore** — use a real environmental signal instead
+   (the disk-output mode detection above checks `/dev/vdb` existence for
+   exactly this reason).
 3. **CRaC re-announces READY**: `afterRestore` (fired via both org.crac and
    jdk.crac registrations) re-sends READY; the dispatcher skips stray READY
    frames.
@@ -112,7 +139,24 @@ Critical gotchas discovered + fixed:
 8. **`uds_path` ownership**: Firecracker binds the gateway at `uds_path`; the
    dispatcher binds only `<uds_path>_<port>` for the inbound listener.
 
-## Building the host environment
+## Quick setup (recommended)
+
+```sh
+# from the repo root:
+scripts/setup_firecracker_host.sh                 # rootfs + perms, kernel skipped
+scripts/setup_firecracker_host.sh --with-kernel   # also build a 6.18.x microVM kernel
+```
+
+Idempotent. Handles e2fsprogs install, `kvm` group membership, firecracker
+binary discovery, the `docker build` of `redtusk-worker:crac-vsock`, ext4
+assembly with the disk-output `init-vsock`, and stages assets at
+`/var/lib/redtusk/firecracker/{vmlinux,rootfs-vsock.ext4}` (override with
+`--state-dir`). Prints the env vars to run `redtusk serve` when done.
+
+The manual steps below are what the script does — useful if you want to
+build piecewise or understand the layers.
+
+## Building the host environment (manual)
 
 ```sh
 WORKDIR=/var/lib/redtusk/firecracker      # or any persistent dir
@@ -172,3 +216,34 @@ for the per-slot output disks. The container/compose dispatcher cannot host FC
 | `fc_outdisk_mib` | 1024 | per-slot output disk (sparse ext4) |
 | `fc_vsock_port` | 10001 | must match `redtusk.vsock_port=` in init |
 | `fc_vsock_retries` | 2 | retry job on control-plane desync |
+
+## Operational hardening
+
+The disk-output path adds a few constraints/checks worth knowing:
+
+* **`REDTUSK_SCRATCH_ROOT` must not contain whitespace.** The host passes
+  the rdump destination to `debugfs -R "rdump / <dest>"`, and debugfs's
+  request parser is space-tokenized — a path with a space silently dumps
+  to the wrong target. The runtime refuses such paths up front.
+* **Host-side extracted-size cap.** `_rdump_ext4_sync` enforces
+  `max_extracted_bytes` on the total it extracts from the output disk. A
+  worker that ignored its guest-side cap could otherwise dump up to
+  `fc_outdisk_mib` (1 GB) into the slot dir. The cap shutil-rmtrees the
+  partial extraction and fails the job cleanly.
+* **ext4 superblock magic check.** Before invoking debugfs, the dispatcher
+  validates `0xEF53` at offset 0x438 of the image. Defense-in-depth — a
+  compromised JVM crafting a malformed image (to chew on a possible
+  e2fsprogs CVE) gets rejected before debugfs ever sees it. debugfs still
+  runs as the unprivileged dispatcher user, so blast radius is bounded.
+* **`metadata.json` must be a regular file.** The dispatcher's
+  `_read_capped` rejects symlinks/FIFOs/sockets (a compromised worker
+  could otherwise plant `metadata.json -> /etc/passwd` for a stat oracle,
+  or a FIFO that would hang `read_bytes` indefinitely). Artifacts already
+  reject symlinks via `_copy_artifacts.is_symlink()`.
+* **Hard-fail on missing `/dev/vdb`.** The guest init does not "fall back
+  to tmpfs" if the output disk fails to mount — the host wouldn't see any
+  output anyway, so the init prints `FATAL` and powers off immediately
+  rather than silently losing every job's results.
+* **Don't oversubscribe.** The corruption returns above
+  `(pool_warm_size + pool_burst_size) × fc_vcpu_count > host cores`. Size
+  conservatively; with `fc_vcpu_count=1` the limit is just `cores`.

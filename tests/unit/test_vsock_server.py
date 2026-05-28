@@ -9,11 +9,11 @@ all but the address-family-specific bytes.
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import socket
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -37,7 +37,7 @@ def _run_worker(unix_path: str, *, send_result: bytes,
     for _ in range(50):
         if os.path.exists(unix_path):
             break
-        import time; time.sleep(0.01)
+        time.sleep(0.01)
     cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     cli.connect(unix_path)
     received: dict = {}
@@ -134,7 +134,7 @@ def test_rejects_path_traversal_artifact(tmp_path: Path) -> None:
         for _ in range(50):
             if os.path.exists(sock_path):
                 break
-            import time; time.sleep(0.01)
+            time.sleep(0.01)
         cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         cli.connect(sock_path)
         try:
@@ -193,7 +193,7 @@ def test_oversized_blob_rejected(tmp_path: Path) -> None:
         for _ in range(50):
             if os.path.exists(sock_path):
                 break
-            import time; time.sleep(0.01)
+            time.sleep(0.01)
         cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         cli.connect(sock_path)
         try:

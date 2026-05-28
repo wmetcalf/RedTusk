@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
-import io
 import os
-import tempfile
 import re
+import tempfile
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -16,9 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-import pyzipper
+import pyzipper  # type: ignore[import-untyped]
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -251,7 +250,7 @@ def _apply_per_request_limits(limits: Limits, request: Request) -> Limits:
     if entries is not None:
         overrides["max_embedded_entries"] = entries
 
-    return dataclasses.replace(limits, **overrides) if overrides else limits
+    return dataclasses.replace(limits, **overrides) if overrides else limits  # type: ignore[arg-type]
 
 
 async def _run_sync(request: Request) -> ExtractResult:
@@ -675,7 +674,7 @@ def _register_routes(app: FastAPI) -> None:
         body, content_type = render_for_endpoint()
         return Response(content=body, media_type=content_type)
 
-    _SECURITY_HEADERS = {
+    security_headers = {
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
@@ -693,7 +692,7 @@ def _register_routes(app: FastAPI) -> None:
     async def add_security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         response = await call_next(request)
         is_static = request.url.path.startswith("/static/")
-        for k, v in _SECURITY_HEADERS.items():
+        for k, v in security_headers.items():
             # Allow caching for immutable static assets (logo, favicon)
             if is_static and k == "Cache-Control":
                 response.headers.setdefault(k, "public, max-age=86400, immutable")

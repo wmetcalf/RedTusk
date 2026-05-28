@@ -187,13 +187,13 @@ class Limits:
                 )
 
         kwargs: dict[str, Any] = {}
-        for name, field in field_map.items():
+        for name, fld in field_map.items():
             env_name = f"REDTUSK_{name.upper()}"
             if env_name not in os.environ:
                 continue
             raw = os.environ[env_name]
             try:
-                kwargs[name] = _coerce(field.type, raw, env_name)
+                kwargs[name] = _coerce(fld.type, raw, env_name)
             except ValueError as e:
                 raise ConfigurationError(str(e)) from e
 

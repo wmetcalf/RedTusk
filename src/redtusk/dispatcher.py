@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -589,9 +591,20 @@ def _hardlink_or_copy(src: str, dst: str) -> None:
 
 
 def _read_capped(path: Path, max_bytes: int) -> bytes:
-    size = path.stat().st_size
-    if size > max_bytes:
-        raise ValueError(f"metadata.json too large: {size} > {max_bytes}")
+    # lstat (not stat) so a symlink doesn't pass through as the file it
+    # points to. The FC worker writes its outputs to a virtio-blk disk we
+    # rdump on the host; a compromised worker could plant a symlink named
+    # metadata.json -> /etc/passwd (or a FIFO that would block read_bytes
+    # forever). Reject anything that isn't a regular file.
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError(
+            errno.EINVAL,
+            f"metadata.json is not a regular file (mode={stat.filemode(st.st_mode)})",
+            str(path),
+        )
+    if st.st_size > max_bytes:
+        raise ValueError(f"metadata.json too large: {st.st_size} > {max_bytes}")
     return path.read_bytes()
 
 

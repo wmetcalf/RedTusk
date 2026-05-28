@@ -62,7 +62,7 @@ class JobStore(Protocol):
         state-filter pills so users can navigate large queues."""
         ...
 
-    async def search(self, query: str, limit: int = 50) -> list[JobRecord]:
+    async def search(self, query: str, limit: int = 50, offset: int = 0) -> list[JobRecord]:
         """Full-text search against job ID, filename, sha256, content-type, QR URLs.
 
         Matches are case-insensitive substring matches against the serialised

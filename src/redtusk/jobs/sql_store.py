@@ -613,7 +613,7 @@ class SqlJobStore:
 
     async def find_similar_phash(
         self, target_int8: int, max_distance: int, limit: int = 50
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Return rows whose phash is within ``max_distance`` Hamming bits of
         target. On Postgres uses bit_count for fast distance computation;
         on SQLite falls back to in-memory popcount over the full table."""
@@ -652,12 +652,12 @@ class SqlJobStore:
                     (target_int8, target_int8, max_distance, limit),
                 )
                 cols = [d.name for d in cur.description]
-                rows = [dict(zip(cols, row)) for row in await cur.fetchall()]
+                rows = [dict(zip(cols, row, strict=False)) for row in await cur.fetchall()]
         return rows
 
     async def find_by_colorhash(
         self, colorhash: str, limit: int = 50
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Exact-match colorhash lookup."""
         if self._dialect == "sqlite":
             async with self._aiosqlite_conn.execute(
@@ -669,7 +669,7 @@ class SqlJobStore:
                 rows = await cur.fetchall()
             keys = ("job_id", "entry_path", "phash", "colorhash", "sha256",
                     "filename", "content_type")
-            return [dict(zip(keys, r)) for r in rows]
+            return [dict(zip(keys, r, strict=False)) for r in rows]
         async with self._psycopg_pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -679,11 +679,11 @@ class SqlJobStore:
                     (colorhash, limit),
                 )
                 cols = [d.name for d in cur.description]
-                return [dict(zip(cols, row)) for row in await cur.fetchall()]
+                return [dict(zip(cols, row, strict=False)) for row in await cur.fetchall()]
 
     async def find_by_sha256(
         self, sha256: str, limit: int = 50
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Exact-match SHA-256 lookup."""
         if self._dialect == "sqlite":
             async with self._aiosqlite_conn.execute(
@@ -695,7 +695,7 @@ class SqlJobStore:
                 rows = await cur.fetchall()
             keys = ("job_id", "entry_path", "phash", "colorhash", "sha256",
                     "filename", "content_type")
-            return [dict(zip(keys, r)) for r in rows]
+            return [dict(zip(keys, r, strict=False)) for r in rows]
         async with self._psycopg_pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -705,4 +705,4 @@ class SqlJobStore:
                     (sha256, limit),
                 )
                 cols = [d.name for d in cur.description]
-                return [dict(zip(cols, row)) for row in await cur.fetchall()]
+                return [dict(zip(cols, row, strict=False)) for row in await cur.fetchall()]

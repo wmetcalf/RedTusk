@@ -100,21 +100,63 @@ def _make_ext4_sync(path: Path, size_mib: int) -> None:
     )
 
 
-def _rdump_ext4_sync(image: Path, dest: Path) -> list[str]:
+def _rdump_ext4_sync(image: Path, dest: Path, max_bytes: int) -> list[str]:
     """Extract an ext4 image's root contents to ``dest`` WITHOUT mounting
-    (no root) via debugfs rdump. Returns the top-level names written."""
+    (no root) via debugfs rdump. Returns the top-level names written.
+
+    Defense-in-depth against a malicious worker (compromised JVM) producing
+    an attacker-crafted ext4 image:
+      * Refuse if ``dest`` contains whitespace — debugfs's `-R` request is
+        space-tokenized and would misparse, dropping output into the wrong
+        path. ``dest`` derives from ``scratch_root``/<UUID>/out so this only
+        bites a misconfigured operator, but reject early either way.
+      * Sanity-check the ext4 superblock magic before invoking debugfs.
+        Catches obviously-corrupt images; gives a smaller surface for
+        e2fsprogs CVEs to chew on (debugfs still runs as the unprivileged
+        FC dispatcher user, so blast radius is bounded).
+      * Cap total extracted size at ``max_bytes`` — a runaway worker could
+        otherwise fill the slot dir up to the size of the output disk.
+    """
     import subprocess
+    dest_str = str(dest)
+    if any(c.isspace() for c in dest_str):
+        raise ValueError(f"rdump dest path must not contain whitespace: {dest_str!r}")
+    # ext4 superblock magic 0xEF53 lives at offset 0x438 (1080) of the image.
+    try:
+        with open(image, "rb") as f:
+            f.seek(0x438)
+            magic = f.read(2)
+    except OSError as exc:
+        raise ValueError(f"cannot read ext4 image {image}: {exc}") from exc
+    if magic != b"\x53\xef":
+        raise ValueError(
+            f"ext4 magic check failed on {image} (got {magic!r}); refusing to invoke debugfs"
+        )
+
     dest.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["debugfs", "-R", f"rdump / {dest}", str(image)],
+        ["debugfs", "-R", f"rdump / {dest_str}", str(image)],
         check=True, capture_output=True,
     )
     # debugfs rdump always recreates lost+found; drop it so it isn't mistaken
     # for an artifact.
+    import shutil
     lf = dest / "lost+found"
     if lf.exists():
-        import shutil
         shutil.rmtree(lf, ignore_errors=True)
+    # Enforce the host-side extracted-size cap. A compromised worker that
+    # ignored max_extracted_bytes guest-side could otherwise dump up to
+    # fc_outdisk_mib bytes into the slot dir.
+    total = 0
+    for p in dest.rglob("*"):
+        if p.is_file() and not p.is_symlink():
+            total += p.stat().st_size
+            if total > max_bytes:
+                shutil.rmtree(dest, ignore_errors=True)
+                dest.mkdir(parents=True, exist_ok=True)
+                raise ValueError(
+                    f"extracted output exceeds cap: >{max_bytes} bytes"
+                )
     return [p.name for p in dest.iterdir()]
 
 
@@ -490,8 +532,11 @@ class FirecrackerWorkerRuntime:
             raise WorkerError(f"FC slot {slot.id}: job has no input_path on host")
 
         # Same descriptor schema as DockerWorkerRuntime.signal_job so the
-        # Java worker can't tell them apart. input_path/output_dir are
-        # rewritten inside VsockIpcChannel.receiveJob to /tmp/redtusk-{in,out}/.
+        # Java worker can't tell them apart. input_path/output_dir below are
+        # PLACEHOLDERS — VsockIpcChannel.receiveJob unconditionally rewrites
+        # them to /tmp/redtusk-{in,out} inside the guest. (output_dir
+        # specifically backs onto the virtio-blk output disk; see init-vsock.)
+        # input_path/output_dir below are placeholders; the worker rewrites them.
         job_dict = {
             "input_path": f"/in/{job.filename_hint or 'input'}",
             "output_dir": "/out",
@@ -562,7 +607,9 @@ class FirecrackerWorkerRuntime:
         if not image.exists():
             return
         try:
-            names = await asyncio.to_thread(_rdump_ext4_sync, image, out_dir)
+            names = await asyncio.to_thread(
+                _rdump_ext4_sync, image, out_dir, self.limits.max_extracted_bytes
+            )
             _logger.info("fc.outdisk_read", slot=str(slot.id), entries=len(names))
         except Exception as exc:
             _logger.warning("fc.outdisk_read_error", slot=str(slot.id), error=str(exc))

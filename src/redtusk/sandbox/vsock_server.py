@@ -1,16 +1,30 @@
 """Dispatcher-side vsock server for the microvm worker profile.
 
 Each worker slot owns a :class:`VsockSlotServer` that binds an AF_VSOCK
-listener on a unique port (or an AF_UNIX socket for tests). The protocol
-mirrors VsockIpcChannel.java verbatim:
+listener on a unique port (or an AF_UNIX socket for tests).
 
-  worker → host:   "READY\\n"
-  host   → worker: "GO\\n"
-  host   → worker: "JOB <N>\\n" + N bytes UTF-8 JobDescriptor JSON
-                   "INPUT <M>\\n" + M bytes input-file payload
-  worker → host:   "RESULT <K>\\n" + K bytes metadata.json
-                   "ARTIFACT <relPath> <L>\\n" + L bytes per file (zero or more)
-                   "DONE\\n"
+Two flavors of worker use this server, with different output paths:
+
+* **Docker-microvm (kata) profile** — full streaming, both directions::
+
+      worker → host:   "READY\\n"
+      host   → worker: "GO\\n"
+      host   → worker: "JOB <N>\\n" + N bytes UTF-8 JobDescriptor JSON
+                       "INPUT <M>\\n" + M bytes input-file payload
+      worker → host:   "RESULT <K>\\n" + K bytes metadata.json
+                       "ARTIFACT <relPath> <L>\\n" + L bytes per file (0+)
+                       "DONE\\n"
+
+* **Firecracker profile** — control plane only over vsock; OUTPUT (metadata
+  + artifacts) goes to a per-slot virtio-blk ext4 disk the guest mounts at
+  ``/tmp/redtusk-out`` and the host reads back via ``debugfs rdump`` after
+  the VM powers off. The worker's ``VsockIpcChannel.sendResult`` /
+  ``sendArtifact`` are no-ops in this mode. The host's
+  :meth:`receive_result` is correspondingly a no-op; ``wait()`` reads the
+  disk and FC-process-exit is the "done" signal (do NOT await a vsock
+  DONE frame — the worker closes the socket on exit, which would look
+  like protocol corruption). Output is OFF vsock because the guest
+  virtio-vsock layer corrupts large transfers under concurrent host load.
 
 The server is intentionally **synchronous in its socket I/O** — the
 dispatcher invokes it via :func:`asyncio.to_thread` so the asyncio
@@ -119,7 +133,7 @@ class VsockSlotServer:
     def send_go(self) -> None:
         self._send_line("GO")
 
-    def send_job(self, descriptor: dict, input_bytes: bytes) -> None:
+    def send_job(self, descriptor: dict[str, Any], input_bytes: bytes) -> None:
         """Send the JOB+INPUT frame pair. Descriptor is JSON-encoded; input
         bytes are sent verbatim."""
         if self._conn is None:
@@ -258,7 +272,7 @@ class VsockSlotServer:
             remaining -= len(chunk)
         return b"".join(chunks)
 
-    def _stream_blob_to_file(self, length: int, fobj) -> None:
+    def _stream_blob_to_file(self, length: int, fobj: Any) -> None:
         """Same as _read_blob but streams to file to avoid holding huge
         payloads in memory."""
         assert self._conn is not None

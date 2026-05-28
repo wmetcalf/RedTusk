@@ -56,7 +56,23 @@ See `deploy/firecracker/README.md`. Requires:
 IPC split: vsock carries the control handshake + job descriptor + input;
 **output (metadata + artifacts) goes to a per-slot virtio-blk disk**, not
 vsock (the guest vsock layer corrupts large transfers under concurrency).
-Keep `fc_vcpu_count=1` and don't oversubscribe — see the FC README.
+Keep `fc_vcpu_count=1` and don't oversubscribe — see the FC README. The
+worker auto-detects disk-output mode by checking `/dev/vdb` existence at
+restore (no config flag), so the same rootfs serves both FC (with the
+output drive) and any legacy Docker-`microvm`/kata streaming setup
+(without it).
+
+Operator notes:
+* `REDTUSK_SCRATCH_ROOT` **must not contain whitespace** — the host's
+  `debugfs rdump` request would misparse otherwise. The runtime refuses
+  such paths up front.
+* The dispatcher needs `mkfs.ext4` + `debugfs` (e2fsprogs) for per-slot
+  output disks, plus the `firecracker` binary and `/dev/kvm` access
+  (kvm group or root). The container/compose dispatcher has none of
+  these — run the FC dispatcher on the bare-metal host.
+* `max_extracted_bytes` is enforced **host-side** on the rdumped output
+  (a runaway worker can otherwise fill the slot dir up to
+  `fc_outdisk_mib`).
 
 Full 932-file stratified corpus (FC alone, in-flight 28):
 

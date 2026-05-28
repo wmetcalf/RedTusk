@@ -133,7 +133,7 @@ def build_run_argv(
         argv += [
             "--env", "REDTUSK_WORKER_IPC=vsock",
             "--env", f"REDTUSK_VSOCK_PORT={port_for_slot}",
-            "--env", f"REDTUSK_VSOCK_HOST_CID=2",
+            "--env", "REDTUSK_VSOCK_HOST_CID=2",
         ]
     else:
         # File-IPC profiles (default, high-density): bind-mount the per-slot

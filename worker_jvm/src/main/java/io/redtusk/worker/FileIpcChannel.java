@@ -75,4 +75,9 @@ public final class FileIpcChannel implements IpcChannel {
         // intentionally empty — process exit signals completion in the
         // file-IPC contract.
     }
+
+    /** Output is on bind-mounted /out; sends are no-ops. Tell Main to skip
+     *  the Files.readAllBytes it would otherwise hand to a discarding send. */
+    @Override
+    public boolean outputsOverIpc() { return false; }
 }

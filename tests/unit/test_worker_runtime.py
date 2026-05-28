@@ -167,7 +167,9 @@ async def test_signal_job_writes_job_json(
     # control.go is created (file-based signal, no FIFO)
     assert (tmp_path / "control" / "control.go").exists()
 
-    job_json = json.loads((tmp_path / "control" / "job.json").read_bytes())  # job.json at scratch root
+    # job.json at scratch root
+    job_bytes = (tmp_path / "control" / "job.json").read_bytes()
+    job_json = json.loads(job_bytes)
     assert job_json["sha256"] == "deadbeef"
     assert job_json["limits"]["max_recursion_depth"] == limits.max_recursion_depth
     assert job_json["limits"]["max_embedded_entries"] == limits.max_embedded_entries
