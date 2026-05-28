@@ -23,8 +23,23 @@ services:
       # Pass /dev/kvm through so the firecracker subprocess can ioctl(KVM_*).
       # Combined with the group_add below this lets UID 10001 open the device.
       - /dev/kvm
-    group_add:
+    # FC-only mode drops the Docker socket: in pure-FC the dispatcher never
+    # calls `docker run` (it spawns firecracker subprocesses directly), so
+    # leaving the base's `/var/run/docker.sock:ro` mount in place would just
+    # be an idle privilege the api container doesn't need (a compromised api
+    # could still issue Docker API calls — mount `:ro` only restricts the
+    # bind-mount itself, not the socket I/O). Compose-2.x `!reset` overrides
+    # the base list so these are gone, not appended-to (GPT-5.5 review G1).
+    volumes: !reset
+      # Preserve the state-dir bind-mount from the base; explicitly omit the
+      # docker socket. Same path inside and outside the api container so the
+      # vsock UDS + per-slot output disks resolve identically.
+      - "${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}:${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}"
+      # FC assets (kernel + rootfs) — read-only.
+      - "${REDTUSK_FC_HOST_DIR:-/var/lib/redtusk/firecracker}:/var/lib/redtusk/firecracker:ro"
+    group_add: !reset
       # Host's kvm group GID — auto-detected by redtusk-compose, written to .env.
+      # No DOCKER_GID: pure-FC doesn't talk to the Docker daemon.
       - "${KVM_GID:?KVM_GID not set — run via ./deploy/docker/redtusk-compose --firecracker, not raw docker compose}"
     environment:
       - REDTUSK_WORKER_RUNTIME=firecracker
@@ -41,13 +56,6 @@ services:
       # container env, which Limits.from_env rejects as a deprecated-alias
       # conflict). For FC, just set REDTUSK_POOL_SIZE in .env to your warm
       # target — DON'T oversubscribe: (warm + burst) × fc_vcpu_count ≤ host cores.
-    volumes:
-      # FC assets: kernel + rootfs. Read-only — built once via the setup script.
-      # The host path AND container path are both /var/lib/redtusk/firecracker
-      # so REDTUSK_FC_KERNEL / REDTUSK_FC_ROOTFS resolve identically on either
-      # side (the dispatcher passes these paths into the firecracker config,
-      # and FC opens them from inside the container's mount namespace).
-      - "${REDTUSK_FC_HOST_DIR:-/var/lib/redtusk/firecracker}:/var/lib/redtusk/firecracker:ro"
     # /tmp must be at least the size of the largest single artifact we'd
     # process — Starlette spools multipart uploads here. The default
     # 128m blew up under concurrent large uploads; bump to 1g for FC.

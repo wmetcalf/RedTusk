@@ -84,8 +84,8 @@ Operator notes:
 * The dispatcher needs `mkfs.ext4` + `debugfs` (e2fsprogs) for per-slot
   output disks, plus the `firecracker` binary and `/dev/kvm` access
   (kvm group or root). Under our containerized setup, these dependencies
-  are fully baked into the `Dockerfile.fc-dispatcher` image and mounted via the 
-  `--firecracker` compose overlay, so you can run the dispatcher inside the 
+  are fully baked into the `Dockerfile.fc-dispatcher` image and mounted via the
+  `--firecracker` compose overlay, so you can run the dispatcher inside the
   compose stack securely.
 * `max_extracted_bytes` is enforced **host-side** on the rdumped output
   (a runaway worker can otherwise fill the slot dir up to

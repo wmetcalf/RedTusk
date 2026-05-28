@@ -170,3 +170,24 @@ def test_from_env_valid_profiles() -> None:
         with patch.dict(os.environ, {"REDTUSK_PROFILE": profile}, clear=True):
             limits = Limits.from_env()
         assert limits.profile == profile
+
+
+def test_from_env_rejects_both_legacy_and_new_kwarg() -> None:
+    """Regression for GPT-5.5 review G2: passing both pool_size (legacy
+    alias) and pool_warm_size (new name) to from_env used to silently
+    keep the new name. Now both-set raises ConfigurationError."""
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(ConfigurationError, match="deprecated alias"):
+            Limits.from_env(pool_size=1, pool_warm_size=2)
+        with pytest.raises(ConfigurationError, match="deprecated alias"):
+            Limits.from_env(pool_max_size=10, pool_concurrent_size=20)
+
+
+def test_from_env_rejects_fc_outdisk_exceeding_max_extracted() -> None:
+    """Regression for GPT-5.5 review G3: a fc_outdisk_mib far larger than
+    max_extracted_bytes creates a pre-extraction DoS window (host rdumps
+    the whole image before the cap fires). from_env now rejects."""
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(ConfigurationError, match="fc_outdisk_mib"):
+            # 2 GiB disk + default 500 MiB cap = far over the 128 MiB slack
+            Limits.from_env(fc_outdisk_mib=2048)

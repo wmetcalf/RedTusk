@@ -143,8 +143,13 @@ class Limits:
     # Per-slot output disk (virtio-blk ext4) size in MiB. The worker writes
     # metadata.json + artifacts here instead of streaming them over vsock;
     # the host reads it back after the VM exits. Sparse — only actual output
-    # consumes host disk. Must exceed a job's max output (metadata + artifacts).
-    fc_outdisk_mib: int = 1024
+    # consumes host disk. Sized just above max_extracted_bytes (default 500
+    # MiB) + ext4 metadata slack: the host extracts the whole image before
+    # the cap fires inside `_rdump_ext4_sync`, so keeping disk size close to
+    # the extracted cap eliminates the pre-extraction DoS window where a
+    # compromised worker could otherwise fill the slot dir up to whatever
+    # huge disk size we chose (GPT-5.5 review G3).
+    fc_outdisk_mib: int = 600
 
     # Artifact persistence/download caps. The worker has per-file embedded caps;
     # these bound aggregate host-side copy and zip creation.
@@ -222,11 +227,13 @@ class Limits:
                     ) from e
 
         # Same backward-compat at the kwarg level (for tests that pass
-        # pool_size=99 directly to from_env).
+        # pool_size=99 directly to from_env). Reject conflicts BEFORE
+        # remap so Limits.from_env(pool_size=1, pool_warm_size=2) raises
+        # instead of silently using the new name (caught in GPT-5.5 review).
         for old_kw, new_kw in [("pool_size", "pool_warm_size"),
                                ("pool_max_size", "pool_concurrent_size")]:
             if old_kw in overrides:
-                if new_kw in kwargs:
+                if new_kw in overrides or new_kw in kwargs:
                     raise ConfigurationError(
                         f"both {old_kw} and {new_kw} were passed; "
                         f"{old_kw} is a deprecated alias — pick one"
@@ -240,6 +247,22 @@ class Limits:
             raise ConfigurationError(
                 f"REDTUSK_PROFILE must be one of {sorted(_VALID_PROFILES)}, "
                 f"got {instance.profile!r}"
+            )
+        # fc_outdisk_mib (the FC per-slot output disk SIZE) must stay close
+        # to max_extracted_bytes (the host-side cap on what the worker may
+        # actually output): _rdump_ext4_sync extracts the whole ext4 image
+        # before the cap fires, so an attacker who compromised the JVM could
+        # otherwise write up to disk size into the slot dir before being
+        # noticed (GPT-5.5 review G3). We allow 128 MiB of slack above
+        # max_extracted_bytes — enough for ext4 metadata + a margin — and
+        # raise otherwise, so an operator who raises one knows to raise both.
+        outdisk_bytes = instance.fc_outdisk_mib * 1024 * 1024
+        cap = instance.max_extracted_bytes + 128 * 1024 * 1024
+        if outdisk_bytes > cap:
+            raise ConfigurationError(
+                f"fc_outdisk_mib ({instance.fc_outdisk_mib} MiB = {outdisk_bytes} B) "
+                f"exceeds max_extracted_bytes + 128 MiB slack ({cap} B); "
+                f"lower fc_outdisk_mib or raise max_extracted_bytes"
             )
         return instance
 

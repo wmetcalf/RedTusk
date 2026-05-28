@@ -537,18 +537,45 @@ class Dispatcher:
             _hardlink_or_copy(tmp_path, str(dest))
 
             job.worker_started_at = datetime.now(UTC)
-            await self._runtime.signal_job(slot, job, limits)
-            # Drain vsock result BEFORE the container exits (microvm only;
-            # no-op for file-IPC). Mirrors the async dispatch path so both
-            # the queued and the sync submission flows handle microvm.
-            try:
-                await asyncio.wait_for(
-                    self._runtime.receive_result(slot),
-                    timeout=float(limits.job_timeout_s),
-                )
-            except (TimeoutError, Exception) as exc:
-                _logger.warning("dispatcher.sync_receive_result_error",
-                                job_id=job.id, error=str(exc))
+            # signal + receive with VsockProtocolError retry, mirroring the
+            # async dispatch path so sync callers don't fail on transient
+            # vsock frame corruption that queued callers would retry over
+            # (GPT-5.5 review G4). Each retry reaps the corrupted slot and
+            # claims a fresh one. The first attempt's slot was claimed above;
+            # subsequent attempts re-claim inside the loop.
+            attempt = 0
+            while True:
+                await self._runtime.signal_job(slot, job, limits)
+                try:
+                    await asyncio.wait_for(
+                        self._runtime.receive_result(slot),
+                        timeout=float(limits.job_timeout_s),
+                    )
+                except VsockProtocolError as exc:
+                    if attempt < limits.fc_vsock_retries:
+                        _logger.warning(
+                            "dispatcher.sync_vsock_corruption_retry",
+                            job_id=job.id, attempt=attempt, error=str(exc),
+                        )
+                        # Reap this slot, claim a fresh one, re-stage input.
+                        await self._pool.release(slot, success=False)
+                        slot = await self._pool.claim(
+                            timeout=float(limits.sync_queue_timeout_s)
+                        )
+                        dest = Path(slot.scratch_dir) / "in" / filename  # type: ignore[arg-type]
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        _hardlink_or_copy(tmp_path, str(dest))
+                        job.worker_started_at = datetime.now(UTC)
+                        attempt += 1
+                        continue
+                    _logger.warning(
+                        "dispatcher.sync_vsock_corruption_exhausted",
+                        job_id=job.id, attempt=attempt, error=str(exc),
+                    )
+                except (TimeoutError, Exception) as exc:
+                    _logger.warning("dispatcher.sync_receive_result_error",
+                                    job_id=job.id, error=str(exc))
+                break
             exit_code = await self._runtime.wait(
                 slot, timeout=float(limits.job_timeout_s)
             )
