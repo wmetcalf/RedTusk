@@ -346,7 +346,9 @@ class DockerWorkerRuntime:
         if slot.scratch_dir is None:
             raise WorkerError(f"slot {slot.id} has no scratch_dir for artifacts")
         out_dir = Path(slot.scratch_dir) / "out"
-        result = await asyncio.to_thread(server.receive_result, out_dir)
+        result = await asyncio.to_thread(
+            server.receive_result, out_dir, self.limits.max_extracted_bytes
+        )
         # The worker wrote metadata.json bytes as the RESULT frame; persist
         # them at the canonical path the file-IPC ingest path expects.
         metadata_path = out_dir / "metadata.json"

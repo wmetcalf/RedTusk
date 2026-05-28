@@ -237,3 +237,56 @@ def test_oversized_blob_rejected(tmp_path: Path) -> None:
     finally:
         t.join(timeout=5)
         server.close()
+
+
+def test_cumulative_max_extracted_bytes_exceeded(tmp_path: Path) -> None:
+    sock_path = str(tmp_path / "ipc.sock")
+    server = VsockSlotServer(unix_path=sock_path, ready_timeout_s=5, recv_timeout_s=5)
+    server.bind()
+
+    def greedy_worker():
+        for _ in range(50):
+            if os.path.exists(sock_path):
+                break
+            time.sleep(0.01)
+        cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        cli.connect(sock_path)
+        try:
+            _send_line(cli, "READY")
+            _read_line(cli)
+            # Read+discard JOB
+            buf = bytearray()
+            while not buf.endswith(b"\n"):
+                buf.extend(cli.recv(1))
+            jl = int(buf.decode("utf-8").strip().split(" ")[1])
+            while jl > 0:
+                jl -= len(cli.recv(jl))
+            # Read+discard INPUT
+            buf.clear()
+            while not buf.endswith(b"\n"):
+                buf.extend(cli.recv(1))
+            il = int(buf.decode("utf-8").strip().split(" ")[1])
+            while il > 0:
+                il -= len(cli.recv(il))
+
+            # Send RESULT (10 bytes)
+            _send_line(cli, "RESULT 10")
+            _send_blob(cli, b"0123456789")
+
+            # Send ARTIFACT (10 bytes) -> total is now 20, exceeding cap 15!
+            _send_line(cli, "ARTIFACT extra.bin 10")
+            _send_blob(cli, b"abcdefghij")
+        finally:
+            cli.close()
+
+    t = threading.Thread(target=greedy_worker)
+    t.start()
+    try:
+        server.accept_ready()
+        server.send_go()
+        server.send_job({"x": 1}, b"in")
+        with pytest.raises(VsockProtocolError, match="exceeds cap"):
+            server.receive_result(tmp_path / "out", max_extracted_bytes=15)
+    finally:
+        t.join(timeout=5)
+        server.close()

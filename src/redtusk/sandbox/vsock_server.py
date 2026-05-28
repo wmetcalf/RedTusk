@@ -144,12 +144,16 @@ class VsockSlotServer:
         self._conn.sendall(f"INPUT {len(input_bytes)}\n".encode())
         self._conn.sendall(input_bytes)
 
-    def receive_result(self, artifacts_dir: Path) -> dict[str, Any]:
+    def receive_result(
+        self, artifacts_dir: Path, max_extracted_bytes: int | None = None
+    ) -> dict[str, Any]:
         """Read RESULT then zero or more ARTIFACT frames then DONE.
 
         :param artifacts_dir: Host directory where ARTIFACT payloads are
             written. The worker-side relative path is preserved so e.g.
             ``embedded/0001.bin`` lands at ``artifacts_dir/embedded/0001.bin``.
+        :param max_extracted_bytes: Host-side cumulative cap on total extracted bytes
+            (metadata + all artifacts combined).
 
         Returns a dict with::
 
@@ -165,6 +169,7 @@ class VsockSlotServer:
 
         metadata: bytes | None = None
         artifacts: list[str] = []
+        total_bytes = 0
 
         while True:
             line = self._read_line()
@@ -176,12 +181,28 @@ class VsockSlotServer:
             if tag == "RESULT":
                 if len(parts) != 2:
                     raise VsockProtocolError(f"malformed RESULT header: {header}")
-                metadata = self._read_blob(int(parts[1]))
+                length = int(parts[1])
+                if max_extracted_bytes is not None and total_bytes + length > max_extracted_bytes:
+                    import shutil
+                    shutil.rmtree(artifacts_dir, ignore_errors=True)
+                    artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    raise VsockProtocolError(
+                        f"extracted output exceeds cap: >{max_extracted_bytes} bytes"
+                    )
+                metadata = self._read_blob(length)
+                total_bytes += length
             elif tag == "ARTIFACT":
                 if len(parts) < 3:
                     raise VsockProtocolError(f"malformed ARTIFACT header: {header}")
                 # Path may contain spaces; the LAST token is the length.
                 length = int(parts[-1])
+                if max_extracted_bytes is not None and total_bytes + length > max_extracted_bytes:
+                    import shutil
+                    shutil.rmtree(artifacts_dir, ignore_errors=True)
+                    artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    raise VsockProtocolError(
+                        f"extracted output exceeds cap: >{max_extracted_bytes} bytes"
+                    )
                 rel_path = " ".join(parts[1:-1])
                 # Reject path-traversal: relative path with no .. components,
                 # no absolute paths.
@@ -192,6 +213,7 @@ class VsockSlotServer:
                 with open(dest, "wb") as f:
                     self._stream_blob_to_file(length, f)
                 artifacts.append(rel_path)
+                total_bytes += length
             elif tag == "READY":
                 # CRaC restore can re-announce READY: afterRestore() reopens
                 # the socket and re-sends READY, and announceReady() is
