@@ -1,6 +1,9 @@
 package io.redtusk.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.crac.Context;
+import org.crac.Core;
+import org.crac.Resource;
 import org.newsclub.net.unix.AFSocket;
 import org.newsclub.net.unix.AFSocketCapability;
 import org.newsclub.net.unix.AFUNIXSocketAddress;
@@ -49,7 +52,7 @@ import java.util.logging.Logger;
  * because the dispatcher may not have its vsock listener bound when the
  * worker spawns. Once connected, the socket stays open until {@link #close()}.
  */
-public final class VsockIpcChannel implements IpcChannel {
+public final class VsockIpcChannel implements IpcChannel, Resource {
     private static final Logger LOG = Logger.getLogger(VsockIpcChannel.class.getName());
 
     static final int DEFAULT_HOST_CID = 2;
@@ -66,9 +69,12 @@ public final class VsockIpcChannel implements IpcChannel {
     /** Where the worker writes its output before streaming it back over vsock. */
     static final String WORKER_OUTPUT_DIR = "/tmp/redtusk-out";
 
-    private final int hostCid;
-    private final int port;
-    private final String unixPathOverride;
+    private int hostCid;
+    private int port;
+    // NOT final: re-read from env on afterRestore so a checkpoint taken with
+    // REDTUSK_VSOCK_UNIX_PATH=/build/sock can be restored in an environment
+    // where the env var is unset (→ fall back to AF_VSOCK at hostCid/port).
+    private String unixPathOverride;
     private Socket socket;
     /** Use a binary input stream — we need to read framed binary payloads
      *  (JobDescriptor JSON, then arbitrary input bytes) intermixed with
@@ -81,6 +87,130 @@ public final class VsockIpcChannel implements IpcChannel {
         this.hostCid = hostCid;
         this.port = port;
         this.unixPathOverride = unixPathOverride;
+        registerForCheckpointRestore();
+    }
+
+    /**
+     * Register this channel for CRaC checkpoint/restore.
+     *
+     * <p>We register with BOTH the org.crac shim AND (reflectively) with
+     * jdk.crac if available. The shim's register() on some CRaC builds does
+     * not forward to jdk.crac, so registering only with the shim leaves
+     * beforeCheckpoint un-called and the open vsock fd trips warp's
+     * CheckpointOpenSocketException check. Registering with jdk.crac directly
+     * is reflection-based so we don't take a hard compile dep on it (the
+     * codebase still has to compile on non-CRaC JDKs in tests).
+     */
+    private void registerForCheckpointRestore() {
+        try {
+            Core.getGlobalContext().register(this);
+        } catch (Throwable t) {
+            LOG.fine("org.crac register failed: " + t);
+        }
+        try {
+            Class<?> jdkCore = Class.forName("jdk.crac.Core");
+            Object ctx = jdkCore.getMethod("getGlobalContext").invoke(null);
+            // Build a jdk.crac.Resource proxy that forwards to our org.crac.Resource methods.
+            Class<?> jdkResourceCls = Class.forName("jdk.crac.Resource");
+            Object proxy = java.lang.reflect.Proxy.newProxyInstance(
+                jdkResourceCls.getClassLoader(),
+                new Class<?>[]{ jdkResourceCls },
+                (p, method, args) -> {
+                    String name = method.getName();
+                    if ("beforeCheckpoint".equals(name)) {
+                        this.beforeCheckpoint(null);
+                        return null;
+                    }
+                    if ("afterRestore".equals(name)) {
+                        this.afterRestore(null);
+                        return null;
+                    }
+                    // Object methods (toString/hashCode/equals)
+                    return method.invoke(this, args);
+                }
+            );
+            ctx.getClass().getMethod("register", jdkResourceCls).invoke(ctx, proxy);
+            LOG.info("VsockIpcChannel: registered with jdk.crac.Core");
+        } catch (ClassNotFoundException e) {
+            LOG.fine("jdk.crac not available (non-CRaC JDK)");
+        } catch (Throwable t) {
+            LOG.warning("Failed to register with jdk.crac directly: " + t);
+        }
+    }
+
+    // ── CRaC Resource hooks ─────────────────────────────────────────────────
+    //
+    // Lifecycle around a checkpoint+restore cycle:
+    //   1. announceReady() opens the socket, sends READY, leaves it connected.
+    //   2. Caller invokes Core.checkpointRestore().
+    //   3. → beforeCheckpoint(): we close the socket. The JVM dumps process
+    //      state with no live fd, so the snapshot is portable across restores.
+    //   4. JVM resumes (possibly hours later, on a different host).
+    //   5. → afterRestore(): we reopen the socket and resend READY so the
+    //      dispatcher knows this slot is ready. The next call to
+    //      awaitGoSignal/receiveJob reads from the new this.din/socket fields.
+    //
+    // The Resource contract requires that we are NOT blocked in a read at
+    // checkpoint time. Main.runCheckpoint puts Core.checkpointRestore()
+    // strictly between announceReady() and processJob(), so we are guaranteed
+    // to be idle (not inside socket.read()) when this fires.
+
+    @Override
+    public void beforeCheckpoint(Context<? extends Resource> context) throws IOException {
+        if (socket != null && !socket.isClosed()) {
+            LOG.info("VsockIpcChannel.beforeCheckpoint: closing socket to " + describePeer());
+            try { socket.close(); } catch (IOException ignored) {}
+        }
+        socket = null;
+        din = null;
+        writer = null;
+    }
+
+    @Override
+    public void afterRestore(Context<? extends Resource> context) throws IOException {
+        // CRaC restores all fields verbatim from the checkpoint snapshot,
+        // including unixPathOverride which we may have set at BUILD time
+        // (REDTUSK_VSOCK_UNIX_PATH pointing at a build listener) but which
+        // is irrelevant in the restore environment (e.g. inside an FC
+        // microVM, we want AF_VSOCK to host CID 2 instead). Re-read the env
+        // here so the post-restore peer is decided fresh.
+        // CRITICAL: System.getenv() returns env cached at JVM-start —
+        // unchanged across CRaC restore. We read /proc/self/environ directly
+        // so the restored worker sees the FC init's actual environment.
+        String envUnix = getEnvFromProc("REDTUSK_VSOCK_UNIX_PATH");
+        this.unixPathOverride = (envUnix != null && !envUnix.isEmpty()) ? envUnix : null;
+        String portRaw = getEnvFromProc("REDTUSK_VSOCK_PORT");
+        if (portRaw != null && !portRaw.isEmpty()) {
+            try { this.port = Integer.parseInt(portRaw.trim()); } catch (NumberFormatException ignore) {}
+        }
+        String cidRaw = getEnvFromProc("REDTUSK_VSOCK_HOST_CID");
+        if (cidRaw != null && !cidRaw.isEmpty()) {
+            try { this.hostCid = Integer.parseInt(cidRaw.trim()); } catch (NumberFormatException ignore) {}
+        }
+        LOG.info("VsockIpcChannel.afterRestore: reconnecting to " + describePeer());
+        announceReady();
+    }
+
+    /** Read a single env var from /proc/self/environ (current process's
+     *  actual environment, NOT the cached System.getenv() snapshot). */
+    private static String getEnvFromProc(String name) {
+        try {
+            byte[] data = java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/proc/self/environ"));
+            String prefix = name + "=";
+            int start = 0;
+            for (int i = 0; i <= data.length; i++) {
+                if (i == data.length || data[i] == 0) {
+                    if (i > start) {
+                        String entry = new String(data, start, i - start, StandardCharsets.UTF_8);
+                        if (entry.startsWith(prefix)) {
+                            return entry.substring(prefix.length());
+                        }
+                    }
+                    start = i + 1;
+                }
+            }
+        } catch (IOException ignore) {}
+        return null;
     }
 
     /** Connect to the host (with retry) and send the READY line. */
@@ -163,12 +293,18 @@ public final class VsockIpcChannel implements IpcChannel {
 
     @Override
     public void sendResult(byte[] metadataJson) throws IOException {
-        sendBlobFrame("RESULT", null, metadataJson);
+        // No-op. Output (metadata.json + artifacts) is written to
+        // WORKER_OUTPUT_DIR (/tmp/redtusk-out), which is a virtio-blk ext4
+        // disk the host reads back after the VM powers off. Streaming large
+        // payloads over vsock corrupts them under concurrent host load
+        // (guest virtio-vsock race), so output bypasses vsock entirely; only
+        // the control handshake + job descriptor + input + DONE use vsock.
+        LOG.fine("VsockIpcChannel.sendResult: no-op (output on virtio-blk disk)");
     }
 
     @Override
     public void sendArtifact(String relPath, byte[] payload) throws IOException {
-        sendBlobFrame("ARTIFACT", relPath, payload);
+        // No-op — see sendResult. The artifact is already on the output disk.
     }
 
     @Override
@@ -294,10 +430,12 @@ public final class VsockIpcChannel implements IpcChannel {
             AFUNIXSocketAddress addr = AFUNIXSocketAddress.of(new java.io.File(unixPathOverride));
             return org.newsclub.net.unix.AFUNIXSocket.connectTo(addr);
         }
-        if (!AFSocket.supports(AFSocketCapability.CAPABILITY_VSOCK)) {
-            throw new IOException("AF_VSOCK is not supported on this host "
-                + "(no /dev/vsock kernel module loaded?)");
-        }
+        // NOTE: skip AFSocket.supports(CAPABILITY_VSOCK). The check caches
+        // its result on first call; if first call is during CRaC checkpoint
+        // build (where /dev/vsock doesn't exist), the cached "false" persists
+        // into the restored process even when /dev/vsock IS available in the
+        // FC microVM. We let the actual socket() / connect() syscall surface
+        // the real error if vsock truly isn't there.
         AFVSOCKSocketAddress addr = AFVSOCKSocketAddress.ofPortAndCID(port, hostCid);
         AFVSOCKSocket s = AFVSOCKSocket.newInstance();
         s.connect(addr);

@@ -1,0 +1,22 @@
+diff --git a/src/runtime/pkg/katautils/create.go b/src/runtime/pkg/katautils/create.go
+index b60b0be..6ff0b6a 100644
+--- a/src/runtime/pkg/katautils/create.go
++++ b/src/runtime/pkg/katautils/create.go
+@@ -131,7 +131,7 @@ func CreateSandbox(ctx context.Context, vci vc.VC, ociSpec specs.Spec, runtimeCo
+ 	}
+ 
+ 	if !rootFs.Mounted && len(sandboxConfig.Containers) == 1 {
+-		if rootFs.Source != "" && !vc.HasOptionPrefix(rootFs.Options, vc.VirtualVolumePrefix) && !vc.IsErofsRootFS(rootFs) {
++		if rootFs.Source != "" && !vc.HasOptionPrefix(rootFs.Options, vc.VirtualVolumePrefix) && !vc.IsErofsRootFS(rootFs) && !vc.IsNydusRootFSType(rootFs.Type) {
+ 			realPath, err := ResolvePath(rootFs.Source)
+ 			if err != nil {
+ 				return nil, vc.Process{}, err
+@@ -264,7 +264,7 @@ func CreateContainer(ctx context.Context, sandbox vc.VCSandbox, ociSpec specs.Sp
+ 	}
+ 
+ 	if !rootFs.Mounted {
+-		if rootFs.Source != "" && !vc.IsNydusRootFSType(rootFs.Type) && !vc.IsErofsRootFS(rootFs) {
++		if rootFs.Source != "" && !vc.IsNydusRootFSType(rootFs.Type) && !vc.IsErofsRootFS(rootFs) && rootFs.Type != "overlay" {
+ 			realPath, err := ResolvePath(rootFs.Source)
+ 			if err != nil {
+ 				return vc.Process{}, err

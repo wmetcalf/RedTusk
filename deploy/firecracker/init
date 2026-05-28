@@ -1,0 +1,19 @@
+#!/bin/sh
+exec </dev/console >/dev/console 2>&1
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mount -t tmpfs tmpfs /tmp -o size=512m,exec
+mount -t tmpfs tmpfs /var/lib/redtusk -o size=64m
+mkdir -p /scratch
+mount /dev/vdb /scratch
+# Worker expects /in and /out at top-level (bind-mount semantics)
+mkdir -p /in /out
+mount --bind /scratch/in /in
+mount --bind /scratch/out /out
+chown -R 10001:10001 /scratch /var/lib/redtusk /tmp 2>/dev/null
+hostname fc-worker
+export PATH=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export JAVA_HOME=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64
+cd /app
+exec setpriv --reuid=10001 --regid=10001 --clear-groups java -XX:CRaCEngine=warp -XX:CRaCRestoreFrom=/app/checkpoint -jar /app/redtusk-worker.jar

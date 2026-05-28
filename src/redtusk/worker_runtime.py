@@ -11,10 +11,10 @@ from uuid import UUID
 
 from redtusk._version import __version__
 from redtusk.errors import WorkerError
-from redtusk.sandbox.container import _vsock_port_for_slot
-from redtusk.sandbox.vsock_server import VsockSlotServer
 from redtusk.observability.logging import get_logger
 from redtusk.runtime.docker_runtime import DockerRuntime
+from redtusk.sandbox.container import _vsock_port_for_slot
+from redtusk.sandbox.vsock_server import VsockSlotServer
 
 if TYPE_CHECKING:
     from redtusk.limits import Limits
@@ -84,6 +84,40 @@ def _rmtree(p: Path) -> None:
     shutil.rmtree(p, ignore_errors=True)
 
 
+def _make_ext4_sync(path: Path, size_mib: int) -> None:
+    """Create a sparse ext4 image (no root needed). Used as the FC per-slot
+    output disk: the worker writes metadata.json + artifacts onto it, the host
+    reads them back after the VM exits — keeping large output OFF the vsock
+    stream (which corrupts large transfers under concurrency)."""
+    import subprocess
+    with open(path, "wb") as f:
+        f.truncate(size_mib * 1024 * 1024)
+    # no journal + 0 reserved blocks: faster mkfs, more usable space, and the
+    # disk is single-use (written once in-guest, read once on the host).
+    subprocess.run(
+        ["mkfs.ext4", "-q", "-F", "-O", "^has_journal", "-m", "0", str(path)],
+        check=True, capture_output=True,
+    )
+
+
+def _rdump_ext4_sync(image: Path, dest: Path) -> list[str]:
+    """Extract an ext4 image's root contents to ``dest`` WITHOUT mounting
+    (no root) via debugfs rdump. Returns the top-level names written."""
+    import subprocess
+    dest.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["debugfs", "-R", f"rdump / {dest}", str(image)],
+        check=True, capture_output=True,
+    )
+    # debugfs rdump always recreates lost+found; drop it so it isn't mistaken
+    # for an artifact.
+    lf = dest / "lost+found"
+    if lf.exists():
+        import shutil
+        shutil.rmtree(lf, ignore_errors=True)
+    return [p.name for p in dest.iterdir()]
+
+
 # ---------------------------------------------------------------------------
 # DockerWorkerRuntime
 # ---------------------------------------------------------------------------
@@ -101,7 +135,7 @@ class DockerWorkerRuntime:
     # microvm profile: per-slot host-side vsock listener. Keyed by slot UUID;
     # populated in spawn() and torn down in reap(). For file-IPC profiles this
     # dict stays empty and the existing scratch-dir code path runs unchanged.
-    _vsock_servers: dict[UUID, "VsockSlotServer"] = field(default_factory=dict, init=False)
+    _vsock_servers: dict[UUID, VsockSlotServer] = field(default_factory=dict, init=False)
     # Tracks which profile each slot was spawned with so subsequent methods
     # (poll_fifo, signal_job, reap) can branch correctly without re-deriving
     # from limits (which may have changed).
@@ -306,3 +340,247 @@ class DockerWorkerRuntime:
         if not slot.container_id:
             return False
         return await self.docker.is_running(slot.container_id)
+
+
+# ---------------------------------------------------------------------------
+# FirecrackerWorkerRuntime
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FirecrackerWorkerRuntime:
+    """Concrete WorkerRuntime that runs each worker in a fresh Firecracker
+    microVM, talking AF_VSOCK to a host-side :class:`VsockSlotServer`.
+
+    Unlike :class:`DockerWorkerRuntime` this backend bypasses Docker entirely:
+    each slot is a Firecracker subprocess. Per-slot lifecycle:
+
+      1. ``create_scratch`` makes a tiny per-slot dir (just for FC config +
+         vsock UDS, ~1 KiB). No /in or /out bind-mounts.
+      2. ``spawn`` binds the host listener at ``<slot_dir>/vsock.sock_<port>``
+         (Firecracker convention), writes the per-slot FC config JSON, and
+         launches FC as a subprocess. The container_id is the PID.
+      3. ``poll_fifo`` blocks until the worker connects + sends READY.
+      4. ``signal_job`` sends ``GO`` + ``JOB`` + ``INPUT`` over vsock.
+      5. ``receive_result`` drains ``RESULT`` + ``ARTIFACT`` frames into
+         ``<slot_dir>/out`` so the dispatcher's _ingest_result is unchanged.
+      6. ``wait`` waits for the FC process to exit (worker did poweroff).
+      7. ``reap`` kills FC if still alive, tears down the vsock listener,
+         removes the slot dir.
+
+    Profile is ignored — FC always uses vsock IPC. The worker image
+    must be the ``redtusk-worker:crac-vsock`` flavor whose CRaC
+    checkpoint was taken in vsock IPC mode.
+    """
+
+    limits: Limits
+
+    _scratch_root: Path = field(init=False)
+    _vsock_servers: dict[UUID, VsockSlotServer] = field(default_factory=dict, init=False)
+    _fc_procs: dict[UUID, asyncio.subprocess.Process] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        self._scratch_root = Path(self.limits.scratch_root)
+
+    async def create_scratch(self, slot_id: UUID) -> Path:
+        # vsock carries the control handshake + job descriptor + input bytes.
+        # OUTPUT (metadata.json + artifacts) goes over a per-slot virtio-blk
+        # ext4 disk instead — large vsock transfers corrupt under concurrency
+        # (see fc_vcpu_count note in limits.py). /out is where the host
+        # rdumps the disk into, for the dispatcher's _ingest_result.
+        slot_dir = self._scratch_root / str(slot_id)
+        await asyncio.to_thread(_mkdir, slot_dir / "out")
+        await asyncio.to_thread(os.chmod, slot_dir, 0o777)
+        await asyncio.to_thread(os.chmod, slot_dir / "out", 0o777)
+        await asyncio.to_thread(
+            _make_ext4_sync, slot_dir / "outdisk.ext4", self.limits.fc_outdisk_mib
+        )
+        return slot_dir
+
+    async def spawn(self, slot: Slot, limits: Limits, profile: str) -> str:
+        if slot.scratch_dir is None:
+            raise WorkerError(f"slot {slot.id} has no scratch_dir")
+        slot_dir = Path(slot.scratch_dir)
+        port = limits.fc_vsock_port
+
+        # Bind the host listener BEFORE launching FC so the worker's
+        # afterRestore-driven connect succeeds on first try.
+        vsock_uds = slot_dir / "vsock.sock"          # FC owns this path
+        listener_path = f"{vsock_uds}_{port}"        # we own this one
+        server = VsockSlotServer(
+            unix_path=listener_path,
+            ready_timeout_s=float(limits.worker_warmup_timeout_s),
+            recv_timeout_s=float(limits.job_timeout_s),
+        )
+        await asyncio.to_thread(server.bind)
+        self._vsock_servers[slot.id] = server
+
+        # FC config JSON
+        fc_config = {
+            "boot-source": {
+                "kernel_image_path": limits.fc_kernel,
+                "boot_args": (
+                    "console=ttyS0 reboot=k panic=1 pci=off init=/init ro "
+                    f"redtusk.vsock_port={port}"
+                ),
+            },
+            "drives": [
+                {
+                    "drive_id": "rootfs",
+                    "path_on_host": limits.fc_rootfs,
+                    "is_root_device": True,
+                    "is_read_only": True,
+                },
+                {
+                    # Output disk (vdb): guest mounts it at /tmp/redtusk-out,
+                    # worker writes results here, host rdumps it after exit.
+                    "drive_id": "outdisk",
+                    "path_on_host": str(slot_dir / "outdisk.ext4"),
+                    "is_root_device": False,
+                    "is_read_only": False,
+                },
+            ],
+            "machine-config": {
+                "vcpu_count": limits.fc_vcpu_count,
+                "mem_size_mib": limits.fc_mem_mib,
+                "smt": False,
+            },
+            "vsock": {"guest_cid": 3, "uds_path": str(vsock_uds)},
+        }
+        config_path = slot_dir / "fc-config.json"
+        await asyncio.to_thread(
+            config_path.write_text,
+            json.dumps(fc_config, indent=2),
+        )
+        log_path = slot_dir / "fc.log"
+
+        # Launch FC. `sudo` is needed to set up KVM unless the redtusk user
+        # is in the kvm group. We document the latter and don't shell out
+        # to sudo here (avoids password prompts in the dispatcher).
+        proc = await asyncio.create_subprocess_exec(
+            limits.fc_bin,
+            "--no-api",
+            "--config-file", str(config_path),
+            stdout=await asyncio.to_thread(open, log_path, "w"),
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        self._fc_procs[slot.id] = proc
+        return str(proc.pid)
+
+    async def poll_fifo(self, slot: Slot, timeout: float) -> bool:  # noqa: ASYNC109
+        server = self._vsock_servers.get(slot.id)
+        if server is None:
+            return False
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(server.accept_ready),
+                timeout=timeout,
+            )
+            return True
+        except (TimeoutError, OSError):
+            return False
+
+    async def signal_job(self, slot: Slot, job: JobRecord, limits: Limits) -> None:
+        if slot.scratch_dir is None:
+            raise WorkerError(f"slot {slot.id} has no scratch_dir")
+        server = self._vsock_servers.get(slot.id)
+        if server is None:
+            raise WorkerError(f"slot {slot.id} has no vsock server")
+        if job.input_path is None:
+            raise WorkerError(f"FC slot {slot.id}: job has no input_path on host")
+
+        # Same descriptor schema as DockerWorkerRuntime.signal_job so the
+        # Java worker can't tell them apart. input_path/output_dir are
+        # rewritten inside VsockIpcChannel.receiveJob to /tmp/redtusk-{in,out}/.
+        job_dict = {
+            "input_path": f"/in/{job.filename_hint or 'input'}",
+            "output_dir": "/out",
+            "sha256": job.input_sha256,
+            "filename_hint": job.filename_hint,
+            "limits": {
+                "max_recursion_depth":  limits.max_recursion_depth,
+                "max_embedded_entries": limits.max_embedded_entries,
+                "max_extracted_bytes":  limits.max_extracted_bytes,
+                "ocr_timeout_s":        limits.ocr_timeout_s,
+            },
+            "enable_qr":            limits.enable_qr,
+            "enable_ocr":           limits.enable_ocr,
+            "enable_thumbnails":    limits.enable_thumbnails,
+            "ocr_lang":             limits.ocr_lang,
+            "ocr_psm":              limits.ocr_psm,
+            "sandbox_profile":      limits.profile,
+            "sandbox_runtime":      "firecracker",
+            "appcds":               True,
+            "ksm":                  not limits.disable_ksm,
+            "crac":                 True,
+            "redtusk_version":      __version__,
+            "zxing_path":           "/usr/local/bin/ZXingReader",
+            "tesseract_path":       "tesseract",
+            "ocr_max_image_dim":    limits.ocr_max_image_dim,
+            "ocr_skip_blank":       limits.ocr_skip_blank,
+        }
+        input_bytes = await asyncio.to_thread(Path(job.input_path).read_bytes)
+        await asyncio.to_thread(server.send_go)
+        await asyncio.to_thread(server.send_job, job_dict, input_bytes)
+
+    async def receive_result(self, slot: Slot) -> None:
+        # Disk-output mode: nothing to receive over vsock. The worker writes
+        # results to the virtio-blk disk; the DONE signal is the FC process
+        # exiting (the guest powers off after the worker finishes). We read
+        # the disk in wait() once the VM has exited and the guest has flushed
+        # + unmounted it. Do NOT read the vsock here: the worker closes it on
+        # exit, and a premature close would look like corruption and trigger a
+        # spurious retry even though the output is already safe on the disk.
+        if slot.scratch_dir is None:
+            raise WorkerError(f"slot {slot.id} not in receivable state")
+
+    async def wait(self, slot: Slot, timeout: float) -> int:  # noqa: ASYNC109
+        proc = self._fc_procs.get(slot.id)
+        if proc is None:
+            return TIMEOUT_EXIT_CODE
+        rc = TIMEOUT_EXIT_CODE
+        try:
+            rc = await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            rc = TIMEOUT_EXIT_CODE
+        # FC has exited → the guest synced + unmounted the output disk on
+        # poweroff, so the ext4 image is consistent. Read it into /out for
+        # _ingest_result (and partial-salvage on non-zero exit). Best-effort.
+        await self._read_outdisk(slot)
+        return rc
+
+    async def _read_outdisk(self, slot: Slot) -> None:
+        if slot.scratch_dir is None:
+            return
+        image = Path(slot.scratch_dir) / "outdisk.ext4"
+        out_dir = Path(slot.scratch_dir) / "out"
+        if not image.exists():
+            return
+        try:
+            names = await asyncio.to_thread(_rdump_ext4_sync, image, out_dir)
+            _logger.info("fc.outdisk_read", slot=str(slot.id), entries=len(names))
+        except Exception as exc:
+            _logger.warning("fc.outdisk_read_error", slot=str(slot.id), error=str(exc))
+
+    async def reap(self, slot: Slot) -> None:
+        proc = self._fc_procs.pop(slot.id, None)
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+        server = self._vsock_servers.pop(slot.id, None)
+        if server is not None:
+            await asyncio.to_thread(server.close)
+        if slot.scratch_dir:
+            await asyncio.to_thread(_rmtree, slot.scratch_dir)
+
+    async def is_container_running(self, slot: Slot) -> bool:
+        proc = self._fc_procs.get(slot.id)
+        return proc is not None and proc.returncode is None

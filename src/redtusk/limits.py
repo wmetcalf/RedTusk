@@ -54,21 +54,41 @@ class Limits:
     # Skip OCR on blank/uniform images detected via phash + colorhash.
     ocr_skip_blank: bool = True
 
-    # Pool. Default is half of available logical cores (min 2) — sized to
-    # keep half the host free for everything else. Override with the
-    # REDTUSK_POOL_SIZE env var or an explicit constructor argument.
-    pool_size: int = field(
+    # Pool sizing — two-dimensional:
+    #
+    #   pool_warm_size:        how many slots to keep IDLE and ready.
+    #                          Sized to amortize spawn cost; default ½ cores.
+    #                          (Legacy name: pool_size — still accepted.)
+    #
+    #   pool_concurrent_size:  hard ceiling on TOTAL in-flight slots
+    #                          (idle + assigned + warming). Bigger than
+    #                          pool_warm_size so bursts can spawn cold
+    #                          slots beyond the warm reserve.
+    #                          (Legacy name: pool_max_size — still accepted.)
+    #
+    # Bursting: when the queue grows for pool_burst_trigger_s, pool_warm_size
+    # is temporarily lifted by pool_burst_size; after pool_burst_drain_s of
+    # quiet, it relaxes back. The pool_concurrent_size cap is never exceeded
+    # regardless of burst.
+    pool_warm_size: int = field(
         default_factory=lambda: max(2, (os.cpu_count() or 4) // 2))
     pool_burst_size: int = 5
     pool_burst_trigger_s: int = 3
     pool_burst_drain_s: int = 60
-    # Default cap = full host (cpu_count). Lifted from the old hardcoded 32
-    # so big-iron hosts can scale up without surgery. Bursting still respects
-    # pool_burst_size on top of pool_size.
-    pool_max_size: int = field(
+    pool_concurrent_size: int = field(
         default_factory=lambda: max(8, os.cpu_count() or 8))
     pool_spawn_rate_limit: float = 4.0
     pool_spawn_retry_max: int = 5
+
+    @property
+    def pool_size(self) -> int:
+        """Legacy alias for :attr:`pool_warm_size` (renamed for clarity)."""
+        return self.pool_warm_size
+
+    @property
+    def pool_max_size(self) -> int:
+        """Legacy alias for :attr:`pool_concurrent_size` (renamed for clarity)."""
+        return self.pool_concurrent_size
 
     # Worker boot
     worker_warmup_timeout_s: int = 15
@@ -97,6 +117,34 @@ class Limits:
     # uses its own sandbox and should not be combined with these Docker options.
     worker_seccomp_profile: str = ""
     worker_apparmor_profile: str = ""
+
+    # Firecracker microVM runtime config — used only when worker_runtime="firecracker".
+    # See deploy/firecracker/README.md for how to populate fc_kernel + fc_rootfs.
+    fc_bin:        str = "/opt/kata/bin/firecracker"
+    fc_kernel:     str = "/var/lib/redtusk/firecracker/vmlinux"
+    fc_rootfs:     str = "/var/lib/redtusk/firecracker/rootfs-vsock.ext4"
+    # MUST stay 1: with >1 vCPU the guest's virtio-vsock driver races the JVM's
+    # socket writes across CPUs, and under concurrent host load that corrupts
+    # large RESULT/ARTIFACT transfers on the wire (extra bytes → frame desync →
+    # metadata_missing). Empirically vcpu=2 gave ~44% failures on artifact-heavy
+    # files at concurrency 8; vcpu=1 drops corruption to ~0. Tika parse is
+    # effectively single-threaded so the throughput cost is negligible.
+    fc_vcpu_count: int = 1
+    fc_mem_mib:    int = 1024
+    # AF_VSOCK port the worker connects to on the host gateway. Must match
+    # the redtusk.vsock_port=<N> kernel cmdline arg in init-vsock.
+    fc_vsock_port: int = 10001
+    # Retries when the vsock RESULT/ARTIFACT stream desyncs (a transport-level
+    # corruption the guest virtio-vsock layer can still produce under heavy
+    # host CPU contention even at fc_vcpu_count=1). Each retry re-runs the job
+    # on a fresh microVM. Corruption is detected (frame desync), so this is a
+    # bounded, deterministic retry — not a blind loop.
+    fc_vsock_retries: int = 2
+    # Per-slot output disk (virtio-blk ext4) size in MiB. The worker writes
+    # metadata.json + artifacts here instead of streaming them over vsock;
+    # the host reads it back after the VM exits. Sparse — only actual output
+    # consumes host disk. Must exceed a job's max output (metadata + artifacts).
+    fc_outdisk_mib: int = 1024
 
     # Artifact persistence/download caps. The worker has per-file embedded caps;
     # these bound aggregate host-side copy and zip creation.
@@ -127,7 +175,12 @@ class Limits:
         field_map = {f.name: f for f in fields(cls)}
 
         # Validate overrides reference real fields before anything else.
+        # Legacy aliases (pool_size / pool_max_size) are allowed and
+        # remapped further down.
+        _legacy_kwarg_aliases = {"pool_size", "pool_max_size"}
         for key in overrides:
+            if key in _legacy_kwarg_aliases:
+                continue
             if key not in field_map:
                 raise ConfigurationError(
                     f"unknown Limits field in override: {key!r}"
@@ -143,6 +196,42 @@ class Limits:
                 kwargs[name] = _coerce(field.type, raw, env_name)
             except ValueError as e:
                 raise ConfigurationError(str(e)) from e
+
+        # Backward-compat: REDTUSK_POOL_SIZE / REDTUSK_POOL_MAX_SIZE were
+        # renamed to REDTUSK_POOL_WARM_SIZE / REDTUSK_POOL_CONCURRENT_SIZE.
+        # Translate legacy names if the new ones aren't set; error if both
+        # are present so a .env mistake doesn't silently win.
+        legacy_aliases = [
+            ("POOL_SIZE", "pool_warm_size"),
+            ("POOL_MAX_SIZE", "pool_concurrent_size"),
+        ]
+        for env_suffix, new_field in legacy_aliases:
+            env_name = f"REDTUSK_{env_suffix}"
+            if env_name in os.environ:
+                new_env = f"REDTUSK_{new_field.upper()}"
+                if new_field in kwargs or new_env in os.environ:
+                    raise ConfigurationError(
+                        f"both {env_name} and {new_env} are set; "
+                        f"{env_name} is a deprecated alias — pick one"
+                    )
+                try:
+                    kwargs[new_field] = int(os.environ[env_name])
+                except ValueError as e:
+                    raise ConfigurationError(
+                        f"{env_name}={os.environ[env_name]!r} is not a valid int"
+                    ) from e
+
+        # Same backward-compat at the kwarg level (for tests that pass
+        # pool_size=99 directly to from_env).
+        for old_kw, new_kw in [("pool_size", "pool_warm_size"),
+                               ("pool_max_size", "pool_concurrent_size")]:
+            if old_kw in overrides:
+                if new_kw in kwargs:
+                    raise ConfigurationError(
+                        f"both {old_kw} and {new_kw} were passed; "
+                        f"{old_kw} is a deprecated alias — pick one"
+                    )
+                kwargs[new_kw] = overrides.pop(old_kw)
 
         kwargs.update(overrides)
 

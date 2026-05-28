@@ -33,13 +33,15 @@ def test_defaults_are_sensible() -> None:
     assert limits.ocr_all is False
 
     # Pool
-    expected_pool_size = max(2, (os.cpu_count() or 4) // 2)
-    expected_pool_max_size = max(8, os.cpu_count() or 8)
-    assert limits.pool_size == expected_pool_size
+    expected_warm = max(2, (os.cpu_count() or 4) // 2)
+    expected_concurrent = max(8, os.cpu_count() or 8)
+    assert limits.pool_warm_size == expected_warm
+    assert limits.pool_size == expected_warm                # legacy alias
     assert limits.pool_burst_size == 5
     assert limits.pool_burst_trigger_s == 3
     assert limits.pool_burst_drain_s == 60
-    assert limits.pool_max_size == expected_pool_max_size
+    assert limits.pool_concurrent_size == expected_concurrent
+    assert limits.pool_max_size == expected_concurrent       # legacy alias
     assert limits.pool_spawn_rate_limit == 4.0
     assert limits.pool_spawn_retry_max == 5
 
@@ -67,7 +69,7 @@ def test_defaults_are_sensible() -> None:
 def test_is_frozen() -> None:
     limits = Limits()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        limits.pool_size = 99  # type: ignore[misc]
+        limits.pool_warm_size = 99  # type: ignore[misc]
 
 
 def test_from_env_with_no_env_returns_defaults() -> None:
@@ -77,9 +79,9 @@ def test_from_env_with_no_env_returns_defaults() -> None:
 
 
 def test_from_env_reads_int_fields() -> None:
-    with patch.dict(os.environ, {"REDTUSK_POOL_SIZE": "20"}, clear=True):
+    with patch.dict(os.environ, {"REDTUSK_POOL_WARM_SIZE": "20"}, clear=True):
         limits = Limits.from_env()
-    assert limits.pool_size == 20
+    assert limits.pool_warm_size == 20
 
 
 def test_from_env_reads_float_fields() -> None:
@@ -109,9 +111,27 @@ def test_from_env_reads_bool_falsy() -> None:
 
 
 def test_from_env_explicit_overrides_take_precedence() -> None:
-    with patch.dict(os.environ, {"REDTUSK_POOL_SIZE": "20"}, clear=True):
-        limits = Limits.from_env(pool_size=99)
-    assert limits.pool_size == 99
+    with patch.dict(os.environ, {"REDTUSK_POOL_WARM_SIZE": "20"}, clear=True):
+        limits = Limits.from_env(pool_warm_size=99)
+    assert limits.pool_warm_size == 99
+
+
+def test_from_env_legacy_pool_size_alias() -> None:
+    """REDTUSK_POOL_SIZE is the old name for REDTUSK_POOL_WARM_SIZE — must still work."""
+    with patch.dict(os.environ, {"REDTUSK_POOL_SIZE": "33"}, clear=True):
+        limits = Limits.from_env()
+    assert limits.pool_warm_size == 33
+    assert limits.pool_size == 33  # property alias
+
+
+def test_from_env_legacy_and_new_pool_size_conflict() -> None:
+    from redtusk.errors import ConfigurationError
+    with patch.dict(
+        os.environ,
+        {"REDTUSK_POOL_SIZE": "20", "REDTUSK_POOL_WARM_SIZE": "30"},
+        clear=True,
+    ), pytest.raises(ConfigurationError, match="deprecated alias"):
+        Limits.from_env()
 
 
 def test_from_env_invalid_int_raises_configuration_error() -> None:

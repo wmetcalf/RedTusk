@@ -27,6 +27,7 @@ from redtusk.observability.metrics import (
     record_jobs_in_flight,
 )
 from redtusk.pool import Pool
+from redtusk.sandbox.vsock_server import VsockProtocolError
 from redtusk.schema import validate_rmeta
 from redtusk.types import ExtractResult, JobRecord, JobState, Slot
 from redtusk.worker_runtime import WorkerRuntime
@@ -173,7 +174,7 @@ class Dispatcher:
         pile up waiting for a slot, and the majority time out before they are
         served.
         """
-        max_in_flight = self._limits.pool_size + self._limits.pool_burst_size
+        max_in_flight = self._limits.pool_warm_size + self._limits.pool_burst_size
         while True:
             try:
                 if len(self._in_flight) >= max_in_flight:
@@ -213,9 +214,9 @@ class Dispatcher:
             except Exception as exc:
                 _logger.warning("dispatcher.cleanup_error", error=str(exc))
 
-    async def _dispatch(self, job: JobRecord) -> None:
+    async def _dispatch(self, job: JobRecord, attempt: int = 0) -> None:
         """Run one job end-to-end. Does not raise — failures are recorded in the store."""
-        _logger.info("dispatcher.dispatch_start", job_id=job.id)
+        _logger.info("dispatcher.dispatch_start", job_id=job.id, attempt=attempt)
         record_jobs_in_flight(len(self._in_flight))
         slot: Slot | None = None
         slot_released = False
@@ -260,6 +261,19 @@ class Dispatcher:
                     self._runtime.receive_result(slot),
                     timeout=float(self._limits.job_timeout_s),
                 )
+            except VsockProtocolError as exc:
+                # The vsock RESULT/ARTIFACT stream desynced — a transport-level
+                # corruption the guest virtio-vsock layer can produce under
+                # heavy host CPU contention (see fc_vcpu_count note in limits).
+                # The worker's bytes were fine; the wire mangled them. Retry on
+                # a fresh microVM rather than failing a perfectly good job.
+                if attempt < self._limits.fc_vsock_retries:
+                    _logger.warning("dispatcher.vsock_corruption_retry",
+                                    job_id=job.id, attempt=attempt, error=str(exc))
+                    await release_slot(success=False)
+                    return await self._dispatch(job, attempt + 1)
+                _logger.warning("dispatcher.vsock_corruption_exhausted",
+                                job_id=job.id, attempt=attempt, error=str(exc))
             except (TimeoutError, Exception) as exc:
                 # Don't fail the whole dispatch yet — the wait() below will
                 # surface the worker exit code. Log so the cause is visible.

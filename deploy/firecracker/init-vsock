@@ -1,0 +1,81 @@
+#!/bin/sh
+# Firecracker init for vsock-IPC redtusk-worker.
+#
+# No virtio-blk /scratch device — job descriptor + input bytes flow over
+# AF_VSOCK directly into the worker's VsockIpcChannel, and results stream
+# back the same way. The dispatcher binds a VsockSlotServer on the host
+# at the agreed-upon (CID 2, port) and the worker connects after CRaC
+# restore. /tmp is a tmpfs the worker uses to stage input bytes and the
+# (transient) output dir.
+
+exec </dev/console >/dev/console 2>&1
+
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mount -o remount,ro /
+mount -t tmpfs tmpfs /tmp -o size=512m,exec
+mount -t tmpfs tmpfs /var/lib/redtusk -o size=64m
+mount -t tmpfs tmpfs /run -o size=64m
+chown -R 10001:10001 /tmp /var/lib/redtusk 2>/dev/null
+
+# Output disk (vdb): the worker writes metadata.json + artifacts to
+# /tmp/redtusk-out, which we back with a virtio-blk ext4 instead of tmpfs.
+# The host reads this image after we power off — keeping large output OFF the
+# vsock stream (which corrupts large transfers under concurrency). vsock still
+# carries the control handshake + job descriptor + input bytes.
+mkdir -p /tmp/redtusk-out
+if mount -t ext4 /dev/vdb /tmp/redtusk-out 2>/dev/null; then
+    chown 10001:10001 /tmp/redtusk-out
+    echo "init: mounted output disk /dev/vdb at /tmp/redtusk-out"
+else
+    echo "init: WARN /dev/vdb output disk not mounted (falling back to tmpfs)"
+fi
+
+# Auto-bind the virtio vsock device (id 0x13). Without udev to do this
+# for us, the kernel sees the device but no driver attaches, so AF_VSOCK
+# socket() returns ENODEV in userspace. Walk the virtio bus and bind any
+# device with class 0x0013 to the vsock driver.
+for dev in /sys/bus/virtio/devices/virtio*; do
+    if [ -f "$dev/device" ]; then
+        id=$(cat "$dev/device")
+        if [ "$id" = "0x0013" ]; then
+            name=$(basename "$dev")
+            if echo "$name" > /sys/bus/virtio/drivers/vmw_vsock_virtio_transport/bind 2>&1; then
+                echo "init: bound vsock device $name"
+            else
+                echo "init: vsock bind FAILED for $name"
+            fi
+            break
+        fi
+    fi
+done
+
+hostname fc-worker
+
+export PATH=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export JAVA_HOME=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64
+export REDTUSK_WORKER_IPC=vsock
+# Host CID 2 = VMADDR_CID_HOST. Port is passed in via kernel cmdline.
+export REDTUSK_VSOCK_HOST_CID=2
+# Allow the dispatcher to inject the port via kernel cmdline: redtusk.vsock_port=<N>
+RVPP=$(cat /proc/cmdline | tr ' ' '\n' | grep '^redtusk.vsock_port=' | cut -d= -f2)
+export REDTUSK_VSOCK_PORT=${RVPP:-10001}
+
+cd /app
+# NOTE: no `-jar` here. With -XX:CRaCRestoreFrom the JVM continues the
+# checkpointed execution; passing a main jar makes CRaC try to launch a
+# "new main entry" (fails with ClassNotFoundException, noisy RestoreException).
+setpriv --reuid=10001 --regid=10001 --clear-groups java \
+    -XX:CRaCEngine=warp \
+    -XX:CRaCRestoreFrom=/app/checkpoint
+RC=$?
+
+# Worker exited (after writing its result to the output disk + sending the
+# DONE control frame, or on error). Cleanly unmount the output disk so the
+# host reads a consistent ext4, then sync + poweroff.
+umount /tmp/redtusk-out 2>/dev/null
+sync
+echo "init: WORKER-EXITED-rc=$RC"
+poweroff -f 2>/dev/null
+reboot -f

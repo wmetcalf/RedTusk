@@ -142,31 +142,32 @@ RUN mkdir -p /scratch /in /out /var/lib/redtusk /app/checkpoint && \
 
 USER 10001:10001
 
-# Take the warp checkpoint at build time.
+# Vsock-mode CRaC checkpoint:
 #
-# When --checkpoint runs, Main.java:
-#   1. KsmHelper.markHeapMergeable()
-#   2. FifoLoop.createFifo(/scratch)            ← creates /scratch/control/control.ready
-#   3. Core.checkpointRestore()                 ← warp snapshots process to /app/checkpoint
-#                                                  and EXITS with non-zero. Hence `|| true`.
-# At runtime, the restored process resumes at step 4 onward:
-#   4. CapDropper.dropCheckpointRestoreCapability()
-#   5. FifoLoop.createFifo(/scratch)            ← re-creates (mount has hidden the build-time one)
-#   6. processJob(/scratch)
-RUN java \
-    -XX:CRaCEngine=warp \
-    -XX:CRaCCheckpointTo=/app/checkpoint \
-    -XX:AOTCache=/app/redtusk.aot \
-    --enable-native-access=ALL-UNNAMED \
-    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
-    -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
-    -Djava.library.path=/app \
-    -jar /app/redtusk-worker.jar \
-    --checkpoint /scratch \
-    || true && \
-    test -d /app/checkpoint && \
-    test -n "$(ls /app/checkpoint/)" && \
-    echo "warp checkpoint captured: $(du -sh /app/checkpoint | cut -f1)"
+# We take the snapshot with the worker configured for AF_VSOCK IPC so that
+# the restored JVM (running inside a Firecracker microVM) wakes up already
+# in vsock mode — no env-var fiddling at restore, no rebuilt IPC channel.
+#
+# At build time we don't have AF_VSOCK (Docker build runs in the host's
+# init namespace, no /dev/vsock), so we use VsockIpcChannel's
+# REDTUSK_VSOCK_UNIX_PATH override which falls back to AF_UNIX. The protocol
+# is identical; only the address family differs. The build-time listener is
+# a tiny Python script that accepts the worker's connection, reads the
+# READY line, and then waits indefinitely — long enough for Core.checkpointRestore()
+# to fire VsockIpcChannel.beforeCheckpoint(), which CLOSES the socket on the
+# worker side and lets the JVM dump a clean snapshot (no live fds).
+#
+# After restore (inside the FC microVM at runtime), VsockIpcChannel.afterRestore()
+# opens a fresh AF_VSOCK socket and re-sends READY to the dispatcher.
+USER root
+RUN apt-get update -qq && apt-get install -y --no-install-recommends python3-minimal && rm -rf /var/lib/apt/lists/*
+COPY deploy/docker/build-vsock-listener.py /usr/local/bin/build-vsock-listener.py
+COPY deploy/docker/build-vsock-checkpoint.sh /usr/local/bin/build-vsock-checkpoint.sh
+RUN chmod 755 /usr/local/bin/build-vsock-listener.py /usr/local/bin/build-vsock-checkpoint.sh && \
+    chown 10001:10001 /tmp
+USER 10001:10001
+
+RUN /usr/local/bin/build-vsock-checkpoint.sh
 
 # Remove warmup corpus only AFTER checkpoint completes — the warmup files
 # must exist for the warmup phase that primes the JVM before checkpoint.

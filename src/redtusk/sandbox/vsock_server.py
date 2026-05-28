@@ -125,9 +125,9 @@ class VsockSlotServer:
         if self._conn is None:
             raise RuntimeError("not connected")
         json_bytes = json.dumps(descriptor).encode("utf-8")
-        self._conn.sendall(f"JOB {len(json_bytes)}\n".encode("utf-8"))
+        self._conn.sendall(f"JOB {len(json_bytes)}\n".encode())
         self._conn.sendall(json_bytes)
-        self._conn.sendall(f"INPUT {len(input_bytes)}\n".encode("utf-8"))
+        self._conn.sendall(f"INPUT {len(input_bytes)}\n".encode())
         self._conn.sendall(input_bytes)
 
     def receive_result(self, artifacts_dir: Path) -> dict[str, Any]:
@@ -178,6 +178,13 @@ class VsockSlotServer:
                 with open(dest, "wb") as f:
                     self._stream_blob_to_file(length, f)
                 artifacts.append(rel_path)
+            elif tag == "READY":
+                # CRaC restore can re-announce READY: afterRestore() reopens
+                # the socket and re-sends READY, and announceReady() is
+                # idempotent, so a second READY can trail the one consumed by
+                # accept_ready(). VsockIpcChannel.java documents that the
+                # dispatcher must tolerate duplicate READY frames — skip them.
+                continue
             elif tag == "DONE":
                 break
             else:
@@ -224,6 +231,13 @@ class VsockSlotServer:
                 continue
             buf.extend(b)
             if len(buf) > 4096:
+                # A control line this long means the byte stream desynced (a
+                # blob length didn't match the bytes on the wire). Log a prefix
+                # to aid diagnosis; see fc_vcpu_count note in limits.py.
+                _logger.warning(
+                    "vsock_server.control_line_overflow",
+                    extra={"prefix": repr(bytes(buf[:48]))},
+                )
                 raise VsockProtocolError("control line exceeds 4 KiB")
 
     def _read_blob(self, length: int) -> bytes:

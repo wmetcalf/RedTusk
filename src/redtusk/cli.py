@@ -36,14 +36,20 @@ async def _run_server(host: str, port: int, log_level: str, limits, image: str) 
     from redtusk.jobs.retention import RetentionSweeper
     from redtusk.pool import Pool
     from redtusk.runtime.docker_runtime import DockerRuntime
-    from redtusk.worker_runtime import DockerWorkerRuntime
+    from redtusk.worker_runtime import DockerWorkerRuntime, FirecrackerWorkerRuntime
 
     store = _make_store(limits)
     if hasattr(store, "connect"):
         await store.connect()
 
-    docker_rt = await DockerRuntime.detect()
-    worker_rt = DockerWorkerRuntime(docker=docker_rt, limits=limits, image=image)
+    # REDTUSK_WORKER_RUNTIME=firecracker picks the FC backend (bypasses
+    # Docker entirely; each slot is a Firecracker subprocess + AF_VSOCK).
+    # Everything else flows through Docker, with runtime= passed to docker run.
+    if limits.worker_runtime == "firecracker":
+        worker_rt = FirecrackerWorkerRuntime(limits=limits)
+    else:
+        docker_rt = await DockerRuntime.detect()
+        worker_rt = DockerWorkerRuntime(docker=docker_rt, limits=limits, image=image)
     pool = Pool(limits=limits, worker_runtime=worker_rt, store=store, profile=limits.profile)
     dispatcher = Dispatcher(pool=pool, store=store, worker_runtime=worker_rt, limits=limits)
     app = create_app(dispatcher=dispatcher, store=store, limits=limits)
@@ -101,7 +107,7 @@ def selftest() -> None:
     configure_logging()
     try:
         limits = Limits.from_env()
-        click.echo(f"Limits OK: pool_size={limits.pool_size}, profile={limits.profile!r}")
+        click.echo(f"Limits OK: pool_warm_size={limits.pool_warm_size}, pool_concurrent_size={limits.pool_concurrent_size}, profile={limits.profile!r}")
         click.echo("Self-test passed.")
     except Exception as e:
         click.echo(f"Self-test FAILED: {e}", err=True)
