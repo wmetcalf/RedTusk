@@ -29,6 +29,16 @@ def _send_blob(sock: socket.socket, payload: bytes) -> None:
     sock.sendall(payload)
 
 
+def _read_line(sock: socket.socket) -> bytes:
+    buf = bytearray()
+    while not buf.endswith(b"\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return bytes(buf)
+
+
 def _run_worker(unix_path: str, *, send_result: bytes,
                 send_artifacts: list[tuple[str, bytes]] | None = None) -> dict:
     """Tiny in-test worker simulator. Connects to the server, runs the
@@ -44,8 +54,8 @@ def _run_worker(unix_path: str, *, send_result: bytes,
     try:
         _send_line(cli, "READY")
         # Read GO
-        go = cli.recv(8)
-        assert go.startswith(b"GO\n"), f"expected GO, got {go!r}"
+        go = _read_line(cli)
+        assert go == b"GO\n", f"expected GO, got {go!r}"
 
         # Read JOB header
         hdr_buf = bytearray()
@@ -139,7 +149,7 @@ def test_rejects_path_traversal_artifact(tmp_path: Path) -> None:
         cli.connect(sock_path)
         try:
             _send_line(cli, "READY")
-            cli.recv(8)  # consume GO
+            _read_line(cli)  # consume GO
             # Read+discard JOB
             buf = bytearray()
             while not buf.endswith(b"\n"):
@@ -198,7 +208,7 @@ def test_oversized_blob_rejected(tmp_path: Path) -> None:
         cli.connect(sock_path)
         try:
             _send_line(cli, "READY")
-            cli.recv(8)
+            _read_line(cli)
             buf = bytearray()
             while not buf.endswith(b"\n"):
                 buf.extend(cli.recv(1))

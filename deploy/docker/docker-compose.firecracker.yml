@@ -1,0 +1,55 @@
+# Compose overlay that switches the api/dispatcher to the Firecracker worker
+# runtime. Use via the wrapper:
+#
+#   ./deploy/docker/redtusk-compose --firecracker up --build -d
+#
+# Prerequisite: the FC kernel + rootfs must exist on the host at
+# REDTUSK_FC_HOST_DIR/{vmlinux,rootfs-vsock.ext4} — build once with:
+#
+#   scripts/setup_firecracker_host.sh --with-kernel
+#
+# The dispatcher still runs in the api container, but now opens /dev/kvm
+# and spawns Firecracker microVMs as sibling subprocesses inside the
+# container. The FC code path requires no Docker socket — but we keep the
+# socket mount in case the operator wants to mix gVisor and FC.
+
+services:
+  api:
+    image: ${REDTUSK_API_IMAGE:-redtusk-api-fc:dev}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.fc-dispatcher
+    devices:
+      # Pass /dev/kvm through so the firecracker subprocess can ioctl(KVM_*).
+      # Combined with the group_add below this lets UID 10001 open the device.
+      - /dev/kvm
+    group_add:
+      # Host's kvm group GID — auto-detected by redtusk-compose, written to .env.
+      - "${KVM_GID:?KVM_GID not set — run via ./deploy/docker/redtusk-compose --firecracker, not raw docker compose}"
+    environment:
+      - REDTUSK_WORKER_RUNTIME=firecracker
+      - REDTUSK_FC_BIN=/opt/kata/bin/firecracker
+      - REDTUSK_FC_KERNEL=/var/lib/redtusk/firecracker/vmlinux
+      - REDTUSK_FC_ROOTFS=/var/lib/redtusk/firecracker/rootfs-vsock.ext4
+      # vcpu_count MUST stay 1 (guest vsock SMP race); see deploy/firecracker/README.md.
+      - REDTUSK_FC_VCPU_COUNT=1
+      - REDTUSK_FC_VSOCK_RETRIES=${REDTUSK_FC_VSOCK_RETRIES:-2}
+      - REDTUSK_FC_OUTDISK_MIB=${REDTUSK_FC_OUTDISK_MIB:-1024}
+      # Pool sizing uses the existing REDTUSK_POOL_SIZE / REDTUSK_POOL_BURST_SIZE
+      # from .env (the base compose already passes them through; setting them
+      # again here would land both the legacy name and the new name in the
+      # container env, which Limits.from_env rejects as a deprecated-alias
+      # conflict). For FC, just set REDTUSK_POOL_SIZE in .env to your warm
+      # target — DON'T oversubscribe: (warm + burst) × fc_vcpu_count ≤ host cores.
+    volumes:
+      # FC assets: kernel + rootfs. Read-only — built once via the setup script.
+      # The host path AND container path are both /var/lib/redtusk/firecracker
+      # so REDTUSK_FC_KERNEL / REDTUSK_FC_ROOTFS resolve identically on either
+      # side (the dispatcher passes these paths into the firecracker config,
+      # and FC opens them from inside the container's mount namespace).
+      - "${REDTUSK_FC_HOST_DIR:-/var/lib/redtusk/firecracker}:/var/lib/redtusk/firecracker:ro"
+    # /tmp must be at least the size of the largest single artifact we'd
+    # process — Starlette spools multipart uploads here. The default
+    # 128m blew up under concurrent large uploads; bump to 1g for FC.
+    tmpfs:
+      - /tmp:rw,exec,nosuid,size=1g

@@ -63,7 +63,9 @@ class MainIntegrationTest {
             Map.entry("ocr_skip_blank", true),
             Map.entry("enable_thumbnails", true)
         );
-        OM.writeValue(scratchDir.resolve("job.json").toFile(), jobMap);
+        Path controlDir = scratchDir.resolve("control");
+        controlDir.toFile().mkdirs();
+        OM.writeValue(controlDir.resolve("job.json").toFile(), jobMap);
 
         // Create ready file and signal from background thread by creating control.go
         FifoLoop.createFifo(scratchDir.toFile());
@@ -71,7 +73,7 @@ class MainIntegrationTest {
         exec.submit(() -> {
             try {
                 Thread.sleep(200);
-                scratchDir.resolve("control.go").toFile().createNewFile();
+                controlDir.resolve("control.go").toFile().createNewFile();
             } catch (Exception ignored) {}
             return null;
         });

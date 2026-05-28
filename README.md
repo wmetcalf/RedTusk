@@ -119,7 +119,7 @@ flowchart LR
 
 ## Architecture
 
-### Three-process deployment (Compose)
+### Compose deployment — gVisor / runc workers (default)
 
 ```mermaid
 flowchart TD
@@ -151,10 +151,58 @@ flowchart TD
     w2 -.->|"write metadata.json\nto scratch dir"| disp
 ```
 
-**Split design:** The API tier and dispatcher run in the same Python process
-by default (`redtusk serve`), but the API has no Docker socket — only the
-dispatcher does. The worker containers have no database credentials and
-never talk to the network.
+Brought up with `./deploy/docker/redtusk-compose up --build -d`. The API and
+dispatcher run in the same Python process (`redtusk serve`), but the API has
+no Docker socket — only the dispatcher does. Worker containers have no
+database credentials and never talk to the network.
+
+### Compose deployment — Firecracker microVM workers (`--firecracker`)
+
+```mermaid
+flowchart TD
+    client((Client))
+    ui[Browser UI]
+    apifc["API + Dispatcher (one container)
+    image: redtusk-api-fc
+    + firecracker binary
+    + e2fsprogs (mkfs.ext4 / debugfs)
+    --device /dev/kvm
+    group_add: kvm"]
+    db[(Postgres)]
+    assets[("Host /var/lib/redtusk/firecracker
+    vmlinux + rootfs-vsock.ext4
+    bind-mounted RO")]
+
+    subgraph pool["FC warm pool — sibling subprocesses inside the api container"]
+        fc1["microVM A (IDLE)
+        vsock READY"]
+        fc2["microVM B (RUNNING)
+        vsock job + input
+        virtio-blk /tmp/redtusk-out"]
+        fc3["microVM C (WARMING)
+        warp restore ~1 s"]
+    end
+
+    client --> apifc
+    ui --> apifc
+    apifc <--> db
+    assets -.kernel + rootfs.-> fc1
+    assets -.kernel + rootfs.-> fc2
+    assets -.kernel + rootfs.-> fc3
+    apifc -.->|"vsock control + job + input"| fc2
+    fc2 -.->|"writes /tmp/redtusk-out
+    on per-slot virtio-blk;
+    host debugfs-rdumps
+    after VM exits"| apifc
+```
+
+Brought up with `./deploy/docker/redtusk-compose --firecracker up --build -d`.
+The wrapper auto-detects `KVM_GID` (and `DOCKER_GID`) and writes them to
+`.env`. The FC kernel + rootfs are pre-built once on the host via
+`scripts/setup_firecracker_host.sh --with-kernel` and bind-mounted into the
+api container read-only. The FC microVMs are real KVM-isolated VMs; they're
+sibling subprocesses of the dispatcher *inside* the api container only in the
+process-tree sense — the container is just a namespace, KVM is hardware.
 
 ### Worker container sandbox layers
 

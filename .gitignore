@@ -63,3 +63,6 @@ deploy/docker/.env
 
 # corpus-derived bench output — never commit
 deploy/firecracker/bench_*.json
+
+# stray tika NER model artifacts (maven dumps these in the wrong place)
+/src/test/

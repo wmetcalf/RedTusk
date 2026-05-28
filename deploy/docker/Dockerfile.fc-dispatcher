@@ -1,0 +1,54 @@
+# Firecracker-capable api/dispatcher image.
+#
+# Same as Dockerfile.api (Python redtusk install + docker-ce-cli so the
+# dispatcher can still spawn gVisor/runc worker containers via the socket)
+# plus the host-side tools needed when REDTUSK_WORKER_RUNTIME=firecracker:
+#   * `firecracker` binary — spawned per-slot as a subprocess
+#   * e2fsprogs (`mkfs.ext4`, `debugfs`) — per-slot output disks the host
+#     reads back without root
+#
+# The compose `docker-compose.firecracker.yml` overlay points the api
+# service at this image and adds the runtime bits the gVisor compose
+# doesn't need: --device /dev/kvm, group_add for the host's kvm GID,
+# and bind-mounts of the pre-built FC kernel + rootfs.
+FROM python:3.12-slim-bookworm
+
+ARG FIRECRACKER_VERSION=v1.12.1
+ARG TARGETARCH=amd64
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        curl ca-certificates gnupg e2fsprogs xz-utils && \
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
+    chmod a+r /etc/apt/keyrings/docker.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list && \
+    apt-get update -qq && \
+    apt-get install -y --no-install-recommends docker-ce-cli && \
+    # Firecracker binary (release tarball ships as
+    # release-<ver>-x86_64/firecracker-<ver>-x86_64). Install at the path
+    # the runtime defaults expect (fc_bin=/opt/kata/bin/firecracker).
+    case "$TARGETARCH" in \
+        amd64) FC_ARCH=x86_64 ;; \
+        arm64) FC_ARCH=aarch64 ;; \
+        *) echo "unsupported arch: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}.tgz" \
+        | tar -xz -C /tmp && \
+    install -m 755 "/tmp/release-${FIRECRACKER_VERSION}-${FC_ARCH}/firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}" \
+        /opt/kata/bin/firecracker 2>/dev/null \
+        || { mkdir -p /opt/kata/bin && install -m 755 \
+              "/tmp/release-${FIRECRACKER_VERSION}-${FC_ARCH}/firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}" \
+              /opt/kata/bin/firecracker ; } && \
+    rm -rf /tmp/release-* /var/lib/apt/lists/* && \
+    groupadd --gid 10001 redtusk && \
+    useradd --uid 10001 --gid 10001 --no-create-home --shell /sbin/nologin redtusk
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir -e .
+
+USER 10001:10001
+ENTRYPOINT ["redtusk"]

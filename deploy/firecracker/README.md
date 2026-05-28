@@ -62,6 +62,11 @@ containers.
 
 ## Architecture (vsock control + disk output + CRaC + FC)
 
+The diagram below applies to *both* run modes — "host" here means the process
+running `FirecrackerWorkerRuntime` (the bare-metal `redtusk serve` in Mode B,
+or the `redtusk-api-fc` container in Mode A). KVM is hardware, so the
+microVMs themselves are real hardware-isolated VMs regardless.
+
 ```
   ┌─────────────────────────────────────┐    ┌────────────────────────────────┐
   │ host (FirecrackerWorkerRuntime)     │    │ Firecracker microVM (per job)  │
@@ -156,7 +161,44 @@ assembly with the disk-output `init-vsock`, and stages assets at
 The manual steps below are what the script does — useful if you want to
 build piecewise or understand the layers.
 
-## Building the host environment (manual)
+## Run mode A: docker-compose stack (just like gVisor)
+
+The api/dispatcher can run **inside the compose stack** and still launch FC
+microVMs — the container gets `/dev/kvm` + the `firecracker` binary + e2fsprogs
+baked in via `Dockerfile.fc-dispatcher`. Each microVM is a sibling subprocess
+of the dispatcher inside the api container; KVM is hardware so the microVMs
+themselves are still real hardware-isolated VMs.
+
+```sh
+# 1. Pre-build FC kernel + rootfs on the host (one time)
+scripts/setup_firecracker_host.sh --with-kernel
+
+# 2. Bring up the stack with the FC overlay
+./deploy/docker/redtusk-compose --firecracker up --build -d
+./deploy/docker/redtusk-compose --firecracker logs -f api
+./deploy/docker/redtusk-compose --firecracker down
+```
+
+The wrapper auto-detects the host's `kvm` group GID (the same way it auto-
+detects `DOCKER_GID`) and writes it to `.env`. The overlay adds:
+
+* `--device /dev/kvm` and `group_add: [KVM_GID]` so UID 10001 inside the
+  container can open `/dev/kvm`.
+* Read-only bind-mount of `${REDTUSK_FC_HOST_DIR:-/var/lib/redtusk/firecracker}`
+  (the kernel + rootfs you built in step 1) at the same path inside the
+  container.
+* `REDTUSK_WORKER_RUNTIME=firecracker` + the FC path env vars.
+* `/tmp` tmpfs bumped to 1 GiB (Starlette spools large multipart uploads
+  there; the gVisor default 128 MiB ENOSPC's under concurrent big uploads).
+
+The wrapper pre-flight-checks that the FC assets exist; if not, it tells you
+how to build them. The `docker-compose.firecracker.yml` overlay is the single
+source of truth for what FC needs at compose time.
+
+## Building the host environment (manual, used by both modes)
+
+The `setup_firecracker_host.sh` script automates these steps. They're here in
+case you want to understand or build piecewise.
 
 ```sh
 WORKDIR=/var/lib/redtusk/firecracker      # or any persistent dir
@@ -187,9 +229,11 @@ sudo install -m 755 deploy/firecracker/init-vsock mnt/init   # NOTE: the disk-ou
 sudo umount mnt && rm -f rootfs-vsock.tar
 ```
 
-## Running it
+## Run mode B: host-level `redtusk serve` (no compose)
 
-Point the runtime at the assets and launch RedTusk with the FC runtime:
+If you prefer a bare-metal `redtusk serve` (no api container — e.g. for
+benchmarking, profiling, or environments where compose isn't available),
+point the runtime at the assets directly:
 
 ```sh
 export REDTUSK_WORKER_RUNTIME=firecracker

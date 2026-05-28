@@ -49,9 +49,24 @@ See `deploy/firecracker/README.md`. Requires:
 3. A custom rootfs built from `redtusk-worker:crac-vsock` (init mounts the
    per-slot virtio-blk output disk — see the build steps in the FC README)
 4. `REDTUSK_WORKER_RUNTIME=firecracker`. `FirecrackerWorkerRuntime` is wired
-   into the pool/dispatcher. NB: the **compose dispatcher cannot host FC**
-   (no `/dev/kvm` in the container) — run the FC dispatcher on the bare-metal
-   host (`redtusk serve`, under `sg kvm` if not in the kvm group).
+   into the pool/dispatcher.
+
+Two ways to run it:
+
+* **Dockerized (just like gVisor):**
+
+  ```sh
+  scripts/setup_firecracker_host.sh --with-kernel    # one-time asset build
+  ./deploy/docker/redtusk-compose --firecracker up --build -d
+  ```
+
+  Uses `Dockerfile.fc-dispatcher` (api + firecracker + e2fsprogs) and
+  `docker-compose.firecracker.yml` (mounts `/dev/kvm`, adds `kvm` group,
+  bind-mounts the FC kernel + rootfs read-only). The wrapper auto-detects
+  `KVM_GID` from `/dev/kvm`, the same way it auto-detects `DOCKER_GID`.
+
+* **Host-level `redtusk serve`** (no compose) — useful for benchmarking or
+  hosts without docker. See `deploy/firecracker/README.md` for env vars.
 
 IPC split: vsock carries the control handshake + job descriptor + input;
 **output (metadata + artifacts) goes to a per-slot virtio-blk disk**, not
@@ -68,8 +83,10 @@ Operator notes:
   such paths up front.
 * The dispatcher needs `mkfs.ext4` + `debugfs` (e2fsprogs) for per-slot
   output disks, plus the `firecracker` binary and `/dev/kvm` access
-  (kvm group or root). The container/compose dispatcher has none of
-  these — run the FC dispatcher on the bare-metal host.
+  (kvm group or root). Under our containerized setup, these dependencies
+  are fully baked into the `Dockerfile.fc-dispatcher` image and mounted via the 
+  `--firecracker` compose overlay, so you can run the dispatcher inside the 
+  compose stack securely.
 * `max_extracted_bytes` is enforced **host-side** on the rdumped output
   (a runaway worker can otherwise fill the slot dir up to
   `fc_outdisk_mib`).
