@@ -255,15 +255,18 @@ class Limits:
         # otherwise write up to disk size into the slot dir before being
         # noticed (GPT-5.5 review G3). We allow 128 MiB of slack above
         # max_extracted_bytes — enough for ext4 metadata + a margin — and
-        # raise otherwise, so an operator who raises one knows to raise both.
-        outdisk_bytes = instance.fc_outdisk_mib * 1024 * 1024
-        cap = instance.max_extracted_bytes + 128 * 1024 * 1024
-        if outdisk_bytes > cap:
-            raise ConfigurationError(
-                f"fc_outdisk_mib ({instance.fc_outdisk_mib} MiB = {outdisk_bytes} B) "
-                f"exceeds max_extracted_bytes + 128 MiB slack ({cap} B); "
-                f"lower fc_outdisk_mib or raise max_extracted_bytes"
-            )
+        # raise otherwise. ONLY enforced when worker_runtime is explicitly
+        # "firecracker"; non-FC deployments shouldn't have to tune an unused
+        # setting (G3' from a later pass).
+        if instance.worker_runtime == "firecracker":
+            outdisk_bytes = instance.fc_outdisk_mib * 1024 * 1024
+            cap = instance.max_extracted_bytes + 128 * 1024 * 1024
+            if outdisk_bytes > cap:
+                raise ConfigurationError(
+                    f"fc_outdisk_mib ({instance.fc_outdisk_mib} MiB = {outdisk_bytes} B) "
+                    f"exceeds max_extracted_bytes + 128 MiB slack ({cap} B); "
+                    f"lower fc_outdisk_mib or raise max_extracted_bytes"
+                )
         return instance
 
 

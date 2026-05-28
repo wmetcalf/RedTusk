@@ -28,16 +28,17 @@ services:
     # leaving the base's `/var/run/docker.sock:ro` mount in place would just
     # be an idle privilege the api container doesn't need (a compromised api
     # could still issue Docker API calls — mount `:ro` only restricts the
-    # bind-mount itself, not the socket I/O). Compose-2.x `!reset` overrides
-    # the base list so these are gone, not appended-to (GPT-5.5 review G1).
-    volumes: !reset
+    # bind-mount itself, not the socket I/O). Compose-2.x `!override` REPLACES
+    # the base list (vs `!reset` which clears it to null and discards the
+    # entries below) — GPT-5.5 review G1 / G1' caught the `!reset` bug.
+    volumes: !override
       # Preserve the state-dir bind-mount from the base; explicitly omit the
       # docker socket. Same path inside and outside the api container so the
       # vsock UDS + per-slot output disks resolve identically.
       - "${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}:${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}"
       # FC assets (kernel + rootfs) — read-only.
       - "${REDTUSK_FC_HOST_DIR:-/var/lib/redtusk/firecracker}:/var/lib/redtusk/firecracker:ro"
-    group_add: !reset
+    group_add: !override
       # Host's kvm group GID — auto-detected by redtusk-compose, written to .env.
       # No DOCKER_GID: pure-FC doesn't talk to the Docker daemon.
       - "${KVM_GID:?KVM_GID not set — run via ./deploy/docker/redtusk-compose --firecracker, not raw docker compose}"
@@ -49,7 +50,10 @@ services:
       # vcpu_count MUST stay 1 (guest vsock SMP race); see deploy/firecracker/README.md.
       - REDTUSK_FC_VCPU_COUNT=1
       - REDTUSK_FC_VSOCK_RETRIES=${REDTUSK_FC_VSOCK_RETRIES:-2}
-      - REDTUSK_FC_OUTDISK_MIB=${REDTUSK_FC_OUTDISK_MIB:-1024}
+      # Default 600 MiB matches limits.py's default; stays under the
+      # max_extracted_bytes + 128 MiB slack the validation enforces.
+      # Raise BOTH together if you raise either.
+      - REDTUSK_FC_OUTDISK_MIB=${REDTUSK_FC_OUTDISK_MIB:-600}
       # Pool sizing uses the existing REDTUSK_POOL_SIZE / REDTUSK_POOL_BURST_SIZE
       # from .env (the base compose already passes them through; setting them
       # again here would land both the legacy name and the new name in the

@@ -184,10 +184,18 @@ def test_from_env_rejects_both_legacy_and_new_kwarg() -> None:
 
 
 def test_from_env_rejects_fc_outdisk_exceeding_max_extracted() -> None:
-    """Regression for GPT-5.5 review G3: a fc_outdisk_mib far larger than
-    max_extracted_bytes creates a pre-extraction DoS window (host rdumps
-    the whole image before the cap fires). from_env now rejects."""
+    """Regression for GPT-5.5 review G3 + G3': a fc_outdisk_mib far larger
+    than max_extracted_bytes creates a pre-extraction DoS window (host
+    rdumps the whole image before the cap fires). from_env rejects — but
+    only when worker_runtime is explicitly "firecracker"; non-FC deploy-
+    ments shouldn't have to tune an unused FC setting (G3')."""
     with patch.dict(os.environ, {}, clear=True):
+        # FC mode: 2 GiB disk vs 500 MiB cap is well past the 128 MiB slack
         with pytest.raises(ConfigurationError, match="fc_outdisk_mib"):
-            # 2 GiB disk + default 500 MiB cap = far over the 128 MiB slack
-            Limits.from_env(fc_outdisk_mib=2048)
+            Limits.from_env(worker_runtime="firecracker", fc_outdisk_mib=2048)
+        # Non-FC mode (worker_runtime="" auto, or "runsc"): same value is
+        # accepted — the FC setting is unused.
+        ok = Limits.from_env(fc_outdisk_mib=2048)
+        assert ok.fc_outdisk_mib == 2048
+        ok = Limits.from_env(worker_runtime="runsc", fc_outdisk_mib=2048)
+        assert ok.fc_outdisk_mib == 2048

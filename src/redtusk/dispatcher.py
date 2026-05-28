@@ -558,7 +558,13 @@ class Dispatcher:
                             job_id=job.id, attempt=attempt, error=str(exc),
                         )
                         # Reap this slot, claim a fresh one, re-stage input.
+                        # CRITICAL: clear `slot` AFTER release but BEFORE the
+                        # re-claim — if claim() raises, the `finally` below
+                        # would otherwise release the already-released slot
+                        # and trigger pool._reap_and_replace twice (GPT-5.5
+                        # review G4').
                         await self._pool.release(slot, success=False)
+                        slot = None
                         slot = await self._pool.claim(
                             timeout=float(limits.sync_queue_timeout_s)
                         )
