@@ -785,3 +785,19 @@ def _register_routes(app: FastAPI) -> None:
         return HTMLResponse(
             content=await asyncio.to_thread(_load_ui),
         )
+
+    @app.get("/jobs/{job_id}", response_class=HTMLResponse)
+    async def ui_job_detail(job_id: str) -> HTMLResponse:
+        """SPA route — serves the same index.html as ``/``; client-side JS
+        reads ``window.location.pathname`` and dispatches to the dedicated
+        job-detail view. Lets users deep-link / share / bookmark a specific
+        job without the synthetic-row-in-the-list gymnastics the old
+        ``?job=<id>`` deep link required."""
+        # Validate the path param looks like a UUID-ish id; reject anything
+        # else with 404 so we don't quietly serve the UI for typos that the
+        # JS would then 404 on the API anyway.
+        if not all(c.isalnum() or c == "-" for c in job_id) or len(job_id) > 64:
+            raise HTTPException(status_code=404, detail="Not found")
+        return HTMLResponse(
+            content=await asyncio.to_thread(_load_ui),
+        )

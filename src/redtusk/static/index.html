@@ -52,7 +52,7 @@
        viewports — the table never expands beyond the viewport without
        a horizontal scrollbar showing up. */
     .jobs-scroll { width: 100%; overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: fixed; min-width: 720px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: fixed; min-width: 1000px; }
     thead tr { border-bottom: 1px solid #c0392b; }
     th { text-align: left; padding: 0.5rem 0.6rem; color: #c0392b; font-weight: normal; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.78rem; }
     td { padding: 0.45rem 0.6rem; border-bottom: 1px solid #222; vertical-align: top; }
@@ -61,7 +61,11 @@
        malicious filenames otherwise push the right-hand columns
        off-screen. Hover for the full name. */
     td.cell-truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    td.cell-id { font-family: 'Courier New', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* cell-id must show the FULL 36-char UUID. Column is widened to 19rem in
+       <colgroup> (was 18ch / ellipsized prefix). Keep overflow:hidden as a
+       defensive guard against future column-width tweaks, but with the wider
+       column it won't trigger in normal use. */
+    td.cell-id { font-family: 'Courier New', monospace; white-space: nowrap; overflow: hidden; }
     tbody tr.job-row { cursor: pointer; transition: background 0.1s; }
     tbody tr.job-row:hover { background: #333; }
     tbody tr.job-row.expanded { background: #2f2f2f; }
@@ -205,8 +209,24 @@
     <picture>
       <source srcset="/static/logo.webp" type="image/webp">
       <img src="/static/logo.png" alt="RedTusk" style="height:4rem;vertical-align:middle;margin-right:0.75rem;margin-bottom:0.2rem">
-    </picture>RedTusk <span id="version"></span> <a href="https://suno.com/s/JfDeaLrS1JUN6dfe" target="_blank" rel="noopener" title="Theme song" style="font-size:1rem;text-decoration:none;margin-left:0.5rem;opacity:0.7" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">🎶</a></h1>
+    </picture><a href="/" onclick="event.preventDefault();navigateToList()" style="color:inherit;text-decoration:none">RedTusk</a> <span id="version"></span> <a href="https://suno.com/s/JfDeaLrS1JUN6dfe" target="_blank" rel="noopener" title="Theme song" style="font-size:1rem;text-decoration:none;margin-left:0.5rem;opacity:0.7" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">🎶</a></h1>
 
+  <!-- Detail view — shown only on /jobs/<id>. Renders into #detail-content
+       via showJobDetailView(). -->
+  <div id="detail-view" style="display:none">
+    <div class="card">
+      <div class="detail-hdr" style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem">
+        <a href="/" onclick="event.preventDefault();navigateToList()" style="color:#64b5f6;text-decoration:none;font-size:0.9rem">← Recent Jobs</a>
+        <span style="color:#555">/</span>
+        <span style="font-family:'Courier New',monospace;font-size:0.85rem;color:#c0392b" id="detail-id"></span>
+        <span id="detail-state" style="margin-left:auto"></span>
+      </div>
+      <div id="detail-content"></div>
+    </div>
+  </div>
+
+  <!-- List view — shown on / (default). The Extract + Recent Jobs cards. -->
+  <div id="list-view">
   <div class="card">
     <h2>Extract</h2>
     <div class="upload-row">
@@ -239,7 +259,7 @@
     <div id="pool-status" class="pool-bar"></div>
     <div class="search-row" style="margin-top:0.5rem">
       <input type="text" id="search-input" placeholder="Search by filename (partial), SHA-256, or OCR/extracted text…"
-             oninput="onSearch(this.value)" autocomplete="off" spellcheck="false" title="Search by filename (partial), SHA-256, job ID, or any extracted text / OCR content">
+             oninput="onSearch(this.value)" autocomplete="off" spellcheck="false" title="Search by filename (partial), SHA-256, or job ID">
       <button id="search-clear" onclick="clearSearch()" title="Clear">×</button>
       <span id="search-count"></span>
     </div>
@@ -247,7 +267,7 @@
     <div class="jobs-scroll" style="margin-top:0.25rem">
       <table>
         <colgroup>
-          <col style="width: 18ch">    <!-- ID (UUID prefix, ellipsized) -->
+          <col style="width: 19rem">    <!-- ID (full 36-char UUID, no ellipsis) -->
           <col>                         <!-- Filename (flexes to fill) -->
           <col style="width: 9rem">    <!-- State -->
           <col style="width: 9rem">    <!-- Submitted -->
@@ -264,6 +284,7 @@
     </div>
     <div id="pager"></div>
   </div>
+  </div><!-- #list-view -->
 
   <script>
     // ── version ───────────────────────────────────────────────────
@@ -500,7 +521,7 @@
         if (m.phash)        html += '<div>phash: ' + esc(m.phash) + '</div>';
         if (m.colorhash)    html += '<div>colorhash: ' + esc(m.colorhash) + '</div>';
         if (m.sha256)       html += '<div>sha256: ' + esc(m.sha256) + '</div>';
-        html += '<div><a href="/?job=' + esc(m.job_id) + '" target="_blank">Open job ' + esc(m.job_id.slice(0, 12)) + '…</a></div>';
+        html += '<div><a href="/jobs/' + esc(m.job_id) + '" onclick="event.preventDefault();navigateToJob(\'' + esc(m.job_id) + '\')" style="font-family:\'Courier New\',monospace">Open job ' + esc(m.job_id) + '</a></div>';
         html += '</div></div>';
       }
       body.innerHTML = html;
@@ -591,6 +612,11 @@
 
       // ── Summary ──
       html += '<div class="job-section"><div class="job-section-hdr">Summary</div><div class="job-section-body"><div class="kv-grid">';
+      // Full job ID first — needed so users can copy/paste / quote in tickets
+      // without hovering the row in the recent-jobs table. kvHash() applies
+      // the monospace .hash style. Fall back to job.id if jobId wasn't passed
+      // (some callers pass only the bare result object).
+      html += kvHash('Job ID', jobId || (job && job.id) || '—');
       html += kv('Content-Type', ext.root_content_type||'—');
       html += kv('Language',     ext.root_language||'—');
       html += kv('Entries',      entries.length);
@@ -1013,7 +1039,6 @@
         const r = await fetch('/v1/jobs/'+id, {method:'DELETE'});
         if (r.ok||r.status===204) {
           jobCache.delete(id);
-          if (expandedId===id) expandedId=null;
           fetchJobs();
         } else {
           const d = await r.json().catch(()=>({detail:'unknown'}));
@@ -1023,81 +1048,141 @@
       } catch(e) { alert('Delete failed: '+e.message); btn.disabled=false; }
     }
 
-    // ── expand panel ──────────────────────────────────────────────
-    let expandedId = null;
+    // ── client-side routing ───────────────────────────────────────
+    //
+    //   /              → recent-jobs list view
+    //   /jobs/<uuid>   → dedicated detail view for one job
+    //
+    // The expand-in-place pattern (toggleExpand / openExpand / loadExpand /
+    // applyJobDeepLink + a synthetic-row hoist) we used before lived inside
+    // the table and fought every poll / pagination / deep-link flow. The
+    // click-into pattern is plain SPA routing: each row navigates to its own
+    // route, the detail view has the whole viewport to itself, and back /
+    // forward buttons + share-as-URL just work.
+    let detailPollTimer = null;
+    const listPollTimers = [];
 
-    function setExpandContent(id, job) {
-      const row = document.getElementById('expand-'+id);
-      if (!row) return;
-      const panel = row.querySelector('.expand-panel');
-      if (!panel) return;
-      const isTerminal = job.state==='succeeded'||job.state==='failed';
+    function currentRoute() {
+      const m = window.location.pathname.match(/^\/jobs\/([0-9a-fA-F-]+)$/);
+      return m ? { kind: 'job', id: m[1] } : { kind: 'list' };
+    }
 
-      let html = '<div class="expand-actions">';
-      if (job.state==='succeeded') {
-        html += '<a href="/v1/jobs/'+id+'/infected-zip" download><button class="dl">⬇ infected.zip (pw: infected)</button></a>';
+    function navigateToJob(id) {
+      const r = currentRoute();
+      if (r.kind === 'job' && r.id === id) return;  // already there
+      history.pushState({}, '', '/jobs/' + encodeURIComponent(id));
+      renderRoute();
+    }
+
+    function navigateToList() {
+      if (currentRoute().kind === 'list') return;
+      history.pushState({}, '', '/');
+      renderRoute();
+    }
+
+    function stopAllPolls() {
+      while (listPollTimers.length) clearInterval(listPollTimers.pop());
+      if (detailPollTimer) { clearTimeout(detailPollTimer); detailPollTimer = null; }
+    }
+
+    function renderRoute() {
+      // Close the slide-out similar-entries panel on every navigation so it
+      // doesn't carry stale state from a previous view.
+      document.getElementById('similar-panel')?.classList.remove('show');
+      const route = currentRoute();
+      if (route.kind === 'job') {
+        showJobDetailView(route.id);
+      } else {
+        showListView();
       }
+    }
+
+    window.addEventListener('popstate', renderRoute);
+
+    function showListView() {
+      stopAllPolls();
+      document.getElementById('detail-view').style.display = 'none';
+      document.getElementById('list-view').style.display = '';
+      fetchJobs();
+      fetchJobCounts();
+      fetchPoolStatus();
+      listPollTimers.push(setInterval(fetchJobs, 3000));
+      listPollTimers.push(setInterval(fetchJobCounts, 3000));
+      listPollTimers.push(setInterval(fetchPoolStatus, 3000));
+    }
+
+    async function showJobDetailView(id) {
+      stopAllPolls();
+      document.getElementById('list-view').style.display = 'none';
+      document.getElementById('detail-view').style.display = '';
+      const idEl = document.getElementById('detail-id');
+      if (idEl) idEl.textContent = id;
+      const stateEl = document.getElementById('detail-state');
+      if (stateEl) stateEl.innerHTML = '';
+
+      const content = document.getElementById('detail-content');
+      content.innerHTML = '<div style="padding:1.5rem;color:#888">Loading…</div>';
+
+      try {
+        // Skip cache when navigating to this view — caches go stale fast for
+        // queued/running jobs and the per-job fetch is ~6 ms anyway.
+        const r = await fetch('/v1/jobs/' + encodeURIComponent(id));
+        if (!r.ok) {
+          content.innerHTML = '<div style="padding:1.5rem;color:#ef5350">Job not found (HTTP ' + r.status + ')</div>';
+          return;
+        }
+        const job = await r.json();
+        renderJobDetail(id, job);
+
+        // Only poll while the job is in flight. Terminal jobs are immutable.
+        if (job.state === 'queued' || job.state === 'running') {
+          detailPollTimer = setTimeout(() => showJobDetailView(id), 3000);
+        }
+      } catch (e) {
+        content.innerHTML = '<div style="padding:1.5rem;color:#ef5350">Failed: ' + esc(e.message) + '</div>';
+      }
+    }
+
+    function renderJobDetail(id, job) {
+      const stateEl = document.getElementById('detail-state');
+      if (stateEl) stateEl.innerHTML = stateCell(job.state);
+
+      const content = document.getElementById('detail-content');
+      let html = '<div class="expand-actions" style="margin-bottom:0.75rem">';
+      if (job.state === 'succeeded') {
+        html += '<a href="/v1/jobs/' + id + '/infected-zip" download><button class="dl">⬇ infected.zip (pw: infected)</button></a>';
+      }
+      const isTerminal = job.state === 'succeeded' || job.state === 'failed';
       if (isTerminal) {
-        html += '<button class="danger" onclick="deleteJob(\''+id+'\',this)">Delete</button>';
+        html += '<button class="danger" onclick="deleteJobAndGoBack(\'' + id + '\')">Delete</button>';
       }
       html += '</div>';
 
-      if (job.state==='failed') {
-        html += '<div style="color:#ef5350;font-size:0.85rem;margin-bottom:0.75rem">'+esc(job.error_detail||'Worker error')+'</div>';
+      if (job.state === 'failed') {
+        html += '<div style="color:#ef5350;font-size:0.9rem;margin-bottom:0.75rem">' + esc(job.error_detail || 'Worker error') + '</div>';
       }
       if (job.result) {
         html += buildJobView(job, id);
-      } else if (job.state==='queued'||job.state==='running') {
-        html += '<span style="color:#888">'+job.state+'… (auto-refreshing)</span>';
+      } else if (job.state === 'queued' || job.state === 'running') {
+        html += '<span style="color:#888">' + job.state + '… (auto-refreshing every 3 s)</span>';
       }
-      panel.innerHTML = html;
+      content.innerHTML = html;
     }
 
-    async function loadExpand(id) {
-      let job = jobCache.get(id);
-      if (!job) {
-        try {
-          const r = await fetch('/v1/jobs/'+id);
-          if (!r.ok) throw new Error('HTTP '+r.status);
-          job = await r.json();
-          jobCache.set(id, job);
-        } catch(e) {
-          const row = document.getElementById('expand-'+id);
-          if (row) row.querySelector('.expand-panel').innerHTML='<span style="color:#ef5350">Failed: '+esc(e.message)+'</span>';
-          return;
+    async function deleteJobAndGoBack(id) {
+      if (!confirm('Delete job ' + id + '?')) return;
+      try {
+        const r = await fetch('/v1/jobs/' + id, { method: 'DELETE' });
+        if (r.ok) {
+          navigateToList();
+        } else {
+          let detail = 'unknown';
+          try { detail = (await r.json()).detail || detail; } catch {}
+          alert('Delete failed: ' + detail);
         }
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
       }
-      setExpandContent(id, job);
-    }
-
-    function openExpand(id, tbody) {
-      const clickedRow = document.getElementById('row-'+id);
-      const expandRow = document.createElement('tr');
-      expandRow.id = 'expand-'+id;
-      expandRow.className = 'expand-row';
-      const td = document.createElement('td'); td.colSpan=6;
-      const panel = document.createElement('div'); panel.className='expand-panel';
-      panel.textContent='Loading…';
-      td.appendChild(panel); expandRow.appendChild(td);
-      if (clickedRow?.nextSibling) tbody.insertBefore(expandRow, clickedRow.nextSibling);
-      else if (clickedRow) tbody.appendChild(expandRow);
-      loadExpand(id);
-    }
-
-    async function toggleExpand(id, tbody) {
-      const existing = document.getElementById('expand-'+id);
-      if (existing) {
-        existing.remove();
-        document.getElementById('row-'+id)?.classList.remove('expanded');
-        expandedId = null; return;
-      }
-      if (expandedId) {
-        document.getElementById('expand-'+expandedId)?.remove();
-        document.getElementById('row-'+expandedId)?.classList.remove('expanded');
-      }
-      expandedId = id;
-      document.getElementById('row-'+id)?.classList.add('expanded');
-      openExpand(id, tbody);
     }
 
     // ── pool status ───────────────────────────────────────────────
@@ -1187,7 +1272,7 @@
           tr.id='row-'+job.id;
           tr.className='job-row';
           tr.innerHTML = rowCells(job);
-          tr.addEventListener('click', ()=>toggleExpand(job.id, tbody));
+          tr.addEventListener('click', ()=>navigateToJob(job.id));
           tbody.appendChild(tr);
         }
         return;
@@ -1197,7 +1282,7 @@
 
       // Remove placeholder rows (Loading…, No jobs yet.) before reconciling.
       for (const tr of [...tbody.querySelectorAll('tr:not(.job-row)')]) {
-        if (!tr.id.startsWith('expand-')) tr.remove();
+        tr.remove();
       }
 
       if (!jobs.length) {
@@ -1207,28 +1292,22 @@
 
       const jobIds = new Set(jobs.map(j=>j.id));
 
-      // 1. Remove rows whose jobs are no longer in the list.
-      //    Expand rows are paired with their job row — remove together.
-      //    Exception: never remove the currently-expanded job; it may simply
-      //    have scrolled off page 1, and removing it would collapse the user's
-      //    open detail view mid-inspection.
+      // 1. Remove rows whose jobs are no longer in the list. Since we
+      //    navigated to /jobs/<id> for the detail view (no inline expansion
+      //    here), there's no open panel to preserve — every off-page row
+      //    can be evicted cleanly.
       for (const tr of [...tbody.querySelectorAll('tr.job-row')]) {
         const id = tr.id.replace('row-','');
-        if (!jobIds.has(id) && id !== expandedId) {
-          document.getElementById('expand-'+id)?.remove();
-          tr.remove();
-        }
+        if (!jobIds.has(id)) tr.remove();
       }
 
       // 2. Insert/update rows in the API-returned order.
       //    Walk through jobs and ensure each row is in the right DOM position.
-      //    Existing rows are updated in-place (mutable cells only) — their expand
-      //    rows are never touched, so open panels survive the refresh intact.
+      //    Existing rows are updated in-place (mutable cells only).
       let cursor = tbody.firstChild; // DOM position we're placing rows at
 
       for (const job of jobs) {
         let tr = document.getElementById('row-'+job.id);
-        const exRow = document.getElementById('expand-'+job.id);
 
         if (tr) {
           // Update the four mutable cells (state, relative-time, duration, qr)
@@ -1243,76 +1322,31 @@
           tr.id='row-'+job.id;
           tr.className='job-row';
           tr.innerHTML = rowCells(job);
-          tr.addEventListener('click', ()=>toggleExpand(job.id, tbody));
+          tr.addEventListener('click', ()=>navigateToJob(job.id));
         }
 
         // Move/insert job row at the cursor position
         if (tr !== cursor) tbody.insertBefore(tr, cursor);
         cursor = tr.nextSibling;
-
-        // Keep expand row immediately after its job row
-        if (exRow) {
-          if (exRow !== cursor) tbody.insertBefore(exRow, cursor);
-          cursor = exRow.nextSibling;
-
-          // For in-flight jobs, update the panel status text
-          if (job.state==='queued'||job.state==='running') {
-            const panel = exRow.querySelector('.expand-panel');
-            if (panel && panel.textContent.endsWith('…')) {
-              panel.textContent = job.state+'… (auto-refreshing)';
-            }
-          }
-        }
       }
     }
 
     // ── boot ──────────────────────────────────────────────────────
     document.getElementById('search-clear').style.opacity = '0.3';
 
-    // Deep-link via ?job=<id>: fetch + auto-expand that job after the
-    // initial jobs list loads. If the job isn't in the current page's
-    // server response (different state, older offset), inject a synthetic
-    // row at the top of the table so the user has something to click into;
-    // setting expandedId protects it from the reconcile loop's row-removal.
-    async function applyJobDeepLink() {
-      try {
-        const jobId = new URLSearchParams(window.location.search).get('job');
-        if (!jobId) return;
-        const r = await fetch('/v1/jobs/' + encodeURIComponent(jobId));
-        if (!r.ok) return;
-        const job = await r.json();
-        jobCache.set(job.id, job);
-        const tbody = document.getElementById('jobs-body');
-        if (!document.getElementById('row-' + job.id)) {
-          // Synthetic row at the top
-          const tr = document.createElement('tr');
-          tr.id = 'row-' + job.id;
-          tr.className = 'job-row';
-          tr.innerHTML = rowCells(job);
-          tr.addEventListener('click', () => toggleExpand(job.id, tbody));
-          tbody.insertBefore(tr, tbody.firstChild);
-        }
-        expandedId = job.id;
-        document.getElementById('row-' + job.id)?.classList.add('expanded');
-        // Avoid double-render if an expand row is somehow already there.
-        if (!document.getElementById('expand-' + job.id)) {
-          openExpand(job.id, tbody);
-        }
-        document.getElementById('row-' + job.id)?.scrollIntoView({
-          block: 'center', behavior: 'instant'
-        });
-      } catch (e) {
-        // best-effort; the regular jobs list still renders
+    // Legacy ?job=<id> URLs still floating around in bookmarks / history —
+    // rewrite to /jobs/<id> once on load before the router reads the URL.
+    (function migrateLegacyJobQuery() {
+      const legacy = new URLSearchParams(window.location.search).get('job');
+      if (legacy) {
+        history.replaceState({}, '', '/jobs/' + encodeURIComponent(legacy));
       }
-    }
+    })();
 
-    fetchJobs();
-    fetchJobCounts();
-    // Boot the deep-link AFTER the initial list render so the synthetic row
-    // either decorates a row that just landed or is added at the top.
-    setTimeout(applyJobDeepLink, 50);
-    setInterval(fetchJobs, 3000);
-    setInterval(fetchJobCounts, 3000);
+    // Boot the router. showListView / showJobDetailView wire up their own
+    // poll intervals via stopAllPolls() + setInterval; there are no
+    // top-level setIntervals anymore.
+    renderRoute();
   </script>
 </body>
 </html>
