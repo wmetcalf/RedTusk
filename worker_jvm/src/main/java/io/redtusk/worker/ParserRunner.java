@@ -192,6 +192,14 @@ public final class ParserRunner {
         // Office: surface hidden/empty rows in Excel workbooks — a common lure technique.
         OfficeParserConfig officeCfg = new OfficeParserConfig();
         officeCfg.setIncludeMissingRows(true);
+        // Enable image hashing on the vector-image POI paths (EMF / WMF). The
+        // Tika fork gates rasterize-and-hash on this flag because the raster
+        // costs O(image) extra memory + CPU and not every Tika user wants it.
+        // We do — phash/dhash/ahash/colorhash on embedded EMFs is the whole
+        // point of including them in the extraction graph. Mirrors how
+        // enableImageHashingIfAvailable() flips the equivalent toggle on
+        // AbstractImageParser instances for raster formats.
+        enableMetafileImageHashingIfAvailable(officeCfg);
         context.set(OfficeParserConfig.class, officeCfg);
 
         // Email: extract all multipart/alternative bodies (plain-text AND HTML), not just
@@ -482,6 +490,29 @@ public final class ParserRunner {
                     String thumbCt = pass1Capture.contentTypeFor(path);
                     if (thumbCt == null) thumbCt = contentType;
                     pass1Thumb = writePass1Thumbnail(outDir, path, imgBytes, thumbCt);
+
+                    // Save the source file + compute digests from the same bytes.
+                    // Pass 2 (EmbeddedFileExtractor.SavingExtractor) is supposed to
+                    // do this, but it misses image embeds in two cases that come up
+                    // a lot in malicious-document corpora:
+                    //   1. depth-1 embedded EMFs / WMFs in .xls files surfaced under
+                    //      synthetic names like "/embedded-1.emf" (POI's OfficeParser
+                    //      doesn't re-surface them in Pass 2's unwrapped flow), and
+                    //   2. images inside embedded PDFs at depth 2 (Pass 2 doesn't
+                    //      recurse into the PDF's image extractor).
+                    // Pass 1 already has the bytes in memory at this point. Using
+                    // them to ALSO compute sha256/md5/sha1 + size_bytes + save the
+                    // raw file is essentially free, and the result wins over Pass
+                    // 2's nulls below in the EmbeddedFileExtractor merge in Main.
+                    Pass1Save saved = savePass1Source(outDir, path, imgBytes);
+                    if (saved != null) {
+                        // Override only when Pass 1 has a value to contribute. Pass 2
+                        // may still fill these in for entries it does see.
+                        if (sha256 == null) sha256 = saved.sha256;
+                        if (md5    == null) md5    = saved.md5;
+                        if (sha1   == null) sha1   = saved.sha1;
+                        if (sizeBytes == 0) sizeBytes = saved.sizeBytes;
+                    }
                 } else if (pass1Capture.wasBufferCapped(path)) {
                     // We saw the image, recognized it as such, but dropped the
                     // buffer to stay under the per-job byte budget. Surface so
@@ -555,6 +586,63 @@ public final class ParserRunner {
             LOG.fine("Pass-1 thumbnail write failed for " + entryPath + ": " + e.getMessage());
             return false;
         }
+    }
+
+    /** SHA-256 / MD5 / SHA-1 + size for a Pass-1-buffered embedded entry whose
+     *  source bytes we just persisted to disk. */
+    private record Pass1Save(String sha256, String md5, String sha1, long sizeBytes) {}
+
+    /** Persist Pass 1's buffered bytes for an embedded entry as both a raw file
+     *  under {@code embedded/<entry-path>} and a digest triple, mirroring what
+     *  Pass 2's {@link EmbeddedFileExtractor.SavingExtractor} does for entries
+     *  it actually saw. Returns {@code null} on path-resolution failure (e.g.
+     *  the root entry, which has no embedded location). */
+    private static Pass1Save savePass1Source(java.nio.file.Path outDir,
+                                             String entryPath, byte[] bytes) {
+        if (outDir == null || entryPath == null || "/".equals(entryPath) || bytes == null) {
+            return null;
+        }
+        java.nio.file.Path embRoot = outDir.resolve("embedded");
+        Metadata nameOnly = new Metadata();
+        java.nio.file.Path outFile =
+                EmbeddedFileExtractor.resolveOutFile(embRoot, entryPath, nameOnly);
+        if (outFile == null) return null;
+        try {
+            java.nio.file.Files.createDirectories(outFile.getParent());
+            java.nio.file.Files.write(outFile, bytes,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (java.io.IOException e) {
+            LOG.fine("Pass-1 source write failed for " + entryPath + ": " + e.getMessage());
+            // Still compute digests + return them even if the file write failed —
+            // the entry hashes are useful for similarity queries on their own.
+        }
+        try {
+            java.security.MessageDigest dSha256 = java.security.MessageDigest.getInstance("SHA-256");
+            java.security.MessageDigest dMd5    = java.security.MessageDigest.getInstance("MD5");
+            java.security.MessageDigest dSha1   = java.security.MessageDigest.getInstance("SHA-1");
+            dSha256.update(bytes);
+            dMd5.update(bytes);
+            dSha1.update(bytes);
+            return new Pass1Save(hexBytes(dSha256.digest()),
+                                 hexBytes(dMd5.digest()),
+                                 hexBytes(dSha1.digest()),
+                                 (long) bytes.length);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            // SHA-256 / MD5 / SHA-1 are JDK-mandatory; this is unreachable in
+            // practice but the API forces us to handle it.
+            return new Pass1Save(null, null, null, (long) bytes.length);
+        }
+    }
+
+    private static String hexBytes(byte[] b) {
+        StringBuilder sb = new StringBuilder(b.length * 2);
+        for (byte x : b) {
+            int v = x & 0xff;
+            sb.append(Character.forDigit(v >>> 4, 16))
+              .append(Character.forDigit(v & 0xf, 16));
+        }
+        return sb.toString();
     }
 
     /** SHA-256 of a UTF-8 string as lowercase hex. Used to dedupe Unicode-QR
@@ -692,6 +780,25 @@ public final class ParserRunner {
             // Upstream Tika snapshots do not expose the fork-only image hashing toggle.
         } catch (ReflectiveOperationException e) {
             LOG.fine("Image hashing unavailable: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Flip {@code imageHashingEnabled} on the OfficeParserConfig if the fork
+     * exposes it. EMFParser / WMFParser in the wmetcalf Tika fork gate their
+     * rasterize-and-hash branch on this; without it set, embedded EMFs and
+     * WMFs come back with no {@code image:phash} / {@code image:dhash} /
+     * {@code image:ahash} / {@code image:colorhash}. Upstream Tika does not
+     * have the field, so we use reflection and swallow the absence.
+     */
+    private static void enableMetafileImageHashingIfAvailable(OfficeParserConfig officeCfg) {
+        try {
+            officeCfg.getClass().getMethod("setImageHashingEnabled", boolean.class)
+                    .invoke(officeCfg, true);
+        } catch (NoSuchMethodException e) {
+            // Older Tika or upstream Tika — fork-only toggle absent.
+        } catch (ReflectiveOperationException e) {
+            LOG.fine("OfficeParserConfig image hashing unavailable: " + e.getMessage());
         }
     }
 
