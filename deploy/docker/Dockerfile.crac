@@ -45,7 +45,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         | tar -xz -C /opt \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-ARG TIKA_FORK_SHA=800035e3bf105fcf316bb5759af6b74837b7d55b
+ARG TIKA_FORK_SHA=9c41d240c8cf79019529601ed4588651f24c7c51
 RUN git clone --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git /src/tika \
     && git -C /src/tika checkout "$TIKA_FORK_SHA"
