@@ -70,6 +70,23 @@ class JobStore(Protocol):
         """
         ...
 
+    async def list_recent_payloads(
+        self, limit: int = 50, offset: int = 0, state: str | None = None,
+    ) -> list[dict]:
+        """Same shape as ``list_recent`` but returns raw payload dicts (skipping
+        the ``JobRecord.from_dict`` reconstruction). Used by the list-jobs API
+        path where Pydantic-style typing is wasted: the result tree is parsed
+        out of jsonb just to be thrown away by ``_summary_from_payload`` and the
+        full-payload deserialization dominates wall time on heavy results."""
+        ...
+
+    async def search_payloads(
+        self, query: str, limit: int = 50, offset: int = 0,
+    ) -> list[dict]:
+        """Same as ``search`` but returns raw payload dicts — see
+        ``list_recent_payloads`` for the rationale."""
+        ...
+
     async def delete(self, job_id: str) -> bool:
         """Safe-delete: removes the record only if state is terminal.
 

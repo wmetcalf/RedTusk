@@ -402,6 +402,90 @@ class SqlJobStore:
             out.append(JobRecord.from_dict(json.loads(payload)))
         return out
 
+    @staticmethod
+    def _rows_to_payloads(rows: list) -> list[dict]:
+        """Parse the SQL ``payload`` column out of each row into a dict, with
+        no further reconstruction. Postgres returns jsonb as a dict already,
+        SQLite returns it as TEXT — both paths end up as ``dict[str, Any]``.
+        Used by the ``*_payloads`` variants to skip ``JobRecord.from_dict``,
+        which dominates wall time on heavy results in the list-jobs API."""
+        out: list[dict] = []
+        for row in rows:
+            cell = row[0]
+            if isinstance(cell, str):
+                out.append(json.loads(cell))
+            elif isinstance(cell, dict):
+                out.append(cell)
+            else:
+                out.append(json.loads(json.dumps(cell)))
+        return out
+
+    async def list_recent_payloads(
+        self, limit: int = 50, offset: int = 0, state: str | None = None,
+    ) -> list[dict]:
+        """Raw-payload variant of ``list_recent`` — see base.JobStore."""
+        if self._dialect == "sqlite":
+            if state:
+                async with self._aiosqlite_conn.execute(
+                    "SELECT payload FROM jobs WHERE state = ? "
+                    "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                    (state, limit, offset),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with self._aiosqlite_conn.execute(
+                    "SELECT payload FROM jobs ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ) as cur:
+                    rows = await cur.fetchall()
+        else:
+            async with self._psycopg_pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    if state:
+                        await cur.execute(
+                            f'SELECT payload FROM "{self._schema}".jobs '
+                            "WHERE state = %s "
+                            "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
+                            (state, limit, offset),
+                        )
+                    else:
+                        await cur.execute(
+                            f'SELECT payload FROM "{self._schema}".jobs '
+                            "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
+                            (limit, offset),
+                        )
+                    rows = await cur.fetchall()
+        return self._rows_to_payloads(rows)
+
+    async def search_payloads(
+        self, query: str, limit: int = 50, offset: int = 0,
+    ) -> list[dict]:
+        """Raw-payload variant of ``search`` — see base.JobStore."""
+        q = f"%{query}%"
+        if self._dialect == "sqlite":
+            async with self._aiosqlite_conn.execute(
+                "SELECT payload FROM jobs "
+                "WHERE id LIKE ? "
+                "OR json_extract(payload, '$.filename_hint') LIKE ? "
+                "OR json_extract(payload, '$.input_sha256') LIKE ? "
+                "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                (q, q, q, limit, offset),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._psycopg_pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        f'SELECT payload FROM "{self._schema}".jobs '
+                        "WHERE id ILIKE %s "
+                        "OR payload->>'filename_hint' ILIKE %s "
+                        "OR payload->>'input_sha256' ILIKE %s "
+                        "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
+                        (q, q, q, limit, offset),
+                    )
+                    rows = await cur.fetchall()
+        return self._rows_to_payloads(rows)
+
     async def state_counts(self) -> dict[str, int]:
         """Returns the count of jobs per state. Used by the UI to surface
         a summary banner so users can navigate large queues by state."""
@@ -423,26 +507,34 @@ class SqlJobStore:
     async def search(self, query: str, limit: int = 50, offset: int = 0) -> list[JobRecord]:
         q = f"%{query}%"
         if self._dialect == "sqlite":
+            # Match on id + filename_hint + input_sha256 only — no full
+            # payload scan (see Postgres branch below for the rationale).
             async with self._aiosqlite_conn.execute(
                 "SELECT payload FROM jobs "
-                "WHERE id LIKE ? OR payload LIKE ? "
+                "WHERE id LIKE ? "
+                "OR json_extract(payload, '$.filename_hint') LIKE ? "
+                "OR json_extract(payload, '$.input_sha256') LIKE ? "
                 "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
-                (q, q, limit, offset),
+                (q, q, q, limit, offset),
             ) as cur:
                 rows = await cur.fetchall()
         else:
             async with self._psycopg_pool.connection() as conn:
                 async with conn.cursor() as cur:
-                    # Check top-level scalar fields directly, then fall back
-                    # to full payload text scan for content (QR URLs, OCR text)
+                    # Match on id + filename_hint + input_sha256. The earlier
+                    # `OR payload::text ILIKE %s` clause forced a seq scan
+                    # with a text cast on every row's jsonb — 37s @ 3.9 k
+                    # rows in prod (UI fetch times out → "failed to fetch").
+                    # These three scalar fields cover the common search use
+                    # cases; full-payload search (QR URLs, OCR text) would
+                    # need a pg_trgm GIN index — add when actually required.
                     await cur.execute(
                         f'SELECT payload FROM "{self._schema}".jobs '
                         "WHERE id ILIKE %s "
                         "OR payload->>'filename_hint' ILIKE %s "
                         "OR payload->>'input_sha256' ILIKE %s "
-                        "OR payload::text ILIKE %s "
                         "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
-                        (q, q, q, q, limit, offset),
+                        (q, q, q, limit, offset),
                     )
                     rows = await cur.fetchall()
         out: list[JobRecord] = []

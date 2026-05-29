@@ -97,6 +97,24 @@ class MemoryJobStore:
             ordered = sorted(matches, key=lambda r: r.submitted_at, reverse=True)
             return [copy.deepcopy(r) for r in ordered[offset:offset + limit]]
 
+    # ── *_payloads variants ─────────────────────────────────────────────
+    # Memory store keeps JobRecord objects directly — there's no jsonb-roundtrip
+    # overhead to skip, so we just reuse the typed variants and call .to_dict().
+    # (Tests use the memory store; the sql_store implementations are what
+    # actually matter for the prod hot path.)
+
+    async def list_recent_payloads(
+        self, limit: int = 50, offset: int = 0, state: str | None = None,
+    ) -> list[dict]:
+        records = await self.list_recent(limit=limit, offset=offset, state=state)
+        return [r.to_dict() for r in records]
+
+    async def search_payloads(
+        self, query: str, limit: int = 50, offset: int = 0,
+    ) -> list[dict]:
+        records = await self.search(query, limit=limit, offset=offset)
+        return [r.to_dict() for r in records]
+
     async def delete(self, job_id: str) -> bool:
         async with self._lock:
             r = self._records.get(job_id)

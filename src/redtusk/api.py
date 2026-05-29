@@ -306,6 +306,80 @@ def _job_summary(record: JobRecord) -> dict[str, Any]:
     return d
 
 
+def _summary_from_payload(d: dict[str, Any]) -> dict[str, Any]:
+    """Lightweight list-view summary built directly from a raw payload dict —
+    skips the ``JobRecord.from_dict`` reconstruction that dominates wall time
+    on heavy results (200 large xml/docx payloads = 20+ s of attr-by-attr
+    rebuild we throw away when we set result=None).
+
+    Same output shape as ``_job_summary`` — kept in lockstep so the UI doesn't
+    care which path produced it.
+    """
+    qr_count = 0
+    entry_count = 0
+    has_ocr = False
+    result = d.get("result")
+    if result:
+        entries = (result.get("extraction") or {}).get("entries") or []
+        entry_count = len(entries)
+        for e in entries:
+            qr_count += len((e.get("qr") or {}).get("codes") or [])
+            if (e.get("ocr") or {}).get("text"):
+                has_ocr = True
+
+    # Derived timing metrics — same formulae as JobRecord.to_dict(), recomputed
+    # from the ISO-8601 strings. fromisoformat is fast (~µs); the round-trip
+    # via JobRecord would also have parsed datetimes here, just with all the
+    # nested-result reconstruction tacked on for no reason in the list view.
+    def _parse(ts: str | None):
+        if not ts:
+            return None
+        from datetime import datetime
+        return datetime.fromisoformat(ts)
+
+    submitted = _parse(d.get("submitted_at"))
+    started = _parse(d.get("started_at"))
+    worker_started = _parse(d.get("worker_started_at"))
+    completed = _parse(d.get("completed_at"))
+
+    queue_ms = pool_wait_ms = processing_ms = parse_ms = None
+    if submitted and started:
+        queue_ms = int((started - submitted).total_seconds() * 1000)
+    if started and worker_started:
+        pool_wait_ms = int((worker_started - started).total_seconds() * 1000)
+    if completed:
+        anchor = worker_started or started
+        if anchor:
+            processing_ms = int((completed - anchor).total_seconds() * 1000)
+    if result:
+        try:
+            parse_ms = int(result["extraction"]["duration_ms"])
+        except (KeyError, TypeError, ValueError):
+            parse_ms = None
+
+    return {
+        "id": d.get("id"),
+        "state": d.get("state"),
+        "submitted_at": d.get("submitted_at"),
+        "started_at": d.get("started_at"),
+        "worker_started_at": d.get("worker_started_at"),
+        "completed_at": d.get("completed_at"),
+        "queue_ms": queue_ms,
+        "pool_wait_ms": pool_wait_ms,
+        "processing_ms": processing_ms,
+        "parse_ms": parse_ms,
+        "input_sha256": d.get("input_sha256"),
+        "input_size_bytes": d.get("input_size_bytes"),
+        "filename_hint": d.get("filename_hint"),
+        "result": None,  # heavy payload stripped — fetch per-job for details
+        "error_code": d.get("error_code"),
+        "error_detail": d.get("error_detail"),
+        "qr_count": qr_count,
+        "entry_count": entry_count,
+        "has_ocr": has_ocr,
+    }
+
+
 # ── Route registration ────────────────────────────────────────────────────────
 
 
@@ -479,16 +553,22 @@ def _register_routes(app: FastAPI) -> None:
         if state_filter and state_filter not in (
                 "queued", "running", "succeeded", "failed"):
             raise HTTPException(400, "state must be one of: queued, running, succeeded, failed")
+        # Use the raw-payload variants — see _summary_from_payload for the
+        # rationale (skipping JobRecord.from_dict shaves ~20 s off 200-row
+        # responses when the rows have heavy extraction trees).
         if q.strip():
-            records = await store.search(q.strip(), limit=capped_limit, offset=offset)
+            payloads = await store.search_payloads(
+                q.strip(), limit=capped_limit, offset=offset)
             if state_filter:
-                # Apply state filter client-side on top of search.
-                records = [r for r in records if r.state.value == state_filter]
+                payloads = [p for p in payloads if p.get("state") == state_filter]
         else:
-            records = await store.list_recent(
+            payloads = await store.list_recent_payloads(
                 limit=capped_limit, offset=offset, state=state_filter)
-        has_more = len(records) == capped_limit
-        return JSONResponse({"jobs": [_job_summary(r) for r in records], "has_more": has_more})
+        has_more = len(payloads) == capped_limit
+        return JSONResponse({
+            "jobs": [_summary_from_payload(p) for p in payloads],
+            "has_more": has_more,
+        })
 
 
     # Similarity gate — same idea as clippyshot. Fuzzy phash queries with
