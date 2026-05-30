@@ -187,6 +187,38 @@ public final class ParserRunner {
         PDFParserConfig pdfCfg = new PDFParserConfig();
         pdfCfg.setExtractMarkedContent(true);
         pdfCfg.setExtractUniqueInlineImagesOnly(false);
+        // Disable PDFParser-side per-page OCR. The default AUTO strategy
+        // renders every PDF page through PDFBox into an image, then feeds
+        // each rendered page to Tesseract — and bombs on a long tail of
+        // real-world PDFs (corrupt color profiles, malformed XObjects,
+        // PDFBox COSStream edge cases). On the mbzdls corpus 7 of 11 PDF
+        // failures traced to this exact path (the same files extract
+        // cleanly with OCR off). We still get OCR on actually-image-bearing
+        // entries via Pass1ImageCapture → image-module's Tesseract pipeline,
+        // so the only thing we lose is OCR over scanned-PDF text — and any
+        // genuinely-scanned PDF surfaces its page images as embedded
+        // entries that path can handle. Use reflection so older Tika
+        // snapshots that don't expose OcrConfig.Strategy still build.
+        try {
+            Class<?> ocrCfgClass = Class.forName("org.apache.tika.parser.pdf.OcrConfig");
+            Class<?> strategyClass = null;
+            for (Class<?> c : ocrCfgClass.getDeclaredClasses()) {
+                if (c.getSimpleName().equals("Strategy")) { strategyClass = c; break; }
+            }
+            if (strategyClass != null && strategyClass.isEnum()) {
+                Object noOcr = null;
+                for (Object e : strategyClass.getEnumConstants()) {
+                    if ("NO_OCR".equals(((Enum<?>) e).name())) { noOcr = e; break; }
+                }
+                if (noOcr != null) {
+                    pdfCfg.getClass()
+                          .getMethod("setOcrStrategy", strategyClass)
+                          .invoke(pdfCfg, noOcr);
+                }
+            }
+        } catch (ReflectiveOperationException ignore) {
+            // Older Tika / upstream — falls back to default AUTO behaviour.
+        }
         context.set(PDFParserConfig.class, pdfCfg);
 
         // Office: surface hidden/empty rows in Excel workbooks — a common lure technique.
