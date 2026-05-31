@@ -112,9 +112,17 @@ class MemoryJobStore:
 
     async def search_payloads(
         self, query: str, limit: int = 50, offset: int = 0,
+        state: str | None = None,
     ) -> list[dict[str, Any]]:
-        records = await self.search(query, limit=limit, offset=offset)
-        return [r.to_dict() for r in records]
+        # Filter by state at the source: fetch a wider matching set, restrict
+        # by state, then page — so a state filter can't return a short page
+        # while more matches exist (which breaks the caller's has_more flag).
+        if state is None:
+            records = await self.search(query, limit=limit, offset=offset)
+            return [r.to_dict() for r in records]
+        matches = await self.search(query, limit=1_000_000, offset=0)
+        matches = [r for r in matches if r.state.value == state]
+        return [r.to_dict() for r in matches[offset:offset + limit]]
 
     async def delete(self, job_id: str) -> bool:
         async with self._lock:

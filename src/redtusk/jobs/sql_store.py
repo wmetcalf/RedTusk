@@ -474,29 +474,47 @@ class SqlJobStore:
 
     async def search_payloads(
         self, query: str, limit: int = 50, offset: int = 0,
+        state: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Raw-payload variant of ``search`` — see base.JobStore."""
+        """Raw-payload variant of ``search`` — see base.JobStore.
+
+        ``state`` (when given) is applied in SQL so LIMIT/OFFSET paginate the
+        state-filtered set rather than a post-filtered page."""
         q = f"%{query}%"
         if self._dialect == "sqlite":
+            state_clause = "AND state = ? " if state is not None else ""
+            params: tuple[Any, ...] = (
+                (q, q, q, state, limit, offset)
+                if state is not None
+                else (q, q, q, limit, offset)
+            )
             async with self._aiosqlite_conn.execute(
                 "SELECT payload FROM jobs "
-                "WHERE id LIKE ? "
+                "WHERE (id LIKE ? "
                 "OR json_extract(payload, '$.filename_hint') LIKE ? "
-                "OR json_extract(payload, '$.input_sha256') LIKE ? "
+                "OR json_extract(payload, '$.input_sha256') LIKE ?) "
+                f"{state_clause}"
                 "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
-                (q, q, q, limit, offset),
+                params,
             ) as cur:
                 rows = await cur.fetchall()
         else:
+            state_clause = "AND state = %s " if state is not None else ""
+            params = (
+                (q, q, q, state, limit, offset)
+                if state is not None
+                else (q, q, q, limit, offset)
+            )
             async with self._psycopg_pool.connection() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         f'SELECT payload FROM "{self._schema}".jobs '
-                        "WHERE id ILIKE %s "
+                        "WHERE (id ILIKE %s "
                         "OR payload->>'filename_hint' ILIKE %s "
-                        "OR payload->>'input_sha256' ILIKE %s "
+                        "OR payload->>'input_sha256' ILIKE %s) "
+                        f"{state_clause}"
                         "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
-                        (q, q, q, limit, offset),
+                        params,
                     )
                     rows = await cur.fetchall()
         return self._rows_to_payloads(rows)

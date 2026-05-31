@@ -629,16 +629,32 @@ def _read_capped(path: Path, max_bytes: int) -> bytes:
     # rdump on the host; a compromised worker could plant a symlink named
     # metadata.json -> /etc/passwd (or a FIFO that would block read_bytes
     # forever). Reject anything that isn't a regular file.
-    st = os.lstat(path)
-    if not stat.S_ISREG(st.st_mode):
-        raise OSError(
-            errno.EINVAL,
-            f"metadata.json is not a regular file (mode={stat.filemode(st.st_mode)})",
-            str(path),
-        )
-    if st.st_size > max_bytes:
-        raise ValueError(f"metadata.json too large: {st.st_size} > {max_bytes}")
-    return path.read_bytes()
+    # Open with O_NOFOLLOW, then fstat the resulting fd — TOCTOU-safe: a
+    # compromised worker cannot swap metadata.json for a symlink (-> /etc/passwd)
+    # or a FIFO between the type check and the read, because we check and read
+    # the SAME descriptor. O_NOFOLLOW makes open() itself fail (ELOOP) if the
+    # final path component is a symlink.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(
+                errno.EINVAL,
+                f"metadata.json is not a regular file (mode={stat.filemode(st.st_mode)})",
+                str(path),
+            )
+        if st.st_size > max_bytes:
+            raise ValueError(f"metadata.json too large: {st.st_size} > {max_bytes}")
+        with os.fdopen(fd, "rb") as f:
+            return f.read()
+    except BaseException:
+        # fdopen takes ownership of fd on success; close it ourselves on any
+        # failure at/before fdopen to avoid leaking the descriptor.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def _copy_artifacts(src_dir: Path, dst_dir: Path, *, max_bytes: int) -> None:

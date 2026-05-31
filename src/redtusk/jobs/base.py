@@ -82,9 +82,13 @@ class JobStore(Protocol):
 
     async def search_payloads(
         self, query: str, limit: int = 50, offset: int = 0,
+        state: str | None = None,
     ) -> list[dict[str, Any]]:
         """Same as ``search`` but returns raw payload dicts — see
-        ``list_recent_payloads`` for the rationale."""
+        ``list_recent_payloads`` for the rationale.
+
+        When ``state`` is given, the match is restricted to that job state at
+        the storage layer so ``limit``/``offset`` paginate the filtered set."""
         ...
 
     async def delete(self, job_id: str) -> bool:
