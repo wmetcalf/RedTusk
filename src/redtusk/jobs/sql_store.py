@@ -13,11 +13,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from redtusk.errors import JobNotFoundError, StorageError
 from redtusk.types import JobRecord, JobState
+
+# Postgres identifier whitelist for the schema name. The schema is interpolated
+# into DDL/DML via f-strings (it cannot be a bound parameter), so it must match
+# a strict identifier pattern. This is defense-in-depth: the schema is not
+# user-reachable today, but validating here means a future caller can't smuggle
+# a `"` to break out of the quoted identifier. Postgres caps identifiers at 63
+# bytes, hence the {0,62} upper bound after the leading char.
+_VALID_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 def _serialize(record: JobRecord) -> str:
@@ -130,6 +139,12 @@ class SqlJobStore:
     """
 
     def __init__(self, url: str, *, schema: str = "public") -> None:
+        if not _VALID_SCHEMA_RE.match(schema):
+            raise ValueError(
+                f"invalid postgres schema name {schema!r}: must match "
+                f"{_VALID_SCHEMA_RE.pattern} (letters, digits, underscores; "
+                f"max 63 chars; cannot start with a digit)"
+            )
         self._url = url
         self._schema = schema
         self._connected = False
@@ -403,13 +418,13 @@ class SqlJobStore:
         return out
 
     @staticmethod
-    def _rows_to_payloads(rows: list) -> list[dict]:
+    def _rows_to_payloads(rows: list[Any]) -> list[dict[str, Any]]:
         """Parse the SQL ``payload`` column out of each row into a dict, with
         no further reconstruction. Postgres returns jsonb as a dict already,
         SQLite returns it as TEXT — both paths end up as ``dict[str, Any]``.
         Used by the ``*_payloads`` variants to skip ``JobRecord.from_dict``,
         which dominates wall time on heavy results in the list-jobs API."""
-        out: list[dict] = []
+        out: list[dict[str, Any]] = []
         for row in rows:
             cell = row[0]
             if isinstance(cell, str):
@@ -422,7 +437,7 @@ class SqlJobStore:
 
     async def list_recent_payloads(
         self, limit: int = 50, offset: int = 0, state: str | None = None,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Raw-payload variant of ``list_recent`` — see base.JobStore."""
         if self._dialect == "sqlite":
             if state:
@@ -459,7 +474,7 @@ class SqlJobStore:
 
     async def search_payloads(
         self, query: str, limit: int = 50, offset: int = 0,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Raw-payload variant of ``search`` — see base.JobStore."""
         q = f"%{query}%"
         if self._dialect == "sqlite":

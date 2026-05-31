@@ -8,28 +8,40 @@ version = "0.1.0"
 description = "Sandboxed Apache Tika service with warm-pool worker containers"
 license = {text = "MIT"}
 requires-python = ">=3.12"
+# NOTE (supply chain): these constraints bound the resolver but are NOT a
+# substitute for a hash-pinned lockfile. For reproducible, tamper-evident
+# installs generate a locked, hashed manifest and install from it in the
+# Docker images, e.g.:
+#   uv lock                                         # -> uv.lock (preferred)
+#   pip-compile --generate-hashes -o deploy/requirements.lock pyproject.toml
+# then `pip install --require-hashes -r deploy/requirements.lock`.
+# A `deploy/requirements.lock` produced via `pip freeze` is committed as a
+# starting point; regenerate it WITH HASHES (pip-tools/uv) for production.
+# Upper bounds cap the next major (or next minor for 0.x) to avoid silently
+# pulling in breaking releases; the runtime dependency SET is unchanged.
 dependencies = [
-    "fastapi[standard]>=0.111",
-    "uvicorn[standard]>=0.29",
-    "click>=8.1",
-    "python-multipart>=0.0.9",
-    "structlog>=24.1.0",
-    "prometheus-client>=0.20.0",
-    "psycopg[binary,pool]>=3.2.0",
-    "aiosqlite>=0.20.0",
-    "jsonschema>=4.21.0",
-    "rfc3339-validator>=0.1.4",
-    "python-magic>=0.4.27",
-    "pyzipper>=0.3.6",
+    "fastapi[standard]>=0.111,<1.0",
+    "uvicorn[standard]>=0.29,<1.0",
+    "click>=8.1,<9.0",
+    "python-multipart>=0.0.9,<0.1",
+    "structlog>=24.1.0,<26.0",
+    "prometheus-client>=0.20.0,<1.0",
+    "psycopg[binary,pool]>=3.2.0,<4.0",
+    "aiosqlite>=0.20.0,<1.0",
+    "jsonschema>=4.21.0,<5.0",
+    "rfc3339-validator>=0.1.4,<0.2",
+    "python-magic>=0.4.27,<0.5",
+    "pyzipper>=0.3.6,<0.4",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "httpx>=0.27.0",
-    "ruff>=0.3.0",
-    "mypy>=1.9.0",
+    "pytest>=8.0.0,<9.0",
+    "pytest-asyncio>=0.23.0,<1.0",
+    "httpx>=0.27.0,<1.0",
+    "ruff>=0.3.0,<1.0",
+    "mypy>=1.9.0,<2.0",
+    "types-jsonschema>=4.21.0,<5.0",
 ]
 
 [project.scripts]

@@ -31,6 +31,9 @@ echo "build-vsock: listener bound, launching java" >&2
 
 # Run the checkpoint JVM. The vsock URL override makes VsockIpcChannel
 # use AF_UNIX (no /dev/vsock needed at build time).
+# SECURITY: bytecode verification stays ON (removed -Xverify:none). This is not
+# an offline dump — warp snapshots THIS JVM and the runtime worker resumes from
+# the captured image to parse hostile input, so it must verify bytecode.
 REDTUSK_WORKER_IPC=vsock \
 REDTUSK_VSOCK_UNIX_PATH="$BUILD_SOCK" \
 REDTUSK_VSOCK_PORT=10001 \
@@ -41,7 +44,7 @@ java \
     -XX:CRaCCheckpointTo=/app/checkpoint \
     -XX:AOTCache=/app/redtusk.aot \
     --enable-native-access=ALL-UNNAMED \
-    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \

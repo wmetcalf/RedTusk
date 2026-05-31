@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.formparsers import MultiPartException
 
 from redtusk._version import __version__
 from redtusk.dispatcher import Dispatcher, artifact_dir
@@ -49,6 +50,11 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 _STATIC = Path(__file__).parent / "static"
 _BAD_FILENAME_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\xad]")
+
+# Bounds concurrent infected-zip builds. Each build AES-encrypts up to ~1 GiB
+# of artifacts (CPU + disk heavy); without a cap an unauthenticated burst could
+# exhaust the box. Mirrors the similarity endpoint's concurrency gate.
+_INFECTED_ZIP_SEMAPHORE = asyncio.Semaphore(2)
 
 
 def _load_ui() -> str:
@@ -178,7 +184,16 @@ async def _read_upload(request: Request) -> tuple[bytes, str]:
             pass
 
     if ct.startswith("multipart/form-data"):
-        form = await request.form()
+        # Bound the bytes buffered by the form parser so a client cannot force
+        # us to read an unbounded body into memory before the size check below.
+        # A missing/invalid Content-Length means the early check above was
+        # skipped, so this streaming cap is the only guard — always apply it.
+        try:
+            form = await request.form(max_part_size=limits.max_input + 1)
+        except MultiPartException as exc:
+            raise HTTPException(
+                status_code=413, detail="Request body too large"
+            ) from exc
         # Try common field names; fall back to first field present
         file_field = None
         for name in ("file", "upload", "data", "document"):
@@ -224,18 +239,37 @@ def _apply_per_request_limits(limits: Limits, request: Request) -> Limits:
     overrides: dict[str, object] = {}
     p = request.query_params
 
+    truthy = ("1", "true", "yes", "on")
+    falsey = ("0", "false", "no", "off")
+
     def flag(name: str) -> bool | None:
         v = p.get(name)
-        return None if v is None else v.lower() not in ("0", "false", "no")
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        if normalized in truthy:
+            return True
+        if normalized in falsey:
+            return False
+        # Reject malformed values rather than silently coercing them to True.
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid boolean value for query parameter '{name}'",
+        )
 
     def clamp_int(name: str, lo: int, hi: int) -> int | None:
         v = p.get(name)
         if v is None:
             return None
         try:
-            return max(lo, min(hi, int(v)))
-        except ValueError:
-            return None
+            parsed = int(v)
+        except (TypeError, ValueError) as exc:
+            # Reject malformed values rather than silently ignoring them.
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid integer value for query parameter '{name}'",
+            ) from exc
+        return max(lo, min(hi, parsed))
 
     for fname in ("enable_qr", "enable_ocr", "enable_thumbnails"):
         val = flag(fname)
@@ -270,8 +304,11 @@ async def _run_sync(request: Request) -> ExtractResult:
             headers={"Retry-After": "5"},
         ) from exc
     except (WorkerError, SchemaValidationError) as exc:
+        # Log the full error server-side, but return a generic detail to the
+        # client — schema pointers, exit codes and SHA-256 internals must not
+        # leak to unauthenticated callers.
         _logger.warning("api.sync_error", error=str(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail="extraction failed") from exc
 
 
 # ── List-view summary ─────────────────────────────────────────────────────────
@@ -331,7 +368,7 @@ def _summary_from_payload(d: dict[str, Any]) -> dict[str, Any]:
     # from the ISO-8601 strings. fromisoformat is fast (~µs); the round-trip
     # via JobRecord would also have parsed datetimes here, just with all the
     # nested-result reconstruction tacked on for no reason in the list view.
-    def _parse(ts: str | None):
+    def _parse(ts: str | None) -> datetime | None:
         if not ts:
             return None
         from datetime import datetime
@@ -548,7 +585,8 @@ def _register_routes(app: FastAPI) -> None:
         state: str = ""
     ) -> JSONResponse:
         store: JobStore = request.app.state.store
-        capped_limit = min(limit, 200)
+        capped_limit = max(1, min(limit, 200))
+        offset = max(0, offset)
         state_filter = state.strip().lower() if state else None
         if state_filter and state_filter not in (
                 "queued", "running", "succeeded", "failed"):
@@ -709,7 +747,8 @@ def _register_routes(app: FastAPI) -> None:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
                 tmp_path = tmp.name
             import asyncio
-            await asyncio.to_thread(_build_zip, tmp_path)
+            async with _INFECTED_ZIP_SEMAPHORE:
+                await asyncio.to_thread(_build_zip, tmp_path)
         except ValueError as exc:
             if tmp_path:
                 try:
@@ -759,9 +798,14 @@ def _register_routes(app: FastAPI) -> None:
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
         "Content-Security-Policy": (
+            # script-src drops 'unsafe-inline': all JS is served from the
+            # external /static/app.js bundle and inline on* handlers have been
+            # replaced by delegated listeners. style-src keeps 'unsafe-inline'
+            # for the remaining inline style="" attributes (style injection is
+            # far lower risk than script execution); the bundle is /static/app.css.
             "default-src 'self'; "
-            "style-src 'unsafe-inline'; "
-            "script-src 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
             "img-src 'self' data: blob:; "
             "connect-src 'self'"
         ),

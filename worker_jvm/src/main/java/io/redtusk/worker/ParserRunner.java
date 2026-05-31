@@ -44,6 +44,12 @@ public final class ParserRunner {
     private static final Object IMAGE_HASH_PHASH = tikaImageHashProperty("PHASH");
     private static final Object IMAGE_HASH_COLORHASH = tikaImageHashProperty("COLORHASH");
 
+    // Install JVM-global secure JAXP defaults once at class load so even XML
+    // readers constructed outside our ParseContext are hardened (XXE/SSRF).
+    static {
+        installGlobalSecureXml();
+    }
+
     // Shared language detector — loaded once at startup, thread-safe for detect() calls.
     private static final LanguageDetector LANG_DETECTOR;
     static {
@@ -147,6 +153,13 @@ public final class ParserRunner {
         RecursiveParserWrapper wrapper = new RecursiveParserWrapper(auto);
         ParseContext context = new ParseContext();
 
+        // XXE / SSRF hardening: route every JAXP factory Tika may pull from the
+        // ParseContext through SafeXml so external entities, DTDs, stylesheets and
+        // remote resource fetching are all disabled. Makes the README's "No remote
+        // resources" guarantee real instead of relying solely on the no-network
+        // namespace defense layer.
+        hardenXmlParsing(context);
+
         // Embedded recursion / count limits (Tika-side enforcement).
         context.set(EmbeddedLimits.class, new EmbeddedLimits(
             limits.maxRecursionDepth(), false,
@@ -224,6 +237,14 @@ public final class ParserRunner {
         // Office: surface hidden/empty rows in Excel workbooks — a common lure technique.
         OfficeParserConfig officeCfg = new OfficeParserConfig();
         officeCfg.setIncludeMissingRows(true);
+        // Macro security: the worker NEVER executes macros — it extracts them as
+        // inert embedded entries for forensic review (preserved by the standard
+        // VBA/XLM extraction path that surfaces "/macros/..." entries). Set the
+        // documented MacroSecurityLevel=3 (maximum) so the README claim holds.
+        // No conflict with the forensic macro-as-embedded-entry behavior: this
+        // POI flag only governs whether the macro project is *interpreted/run*;
+        // macro *source* is still extracted as an embedded entry either way.
+        applyMacroSecurity(officeCfg);
         // Enable image hashing on the vector-image POI paths (EMF / WMF). The
         // Tika fork gates rasterize-and-hash on this flag because the raster
         // costs O(image) extra memory + CPU and not every Tika user wants it.
@@ -755,6 +776,84 @@ public final class ParserRunner {
             offset += Character.charCount(cp);
         }
         return out.toString();
+    }
+
+    /**
+     * Install hardened JAXP factories into the {@link ParseContext} so every XML
+     * read Tika performs (OOXML, ODF, RSS, XMP, SVG metadata, etc.) rejects
+     * external entities, DTDs, stylesheets and remote resource loading. We set
+     * the SAX/DOM/StAX/Transformer factory objects on the context AND register
+     * them under the framework's string-keyed slots, because different Tika
+     * parser modules look them up by type or by interface. Any factory class
+     * Tika doesn't honor is harmless dead weight; the ones it does honor close
+     * the XXE/SSRF hole. As a backstop, the same secure factories are installed
+     * as JVM-global defaults (see {@link #installGlobalSecureXml()}).
+     */
+    static void hardenXmlParsing(ParseContext context) {
+        try {
+            context.set(javax.xml.parsers.DocumentBuilderFactory.class,
+                    io.redtusk.worker.util.SafeXml.newDocumentBuilderFactory());
+            context.set(javax.xml.parsers.SAXParserFactory.class,
+                    io.redtusk.worker.util.SafeXml.newSAXParserFactory());
+            context.set(javax.xml.stream.XMLInputFactory.class,
+                    io.redtusk.worker.util.SafeXml.newXMLInputFactory());
+            context.set(javax.xml.transform.TransformerFactory.class,
+                    io.redtusk.worker.util.SafeXml.newTransformerFactory());
+        } catch (Exception e) {
+            LOG.warning("XML hardening: could not install secure JAXP factories: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Install JVM-global secure JAXP defaults so even XML readers a parser
+     * constructs directly (bypassing the ParseContext) are hardened. Idempotent
+     * and best-effort: only sets a system property when it is not already set so
+     * we never clobber an explicit operator override.
+     */
+    static void installGlobalSecureXml() {
+        // jaxp.properties-style global limits: forbid all external access.
+        setIfAbsent(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        setIfAbsent(javax.xml.XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        setIfAbsent(javax.xml.XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+    }
+
+    private static void setIfAbsent(String key, String value) {
+        try {
+            if (System.getProperty(key) == null) {
+                System.setProperty(key, value);
+            }
+        } catch (SecurityException e) {
+            LOG.fine("XML hardening: cannot set system property " + key + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Set the documented MacroSecurityLevel=3 (maximum) on the OfficeParserConfig
+     * if the Tika/POI API exposes it. Used reflectively so the worker still
+     * compiles against Tika snapshots that lack the setter. The worker never
+     * executes macros regardless — this only makes the documented hardening
+     * level explicit on the config object.
+     */
+    private static void applyMacroSecurity(OfficeParserConfig officeCfg) {
+        // Try a few known setter shapes across Tika/POI versions.
+        if (trySetIntMethod(officeCfg, "setMacroSecurityLevel", 3)) return;
+        // POI exposes macro extraction without execution; if no level setter is
+        // present, the default extract-don't-run behavior already satisfies the
+        // "never executed" guarantee. Nothing else to do.
+        LOG.fine("MacroSecurity: OfficeParserConfig exposes no macro-security setter; "
+                + "relying on extract-only (non-executing) default.");
+    }
+
+    private static boolean trySetIntMethod(Object target, String method, int value) {
+        try {
+            target.getClass().getMethod(method, int.class).invoke(target, value);
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
+        } catch (ReflectiveOperationException e) {
+            LOG.fine("MacroSecurity: " + method + " failed: " + e.getMessage());
+            return false;
+        }
     }
 
     private static void enableHtmlScriptExtraction(Parser root) {

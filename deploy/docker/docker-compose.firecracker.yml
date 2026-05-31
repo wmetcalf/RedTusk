@@ -10,8 +10,14 @@
 #
 # The dispatcher still runs in the api container, but now opens /dev/kvm
 # and spawns Firecracker microVMs as sibling subprocesses inside the
-# container. The FC code path requires no Docker socket — but we keep the
-# socket mount in case the operator wants to mix gVisor and FC.
+# container. The FC code path requires no Docker socket, so this overlay
+# also drops the docker-socket-proxy dependency from the base file.
+#
+# SECURITY FOLLOW-UP (recommended, out of scope here): the Firecracker
+# launcher currently shares the public api container. Ideally the FC launcher
+# runs in a SEPARATE, non-public container that holds /dev/kvm, while the api
+# container stays networked-only. Splitting them removes /dev/kvm from the
+# internet-facing process. Tracked as a follow-up.
 
 services:
   api:
@@ -19,16 +25,38 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.fc-dispatcher
+    # Pure-FC never talks to the Docker daemon — drop the proxy dependency the
+    # base file declares (otherwise compose would still wait on / start it).
+    depends_on: !override
+      postgres:
+        condition: service_healthy
     devices:
       # Pass /dev/kvm through so the firecracker subprocess can ioctl(KVM_*).
       # Combined with the group_add below this lets UID 10001 open the device.
       - /dev/kvm
+    # SECURITY: re-assert the base hardening explicitly so a future merge/edit
+    # of the overlay cannot silently drop it. Compose merges scalars by
+    # override and these would normally inherit, but /dev/kvm + a kvm group is
+    # a privileged combination — make the constraints non-negotiable here.
+    read_only: true
+    cap_drop:
+      - ALL
+    # !override REPLACES the base security_opt list (rather than appending,
+    # which would duplicate no-new-privileges and fail compose validation).
+    # We re-assert no-new-privileges AND add the baked-in seccomp profile.
+    security_opt: !override
+      - no-new-privileges:true
+      # Seccomp profile baked into the FC dispatcher image (inherits from the
+      # api image). Constrains the api/dispatcher process even while it holds
+      # /dev/kvm. The firecracker binary applies its OWN seccomp filter to the
+      # microVM in addition to this. TODO(follow-up): the profile permits
+      # clone/ioctl broadly (the JVM + firecracker need them); arg-level BPF
+      # filtering of ioctl (KVM_* only) and clone flags is a future tightening.
+      - seccomp=/opt/redtusk/seccomp/redtusk.seccomp.json
     # FC-only mode drops the Docker socket: in pure-FC the dispatcher never
-    # calls `docker run` (it spawns firecracker subprocesses directly), so
-    # leaving the base's `/var/run/docker.sock:ro` mount in place would just
-    # be an idle privilege the api container doesn't need (a compromised api
-    # could still issue Docker API calls — mount `:ro` only restricts the
-    # bind-mount itself, not the socket I/O). Compose-2.x `!override` REPLACES
+    # calls `docker run` (it spawns firecracker subprocesses directly). The
+    # base file already removed the raw socket bind in favour of the proxy;
+    # here we also omit the proxy entirely. Compose-2.x `!override` REPLACES
     # the base list (vs `!reset` which clears it to null and discards the
     # entries below) — GPT-5.5 review G1 / G1' caught the `!reset` bug.
     volumes: !override

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from redtusk.errors import JobNotFoundError, StorageError
 from redtusk.types import JobRecord, JobState
@@ -105,13 +106,13 @@ class MemoryJobStore:
 
     async def list_recent_payloads(
         self, limit: int = 50, offset: int = 0, state: str | None = None,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         records = await self.list_recent(limit=limit, offset=offset, state=state)
         return [r.to_dict() for r in records]
 
     async def search_payloads(
         self, query: str, limit: int = 50, offset: int = 0,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         records = await self.search(query, limit=limit, offset=offset)
         return [r.to_dict() for r in records]
 

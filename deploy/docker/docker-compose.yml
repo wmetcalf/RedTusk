@@ -3,7 +3,10 @@
 # Web UI + API at http://localhost:8000/
 #
 # The api service runs redtusk serve (api + dispatcher in one process).
-# The dispatcher spawns worker containers via the Docker socket.
+# The dispatcher spawns worker containers via the Docker socket — but it
+# does NOT get the real socket. Instead it talks to a docker-socket-proxy
+# (least-privilege Docker API filter) over the internal `backend` network.
+# The proxy is the ONLY container with the real /var/run/docker.sock (ro).
 
 services:
 
@@ -13,7 +16,10 @@ services:
     environment:
       POSTGRES_DB:       ${POSTGRES_DB:-redtusk}
       POSTGRES_USER:     ${POSTGRES_USER:-redtusk}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-redtusk-dev}
+      # SECURITY: no default — a weak/shared default password is a real
+      # credential-exposure risk. Operators MUST set a strong random value
+      # in deploy/docker/.env. Startup fails fast if unset.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env — use a strong random value}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -22,6 +28,61 @@ services:
       timeout: 5s
       retries: 10
     networks:
+      - backend
+
+  # Least-privilege Docker API proxy. The api/dispatcher talks to this over
+  # the internal `backend` network (DOCKER_HOST=tcp://docker-socket-proxy:2375)
+  # instead of being handed the raw, root-equivalent /var/run/docker.sock.
+  # An API RCE can now only reach the Docker verbs explicitly enabled below,
+  # not the full daemon. This proxy is the SOLE holder of the real socket.
+  #
+  # Image is pinned by tag; pin by digest in production (see comment below).
+  # Enabled verbs are the minimum the dispatcher needs to run/manage worker
+  # containers: containers create/start/wait/logs/stop/delete, images pull,
+  # POST (mutating calls), and INFO (RedTusk's runtime-detect calls
+  # `docker info`). Everything else stays at the image default of DENY (0).
+  docker-socket-proxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      # --- coarse object groups ---
+      - CONTAINERS=1          # /containers/* (create, start, wait, logs, stop, delete, inspect)
+      - IMAGES=1              # /images/*     (pull/inspect the worker image)
+      - INFO=1                # /info         (RedTusk runtime detect calls `docker info`)
+      - POST=1                # allow mutating (POST) calls — required for create/start/stop
+      # --- everything else explicitly denied (defence in depth; these are
+      #     already 0 by default, listed to make intent auditable) ---
+      - NETWORKS=0
+      - VOLUMES=0
+      - EXEC=0
+      - SWARM=0
+      - SERVICES=0
+      - TASKS=0
+      - NODES=0
+      - SECRETS=0
+      - CONFIGS=0
+      - PLUGINS=0
+      - SYSTEM=0
+      - AUTH=0
+      - BUILD=0
+      - COMMIT=0
+      - DISTRIBUTION=0
+      - SESSION=0
+      - VERSION=1             # docker SDK negotiates the API version on connect
+    volumes:
+      # The ONLY container that touches the real socket. Read-only bind: the
+      # proxy still issues full socket I/O, but the verb filter above is what
+      # actually constrains it.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run
+    networks:
+      # Internal only — never exposed to `frontend`. No `ports:` mapping.
       - backend
 
   api:
@@ -33,13 +94,32 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     environment:
-      - REDTUSK_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:-redtusk-dev}@postgres:5432/${POSTGRES_DB:-redtusk}
-      - REDTUSK_WORKER_IMAGE=${REDTUSK_WORKER_IMAGE:-redtusk:latest}
+      - REDTUSK_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env — use a strong random value}@postgres:5432/${POSTGRES_DB:-redtusk}
+      # Point the docker SDK / docker CLI at the least-privilege proxy instead
+      # of a bind-mounted socket. The docker Python SDK and CLI both honour
+      # DOCKER_HOST by default. NOTE for Python owners: confirm the dispatcher
+      # constructs its docker client from the environment (the SDK's
+      # docker.from_env() / DockerClient honour DOCKER_HOST automatically); if
+      # it hardcodes base_url="unix:///var/run/docker.sock" it must be changed
+      # to read DOCKER_HOST.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      # Pin to a versioned tag, not :latest, so a re-pull can't silently swap
+      # the worker image out from under a running deploy. Pin by digest in
+      # production (REDTUSK_WORKER_IMAGE=redtusk@sha256:...).
+      - REDTUSK_WORKER_IMAGE=${REDTUSK_WORKER_IMAGE:-redtusk:0.1.0}
       - REDTUSK_PROFILE=${REDTUSK_PROFILE:-default}
       - REDTUSK_ENABLE_OCR=true
       - REDTUSK_WORKER_RUNTIME=${REDTUSK_WORKER_RUNTIME:-}
-      - REDTUSK_WORKER_SECCOMP_PROFILE=${REDTUSK_WORKER_SECCOMP_PROFILE:-}
+      # Default to the seccomp profile baked into the API image (runc path).
+      # gVisor/runsc ignores this and applies its own filter, so it stays safe
+      # to default. Override with an absolute host path to use a custom profile.
+      - REDTUSK_WORKER_SECCOMP_PROFILE=${REDTUSK_WORKER_SECCOMP_PROFILE:-/opt/redtusk/seccomp/redtusk.seccomp.json}
+      # Default AppArmor profile name (runc + AppArmor-enabled hosts). Empty =
+      # docker's built-in docker-default. Load `redtusk-worker` on the host to
+      # use a tighter profile, or leave default below.
       - REDTUSK_WORKER_APPARMOR_PROFILE=${REDTUSK_WORKER_APPARMOR_PROFILE:-}
       - REDTUSK_POOL_SIZE=${REDTUSK_POOL_SIZE:-8}
       - REDTUSK_POOL_BURST_SIZE=${REDTUSK_POOL_BURST_SIZE:-5}
@@ -51,18 +131,17 @@ services:
       - REDTUSK_ARTIFACT_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}/artifacts
       - REDTUSK_SCRATCH_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}/scratch
     ports:
-      - "${REDTUSK_PORT:-8000}:8000"
+      # Bind to localhost only by default — operators front this with a reverse
+      # proxy (TLS termination, auth, rate limiting). Set REDTUSK_PORT or
+      # override the bind address explicitly if you intend to expose it.
+      - "127.0.0.1:${REDTUSK_PORT:-8000}:8000"
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    group_add:
-      # DOCKER_GID is auto-detected by the redtusk-compose wrapper.
-      # If running docker compose directly (not via wrapper), export:
-      #   export DOCKER_GID=$(stat -c %g /var/run/docker.sock)
-      # The fallback 984 matches RHEL; Ubuntu=110, Debian=999 — always use the wrapper.
-      - "${DOCKER_GID:-984}"
+    # The api no longer needs the docker group — it reaches Docker over TCP via
+    # the proxy, not the host socket. group_add removed (was for socket access).
     tmpfs:
       - /tmp:rw,exec,nosuid,size=128m
     volumes:
@@ -70,7 +149,8 @@ services:
       # dispatcher's docker-run bind mounts (which docker resolves on the host)
       # see the directories the API creates. Override REDTUSK_STATE_DIR in .env.
       - ${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}:${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # SECURITY: the raw docker.sock bind mount has been REMOVED. The api now
+      # talks to docker-socket-proxy (DOCKER_HOST above). Do not re-add it.
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
       test: ["CMD", "redtusk", "selftest"]

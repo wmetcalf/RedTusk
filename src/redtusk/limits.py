@@ -23,6 +23,17 @@ from redtusk.errors import ConfigurationError
 #                  is on); pre-requisite for the Phase 3 Kata config that
 #                  removes virtio-fs.
 _VALID_PROFILES = {"default", "high-density", "microvm"}
+
+# Recognized worker_runtime values. "" means auto-detect (prefer runsc) for the
+# Docker backend. "firecracker" selects the non-Docker FirecrackerWorkerRuntime
+# (see cli.py); the Docker-backed runtimes are runc/runsc/kata. Validating
+# centrally here rejects typos (e.g. "firercracker") at config time with a clear
+# error instead of failing per-spawn deep inside build_run_argv.
+_VALID_WORKER_RUNTIMES = {"", "runc", "runsc", "kata", "firecracker"}
+# Subset the Docker argv builder (build_run_argv) can actually emit. firecracker
+# is intentionally absent: it routes to FirecrackerWorkerRuntime, never Docker.
+_DOCKER_WORKER_RUNTIMES = {"runc", "runsc", "kata"}
+
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off", ""}
 
@@ -247,6 +258,15 @@ class Limits:
             raise ConfigurationError(
                 f"REDTUSK_PROFILE must be one of {sorted(_VALID_PROFILES)}, "
                 f"got {instance.profile!r}"
+            )
+        # Validate worker_runtime centrally so a typo (e.g. "firercracker") or
+        # an unsupported value is rejected at startup with a clear message,
+        # rather than only surfacing per-spawn inside build_run_argv. The Docker
+        # vs Firecracker routing happens in cli.py; here we just bound the set.
+        if instance.worker_runtime not in _VALID_WORKER_RUNTIMES:
+            raise ConfigurationError(
+                f"REDTUSK_WORKER_RUNTIME must be one of "
+                f"{sorted(_VALID_WORKER_RUNTIMES)}, got {instance.worker_runtime!r}"
             )
         # fc_outdisk_mib (the FC per-slot output disk SIZE) must stay close
         # to max_extracted_bytes (the host-side cap on what the worker may
