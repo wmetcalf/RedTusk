@@ -372,7 +372,12 @@ def _summary_from_payload(d: dict[str, Any]) -> dict[str, Any]:
         if not ts:
             return None
         from datetime import datetime
-        return datetime.fromisoformat(ts)
+        try:
+            return datetime.fromisoformat(ts)
+        except ValueError:
+            # A corrupted/legacy row with a malformed timestamp must not 500
+            # the whole list endpoint — treat it as missing.
+            return None
 
     submitted = _parse(d.get("submitted_at"))
     started = _parse(d.get("started_at"))
@@ -596,9 +601,7 @@ def _register_routes(app: FastAPI) -> None:
         # responses when the rows have heavy extraction trees).
         if q.strip():
             payloads = await store.search_payloads(
-                q.strip(), limit=capped_limit, offset=offset)
-            if state_filter:
-                payloads = [p for p in payloads if p.get("state") == state_filter]
+                q.strip(), limit=capped_limit, offset=offset, state=state_filter)
         else:
             payloads = await store.list_recent_payloads(
                 limit=capped_limit, offset=offset, state=state_filter)
