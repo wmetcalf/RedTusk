@@ -582,6 +582,18 @@ public final class EmbeddedFileExtractor {
             Path outFile = EmbeddedFileExtractor.resolveOutFile(root, embPath, metadata);
             if (outFile == null) return;
 
+            // Re-check the aggregate budget WITH this entry's size before writing.
+            // The pre-read guard above runs before bytes are buffered, so it
+            // can't see this entry's length; without this check a single entry
+            // could push extractedBytesTotal past MAX_EXTRACTED_BUDGET_BYTES
+            // (bounded by MAX_FILE_BYTES, but still an overshoot of the cap).
+            if (extractedBytesTotal.get() + bytes.length > MAX_EXTRACTED_BUDGET_BYTES) {
+                LOG.warning("EmbeddedFileExtractor: extracted-bytes budget would be exceeded ("
+                        + extractedBytesTotal.get() + " + " + bytes.length + " > "
+                        + MAX_EXTRACTED_BUDGET_BYTES + "); skipping entry");
+                return;
+            }
+
             // Save file
             try {
                 Files.createDirectories(outFile.getParent());
