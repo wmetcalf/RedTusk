@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -167,7 +169,9 @@ async def test_signal_job_writes_job_json(
     # control.go is created (file-based signal, no FIFO)
     assert (tmp_path / "control" / "control.go").exists()
 
-    job_json = json.loads((tmp_path / "control" / "job.json").read_bytes())  # job.json at scratch root
+    # job.json at scratch root
+    job_bytes = (tmp_path / "control" / "job.json").read_bytes()
+    job_json = json.loads(job_bytes)
     assert job_json["sha256"] == "deadbeef"
     assert job_json["limits"]["max_recursion_depth"] == limits.max_recursion_depth
     assert job_json["limits"]["max_embedded_entries"] == limits.max_embedded_entries
@@ -289,3 +293,48 @@ async def test_signal_job_creates_control_go(
     await rt.signal_job(slot, job, limits)
     # control.go must exist so Java's polling loop detects it
     assert (tmp_path / "control" / "control.go").exists()
+
+
+# ---------------------------------------------------------------------------
+# 10. create_scratch dirs are 0o770, NOT world-writable (finding 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_scratch_dirs_are_not_world_writable(
+    tmp_path: Path, mock_docker: DockerRuntime, limits: Limits
+) -> None:
+    rt = DockerWorkerRuntime(docker=mock_docker, limits=limits, image="redtusk:dev")
+    slot_id = uuid4()
+    result = await rt.create_scratch(slot_id)
+    for sub in (result, result / "in", result / "out", result / "control"):
+        mode = stat.S_IMODE(os.stat(sub).st_mode)
+        assert mode == 0o770, f"{sub} has mode {oct(mode)}, expected 0o770"
+        # Explicitly: no world (other) bits set.
+        assert not (mode & 0o007), f"{sub} is world-accessible: {oct(mode)}"
+
+
+# ---------------------------------------------------------------------------
+# 11. spawn rejects worker_runtime='firecracker' on the Docker backend (finding 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_rejects_firecracker_runtime_on_docker_backend(
+    tmp_path: Path, mock_docker: DockerRuntime
+) -> None:
+    """worker_runtime='firecracker' must not reach the Docker argv builder —
+    it routes to FirecrackerWorkerRuntime. If it leaks to DockerWorkerRuntime
+    (deployment wiring bug), spawn raises a clear WorkerError instead of a
+    generic per-spawn ValueError from build_run_argv."""
+    from redtusk.errors import WorkerError
+
+    fc_limits = Limits(scratch_root=str(tmp_path), worker_runtime="firecracker")
+    rt = DockerWorkerRuntime(docker=mock_docker, limits=fc_limits, image="redtusk:dev")
+    slot = make_slot(tmp_path)
+    (tmp_path / "in").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "out").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(WorkerError, match="firecracker"):
+        await rt.spawn(slot, fc_limits, "default")
+    mock_docker.run.assert_not_awaited()  # type: ignore[attr-defined]

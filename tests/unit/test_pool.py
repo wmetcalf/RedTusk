@@ -26,8 +26,8 @@ from redtusk.types import Slot, SlotState
 @pytest.fixture
 def limits() -> Limits:
     return Limits.from_env(
-        pool_size=2,
-        pool_max_size=8,
+        pool_warm_size=2,
+        pool_concurrent_size=8,
         pool_burst_size=3,
         pool_burst_trigger_s=3,
         pool_burst_drain_s=60,
@@ -315,7 +315,7 @@ async def test_consecutive_failures_shrink_target(
     """After pool_spawn_retry_max+1 consecutive failures, target_size decrements."""
     mock_runtime.spawn.side_effect = WorkerError("always fails")
     # Use low retry_max so the test is quick
-    lim = Limits.from_env(pool_size=3, pool_spawn_retry_max=2)
+    lim = Limits.from_env(pool_warm_size=3, pool_spawn_retry_max=2)
     pool = _make_pool(lim, mock_runtime, mock_store)
     initial_target = pool._target_size  # 3
 

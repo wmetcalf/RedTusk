@@ -34,14 +34,20 @@ ARG MAVEN_VERSION=3.9.16
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL \
-        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
-        | tar -xz -C /opt \
+    # SUPPLY CHAIN: download the Maven binary AND its upstream-published
+    # SHA-512 checksum, verify, then extract. Apache publishes a .sha512 next
+    # to every artifact. Fails closed — a tampered tarball never gets extracted.
+    && MVN_URL="https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+    && curl -fsSL "$MVN_URL" -o /tmp/maven.tar.gz \
+    && curl -fsSL "${MVN_URL}.sha512" -o /tmp/maven.tar.gz.sha512 \
+    && echo "$(cat /tmp/maven.tar.gz.sha512)  /tmp/maven.tar.gz" | sha512sum -c - \
+    && tar -xz -C /opt -f /tmp/maven.tar.gz \
+    && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
 # Clone Tika fork pinned to a specific commit for supply-chain integrity.
 # Update TIKA_FORK_SHA when intentionally pulling new commits.
-ARG TIKA_FORK_SHA=71800e4826c726cb7ebad0b5a0fd8550788ce655
+ARG TIKA_FORK_SHA=32db30ff2e49558f12dd6bcf77d0cdb659427aa7
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
@@ -69,9 +75,14 @@ ARG MAVEN_VERSION=3.9.16
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc libc-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL \
-        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
-        | tar -xz -C /opt \
+    # SUPPLY CHAIN: verify the Maven tarball against its upstream SHA-512 before
+    # extraction (see tika-build stage above). Fails closed.
+    && MVN_URL="https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+    && curl -fsSL "$MVN_URL" -o /tmp/maven.tar.gz \
+    && curl -fsSL "${MVN_URL}.sha512" -o /tmp/maven.tar.gz.sha512 \
+    && echo "$(cat /tmp/maven.tar.gz.sha512)  /tmp/maven.tar.gz" | sha512sum -c - \
+    && tar -xz -C /opt -f /tmp/maven.tar.gz \
+    && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
 # Import Tika 4.0.0-SNAPSHOT JARs from the fork build
@@ -157,9 +168,10 @@ COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
 #
 #   -XX:+UseSerialGC         G1 has notable startup cost; SerialGC wins
 #                            for our short-lived ~800m heap one-shot worker.
-#   -Xverify:none            Skip per-class bytecode verification at load.
-#                            Safe — our classpath is trusted (local JAR +
-#                            AOT cache built from same JAR). Saves 100-500ms.
+#   (bytecode verification stays ON — this worker parses hostile input; the
+#    JDK 25 AOT cache is also built + loaded with verification enabled so the
+#    cache settings match. -Xverify:none was REMOVED for security: ~100-500ms
+#    is not worth disabling JVM verification in the attack-facing component.)
 #   -XX:TieredStopAtLevel=1  Stop JIT at C1 (interpreter + simple compiler).
 #                            C2 needs sustained warmup we never get with
 #                            ~4s parse jobs, so C2 cost is wasted. Worth
@@ -171,7 +183,7 @@ COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
 RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
-    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \
@@ -180,7 +192,7 @@ RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
-    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar && \
@@ -201,7 +213,6 @@ ENV REDTUSK_LOG_LEVEL=INFO
 ENTRYPOINT ["java", \
     "-XX:AOTCache=/app/redtusk.aot", \
     "-XX:+UseSerialGC", \
-    "-Xverify:none", \
     "-XX:TieredStopAtLevel=1", \
     "-Xms800m", \
     "-Xmx800m", \

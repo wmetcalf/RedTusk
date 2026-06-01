@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +29,7 @@ from redtusk.observability.metrics import (
     record_jobs_in_flight,
 )
 from redtusk.pool import Pool
+from redtusk.sandbox.vsock_server import VsockProtocolError
 from redtusk.schema import validate_rmeta
 from redtusk.types import ExtractResult, JobRecord, JobState, Slot
 from redtusk.worker_runtime import WorkerRuntime
@@ -173,7 +176,7 @@ class Dispatcher:
         pile up waiting for a slot, and the majority time out before they are
         served.
         """
-        max_in_flight = self._limits.pool_size + self._limits.pool_burst_size
+        max_in_flight = self._limits.pool_warm_size + self._limits.pool_burst_size
         while True:
             try:
                 if len(self._in_flight) >= max_in_flight:
@@ -213,9 +216,9 @@ class Dispatcher:
             except Exception as exc:
                 _logger.warning("dispatcher.cleanup_error", error=str(exc))
 
-    async def _dispatch(self, job: JobRecord) -> None:
+    async def _dispatch(self, job: JobRecord, attempt: int = 0) -> None:
         """Run one job end-to-end. Does not raise — failures are recorded in the store."""
-        _logger.info("dispatcher.dispatch_start", job_id=job.id)
+        _logger.info("dispatcher.dispatch_start", job_id=job.id, attempt=attempt)
         record_jobs_in_flight(len(self._in_flight))
         slot: Slot | None = None
         slot_released = False
@@ -260,6 +263,19 @@ class Dispatcher:
                     self._runtime.receive_result(slot),
                     timeout=float(self._limits.job_timeout_s),
                 )
+            except VsockProtocolError as exc:
+                # The vsock RESULT/ARTIFACT stream desynced — a transport-level
+                # corruption the guest virtio-vsock layer can produce under
+                # heavy host CPU contention (see fc_vcpu_count note in limits).
+                # The worker's bytes were fine; the wire mangled them. Retry on
+                # a fresh microVM rather than failing a perfectly good job.
+                if attempt < self._limits.fc_vsock_retries:
+                    _logger.warning("dispatcher.vsock_corruption_retry",
+                                    job_id=job.id, attempt=attempt, error=str(exc))
+                    await release_slot(success=False)
+                    return await self._dispatch(job, attempt + 1)
+                _logger.warning("dispatcher.vsock_corruption_exhausted",
+                                job_id=job.id, attempt=attempt, error=str(exc))
             except (TimeoutError, Exception) as exc:
                 # Don't fail the whole dispatch yet — the wait() below will
                 # surface the worker exit code. Log so the cause is visible.
@@ -521,18 +537,51 @@ class Dispatcher:
             _hardlink_or_copy(tmp_path, str(dest))
 
             job.worker_started_at = datetime.now(UTC)
-            await self._runtime.signal_job(slot, job, limits)
-            # Drain vsock result BEFORE the container exits (microvm only;
-            # no-op for file-IPC). Mirrors the async dispatch path so both
-            # the queued and the sync submission flows handle microvm.
-            try:
-                await asyncio.wait_for(
-                    self._runtime.receive_result(slot),
-                    timeout=float(limits.job_timeout_s),
-                )
-            except (TimeoutError, Exception) as exc:
-                _logger.warning("dispatcher.sync_receive_result_error",
-                                job_id=job.id, error=str(exc))
+            # signal + receive with VsockProtocolError retry, mirroring the
+            # async dispatch path so sync callers don't fail on transient
+            # vsock frame corruption that queued callers would retry over
+            # (GPT-5.5 review G4). Each retry reaps the corrupted slot and
+            # claims a fresh one. The first attempt's slot was claimed above;
+            # subsequent attempts re-claim inside the loop.
+            attempt = 0
+            while True:
+                await self._runtime.signal_job(slot, job, limits)
+                try:
+                    await asyncio.wait_for(
+                        self._runtime.receive_result(slot),
+                        timeout=float(limits.job_timeout_s),
+                    )
+                except VsockProtocolError as exc:
+                    if attempt < limits.fc_vsock_retries:
+                        _logger.warning(
+                            "dispatcher.sync_vsock_corruption_retry",
+                            job_id=job.id, attempt=attempt, error=str(exc),
+                        )
+                        # Reap this slot, claim a fresh one, re-stage input.
+                        # CRITICAL: clear `slot` AFTER release but BEFORE the
+                        # re-claim — if claim() raises, the `finally` below
+                        # would otherwise release the already-released slot
+                        # and trigger pool._reap_and_replace twice (GPT-5.5
+                        # review G4').
+                        await self._pool.release(slot, success=False)
+                        slot = None
+                        slot = await self._pool.claim(
+                            timeout=float(limits.sync_queue_timeout_s)
+                        )
+                        dest = Path(slot.scratch_dir) / "in" / filename  # type: ignore[arg-type]
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        _hardlink_or_copy(tmp_path, str(dest))
+                        job.worker_started_at = datetime.now(UTC)
+                        attempt += 1
+                        continue
+                    _logger.warning(
+                        "dispatcher.sync_vsock_corruption_exhausted",
+                        job_id=job.id, attempt=attempt, error=str(exc),
+                    )
+                except (TimeoutError, Exception) as exc:
+                    _logger.warning("dispatcher.sync_receive_result_error",
+                                    job_id=job.id, error=str(exc))
+                break
             exit_code = await self._runtime.wait(
                 slot, timeout=float(limits.job_timeout_s)
             )
@@ -575,32 +624,85 @@ def _hardlink_or_copy(src: str, dst: str) -> None:
 
 
 def _read_capped(path: Path, max_bytes: int) -> bytes:
-    size = path.stat().st_size
-    if size > max_bytes:
-        raise ValueError(f"metadata.json too large: {size} > {max_bytes}")
-    return path.read_bytes()
+    # lstat (not stat) so a symlink doesn't pass through as the file it
+    # points to. The FC worker writes its outputs to a virtio-blk disk we
+    # rdump on the host; a compromised worker could plant a symlink named
+    # metadata.json -> /etc/passwd (or a FIFO that would block read_bytes
+    # forever). Reject anything that isn't a regular file.
+    # Open with O_NOFOLLOW, then fstat the resulting fd — TOCTOU-safe: a
+    # compromised worker cannot swap metadata.json for a symlink (-> /etc/passwd)
+    # or a FIFO between the type check and the read, because we check and read
+    # the SAME descriptor. O_NOFOLLOW makes open() itself fail (ELOOP) if the
+    # final path component is a symlink.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(
+                errno.EINVAL,
+                f"metadata.json is not a regular file (mode={stat.filemode(st.st_mode)})",
+                str(path),
+            )
+        if st.st_size > max_bytes:
+            raise ValueError(f"metadata.json too large: {st.st_size} > {max_bytes}")
+        with os.fdopen(fd, "rb") as f:
+            return f.read()
+    except BaseException:
+        # fdopen takes ownership of fd on success; close it ourselves on any
+        # failure at/before fdopen to avoid leaking the descriptor.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def _copy_artifacts(src_dir: Path, dst_dir: Path, *, max_bytes: int) -> None:
     dst_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
-    for src_path in src_dir.rglob("*"):
-        if not src_path.is_file() or src_path.is_symlink():
-            continue
-        # Skip worker draft-snapshot scratch files. DraftSnapshotWriter writes
-        # to .metadata.json.draft.tmp and atomically renames onto metadata.json;
-        # if SIGKILL hits mid-write, the orphan .tmp shouldn't surface in the
-        # artifact tree where the UI would list it.
-        if src_path.name == ".metadata.json.draft.tmp":
-            continue
-        size = src_path.stat().st_size
-        if copied + size > max_bytes:
-            raise ValueError(f"artifacts too large: {copied + size} > {max_bytes}")
-        rel = src_path.relative_to(src_dir)
-        dst_path = dst_dir / rel
-        dst_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_path, dst_path)
-        copied += size
+    # Walk with followlinks=False so a directory symlink planted by a
+    # compromised worker (e.g. /out/escape -> /etc) is NOT descended into.
+    # Path.rglob() follows directory symlinks and would let such a symlink
+    # pull files from outside the slot's /out into the persistent artifact
+    # tree. We additionally confine every resolved source path under src_dir
+    # (realpath startswith check) as defense-in-depth.
+    src_root_real = os.path.realpath(src_dir)
+    prefix = src_root_real + os.sep
+    for dirpath, dirnames, filenames in os.walk(src_dir, followlinks=False):
+        # Drop any directory entries that are themselves symlinks so os.walk
+        # never recurses through them (followlinks=False already avoids
+        # descending, but pruning keeps dirnames consistent and explicit).
+        dirnames[:] = [
+            d for d in dirnames
+            if not os.path.islink(os.path.join(dirpath, d))
+        ]
+        for name in filenames:
+            src_path = Path(dirpath) / name
+            # Per-file symlink skip (unchanged behavior).
+            if src_path.is_symlink() or not src_path.is_file():
+                continue
+            # Skip worker draft-snapshot scratch files. DraftSnapshotWriter
+            # writes to .metadata.json.draft.tmp and atomically renames onto
+            # metadata.json; if SIGKILL hits mid-write, the orphan .tmp
+            # shouldn't surface in the artifact tree where the UI lists it.
+            if src_path.name == ".metadata.json.draft.tmp":
+                continue
+            # Confine the resolved source under src_dir. Catches any residual
+            # way a path could resolve outside the slot (e.g. an intermediate
+            # symlink os.walk didn't prune).
+            real = os.path.realpath(src_path)
+            if real != src_root_real and not real.startswith(prefix):
+                continue
+            size = src_path.stat().st_size
+            if copied + size > max_bytes:
+                raise ValueError(
+                    f"artifacts too large: {copied + size} > {max_bytes}"
+                )
+            rel = src_path.relative_to(src_dir)
+            dst_path = dst_dir / rel
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dst_path)
+            copied += size
 
 
 def _mkdir_p(p: Path) -> None:

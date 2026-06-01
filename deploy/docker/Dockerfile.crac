@@ -40,12 +40,16 @@ ARG MAVEN_VERSION=3.9.16
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL \
-        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
-        | tar -xz -C /opt \
+    # SUPPLY CHAIN: verify Maven against its upstream SHA-512 before extract.
+    && MVN_URL="https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+    && curl -fsSL "$MVN_URL" -o /tmp/maven.tar.gz \
+    && curl -fsSL "${MVN_URL}.sha512" -o /tmp/maven.tar.gz.sha512 \
+    && echo "$(cat /tmp/maven.tar.gz.sha512)  /tmp/maven.tar.gz" | sha512sum -c - \
+    && tar -xz -C /opt -f /tmp/maven.tar.gz \
+    && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-ARG TIKA_FORK_SHA=71800e4826c726cb7ebad0b5a0fd8550788ce655
+ARG TIKA_FORK_SHA=32db30ff2e49558f12dd6bcf77d0cdb659427aa7
 RUN git clone --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git /src/tika \
     && git -C /src/tika checkout "$TIKA_FORK_SHA"
@@ -61,9 +65,13 @@ ARG MAVEN_VERSION=3.9.16
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc libc-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL \
-        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
-        | tar -xz -C /opt \
+    # SUPPLY CHAIN: verify Maven against its upstream SHA-512 before extract.
+    && MVN_URL="https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+    && curl -fsSL "$MVN_URL" -o /tmp/maven.tar.gz \
+    && curl -fsSL "${MVN_URL}.sha512" -o /tmp/maven.tar.gz.sha512 \
+    && echo "$(cat /tmp/maven.tar.gz.sha512)  /tmp/maven.tar.gz" | sha512sum -c - \
+    && tar -xz -C /opt -f /tmp/maven.tar.gz \
+    && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
 COPY --from=tika-build /root/.m2/repository/org/apache/tika \
@@ -114,7 +122,7 @@ RUN java \
     -XX:CRaCEngine=warp \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
-    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \
@@ -124,7 +132,9 @@ RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
-    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
+    -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    # bytecode verification stays ON (removed -Xverify:none): the restored
+    # worker parses hostile input, so verification must not be disabled.
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar && \
@@ -142,31 +152,32 @@ RUN mkdir -p /scratch /in /out /var/lib/redtusk /app/checkpoint && \
 
 USER 10001:10001
 
-# Take the warp checkpoint at build time.
+# Vsock-mode CRaC checkpoint:
 #
-# When --checkpoint runs, Main.java:
-#   1. KsmHelper.markHeapMergeable()
-#   2. FifoLoop.createFifo(/scratch)            ← creates /scratch/control/control.ready
-#   3. Core.checkpointRestore()                 ← warp snapshots process to /app/checkpoint
-#                                                  and EXITS with non-zero. Hence `|| true`.
-# At runtime, the restored process resumes at step 4 onward:
-#   4. CapDropper.dropCheckpointRestoreCapability()
-#   5. FifoLoop.createFifo(/scratch)            ← re-creates (mount has hidden the build-time one)
-#   6. processJob(/scratch)
-RUN java \
-    -XX:CRaCEngine=warp \
-    -XX:CRaCCheckpointTo=/app/checkpoint \
-    -XX:AOTCache=/app/redtusk.aot \
-    --enable-native-access=ALL-UNNAMED \
-    -XX:+UseSerialGC -Xverify:none -XX:TieredStopAtLevel=1 \
-    -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
-    -Djava.library.path=/app \
-    -jar /app/redtusk-worker.jar \
-    --checkpoint /scratch \
-    || true && \
-    test -d /app/checkpoint && \
-    test -n "$(ls /app/checkpoint/)" && \
-    echo "warp checkpoint captured: $(du -sh /app/checkpoint | cut -f1)"
+# We take the snapshot with the worker configured for AF_VSOCK IPC so that
+# the restored JVM (running inside a Firecracker microVM) wakes up already
+# in vsock mode — no env-var fiddling at restore, no rebuilt IPC channel.
+#
+# At build time we don't have AF_VSOCK (Docker build runs in the host's
+# init namespace, no /dev/vsock), so we use VsockIpcChannel's
+# REDTUSK_VSOCK_UNIX_PATH override which falls back to AF_UNIX. The protocol
+# is identical; only the address family differs. The build-time listener is
+# a tiny Python script that accepts the worker's connection, reads the
+# READY line, and then waits indefinitely — long enough for Core.checkpointRestore()
+# to fire VsockIpcChannel.beforeCheckpoint(), which CLOSES the socket on the
+# worker side and lets the JVM dump a clean snapshot (no live fds).
+#
+# After restore (inside the FC microVM at runtime), VsockIpcChannel.afterRestore()
+# opens a fresh AF_VSOCK socket and re-sends READY to the dispatcher.
+USER root
+RUN apt-get update -qq && apt-get install -y --no-install-recommends python3-minimal && rm -rf /var/lib/apt/lists/*
+COPY deploy/docker/build-vsock-listener.py /usr/local/bin/build-vsock-listener.py
+COPY deploy/docker/build-vsock-checkpoint.sh /usr/local/bin/build-vsock-checkpoint.sh
+RUN chmod 755 /usr/local/bin/build-vsock-listener.py /usr/local/bin/build-vsock-checkpoint.sh && \
+    chown 10001:10001 /tmp
+USER 10001:10001
+
+RUN /usr/local/bin/build-vsock-checkpoint.sh
 
 # Remove warmup corpus only AFTER checkpoint completes — the warmup files
 # must exist for the warmup phase that primes the JVM before checkpoint.

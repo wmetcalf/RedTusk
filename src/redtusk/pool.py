@@ -51,7 +51,7 @@ class Pool:
         self._lock = asyncio.Lock()
         self._idle_event = asyncio.Event()   # set when a slot becomes IDLE
         self._tasks: list[asyncio.Task[None]] = []
-        self._target_size: int = limits.pool_size
+        self._target_size: int = limits.pool_warm_size
         self._spawn_semaphore = asyncio.Semaphore(int(limits.pool_spawn_rate_limit))
         self._consecutive_spawn_failures: int = 0
         self._last_idle_at: datetime | None = None
@@ -190,7 +190,7 @@ class Pool:
                 )
                 deficit = min(
                     self._target_size - current,
-                    self._limits.pool_max_size - len(self._slots),
+                    self._limits.pool_concurrent_size - len(self._slots),
                 )
                 deficit = max(0, deficit)
             for _ in range(deficit):
@@ -310,7 +310,7 @@ class Pool:
                         current = len(self._slots)
                         burst_slots = min(
                             self._limits.pool_burst_size,
-                            self._limits.pool_max_size - current,
+                            self._limits.pool_concurrent_size - current,
                         )
                         self._burst_active = True
                     if burst_slots > 0:

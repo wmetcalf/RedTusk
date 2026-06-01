@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from redtusk.types import JobRecord, JobState
 
@@ -62,12 +62,33 @@ class JobStore(Protocol):
         state-filter pills so users can navigate large queues."""
         ...
 
-    async def search(self, query: str, limit: int = 50) -> list[JobRecord]:
+    async def search(self, query: str, limit: int = 50, offset: int = 0) -> list[JobRecord]:
         """Full-text search against job ID, filename, sha256, content-type, QR URLs.
 
         Matches are case-insensitive substring matches against the serialised
         job payload JSON.  Newest-first, capped at ``limit``.
         """
+        ...
+
+    async def list_recent_payloads(
+        self, limit: int = 50, offset: int = 0, state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Same shape as ``list_recent`` but returns raw payload dicts (skipping
+        the ``JobRecord.from_dict`` reconstruction). Used by the list-jobs API
+        path where Pydantic-style typing is wasted: the result tree is parsed
+        out of jsonb just to be thrown away by ``_summary_from_payload`` and the
+        full-payload deserialization dominates wall time on heavy results."""
+        ...
+
+    async def search_payloads(
+        self, query: str, limit: int = 50, offset: int = 0,
+        state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Same as ``search`` but returns raw payload dicts — see
+        ``list_recent_payloads`` for the rationale.
+
+        When ``state`` is given, the match is restricted to that job state at
+        the storage layer so ``limit``/``offset`` paginate the filtered set."""
         ...
 
     async def delete(self, job_id: str) -> bool:

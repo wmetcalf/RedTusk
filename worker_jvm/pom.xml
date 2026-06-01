@@ -56,16 +56,19 @@
       <artifactId>tika-langdetect-optimaize</artifactId>
       <version>${tika.version}</version>
     </dependency>
-    <!-- Batik: SVG rasterization for thumbnails -->
+    <!-- Batik: SVG rasterization for thumbnails. 1.18 carries the fixes for the
+         SSRF / external-resource CVEs (CVE-2022-44729 / CVE-2022-44730) and the
+         KEY_ALLOW_EXTERNAL_RESOURCES transcoding hint. SVG transcode is further
+         locked down with a deny-all UserAgent in EmbeddedFileExtractor. -->
     <dependency>
       <groupId>org.apache.xmlgraphics</groupId>
       <artifactId>batik-transcoder</artifactId>
-      <version>1.17</version>
+      <version>1.18</version>
     </dependency>
     <dependency>
       <groupId>org.apache.xmlgraphics</groupId>
       <artifactId>batik-codec</artifactId>
-      <version>1.17</version>
+      <version>1.18</version>
     </dependency>
     <!-- AF_VSOCK socket support for the microvm profile's worker↔dispatcher IPC.
          junixsocket-common provides the AF_UNIX API used in tests as a portable

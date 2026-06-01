@@ -35,12 +35,16 @@ ARG MAVEN_VERSION=3.9.16
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL \
-        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
-        | tar -xz -C /opt \
+    # SUPPLY CHAIN: verify Maven against its upstream SHA-512 before extract.
+    && MVN_URL="https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+    && curl -fsSL "$MVN_URL" -o /tmp/maven.tar.gz \
+    && curl -fsSL "${MVN_URL}.sha512" -o /tmp/maven.tar.gz.sha512 \
+    && echo "$(cat /tmp/maven.tar.gz.sha512)  /tmp/maven.tar.gz" | sha512sum -c - \
+    && tar -xz -C /opt -f /tmp/maven.tar.gz \
+    && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-ARG TIKA_FORK_SHA=3c460faf729f123b79268e8ae45e2271116beb24
+ARG TIKA_FORK_SHA=32db30ff2e49558f12dd6bcf77d0cdb659427aa7
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
@@ -62,9 +66,13 @@ ARG MAVEN_VERSION=3.9.16
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc libc-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL \
-        https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
-        | tar -xz -C /opt \
+    # SUPPLY CHAIN: verify Maven against its upstream SHA-512 before extract.
+    && MVN_URL="https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+    && curl -fsSL "$MVN_URL" -o /tmp/maven.tar.gz \
+    && curl -fsSL "${MVN_URL}.sha512" -o /tmp/maven.tar.gz.sha512 \
+    && echo "$(cat /tmp/maven.tar.gz.sha512)  /tmp/maven.tar.gz" | sha512sum -c - \
+    && tar -xz -C /opt -f /tmp/maven.tar.gz \
+    && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
 # Import Tika 4.0.0-SNAPSHOT JARs from the fork build

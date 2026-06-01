@@ -24,7 +24,7 @@ _TRUNCATION_REASONS = [
     "in_progress",   # worker is mid-parse; metadata.json is a draft snapshot
     "job_timeout",   # dispatcher SIGKILLed worker past job_timeout_s; result is partial
 ]
-_PROFILES = ["default", "high-density"]
+_PROFILES = ["default", "high-density", "microvm"]
 
 _QR_CODE_SCHEMA = {
     "type": "object",

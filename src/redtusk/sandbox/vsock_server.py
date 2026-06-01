@@ -1,16 +1,30 @@
 """Dispatcher-side vsock server for the microvm worker profile.
 
 Each worker slot owns a :class:`VsockSlotServer` that binds an AF_VSOCK
-listener on a unique port (or an AF_UNIX socket for tests). The protocol
-mirrors VsockIpcChannel.java verbatim:
+listener on a unique port (or an AF_UNIX socket for tests).
 
-  worker → host:   "READY\\n"
-  host   → worker: "GO\\n"
-  host   → worker: "JOB <N>\\n" + N bytes UTF-8 JobDescriptor JSON
-                   "INPUT <M>\\n" + M bytes input-file payload
-  worker → host:   "RESULT <K>\\n" + K bytes metadata.json
-                   "ARTIFACT <relPath> <L>\\n" + L bytes per file (zero or more)
-                   "DONE\\n"
+Two flavors of worker use this server, with different output paths:
+
+* **Docker-microvm (kata) profile** — full streaming, both directions::
+
+      worker → host:   "READY\\n"
+      host   → worker: "GO\\n"
+      host   → worker: "JOB <N>\\n" + N bytes UTF-8 JobDescriptor JSON
+                       "INPUT <M>\\n" + M bytes input-file payload
+      worker → host:   "RESULT <K>\\n" + K bytes metadata.json
+                       "ARTIFACT <relPath> <L>\\n" + L bytes per file (0+)
+                       "DONE\\n"
+
+* **Firecracker profile** — control plane only over vsock; OUTPUT (metadata
+  + artifacts) goes to a per-slot virtio-blk ext4 disk the guest mounts at
+  ``/tmp/redtusk-out`` and the host reads back via ``debugfs rdump`` after
+  the VM powers off. The worker's ``VsockIpcChannel.sendResult`` /
+  ``sendArtifact`` are no-ops in this mode. The host's
+  :meth:`receive_result` is correspondingly a no-op; ``wait()`` reads the
+  disk and FC-process-exit is the "done" signal (do NOT await a vsock
+  DONE frame — the worker closes the socket on exit, which would look
+  like protocol corruption). Output is OFF vsock because the guest
+  virtio-vsock layer corrupts large transfers under concurrent host load.
 
 The server is intentionally **synchronous in its socket I/O** — the
 dispatcher invokes it via :func:`asyncio.to_thread` so the asyncio
@@ -119,23 +133,27 @@ class VsockSlotServer:
     def send_go(self) -> None:
         self._send_line("GO")
 
-    def send_job(self, descriptor: dict, input_bytes: bytes) -> None:
+    def send_job(self, descriptor: dict[str, Any], input_bytes: bytes) -> None:
         """Send the JOB+INPUT frame pair. Descriptor is JSON-encoded; input
         bytes are sent verbatim."""
         if self._conn is None:
             raise RuntimeError("not connected")
         json_bytes = json.dumps(descriptor).encode("utf-8")
-        self._conn.sendall(f"JOB {len(json_bytes)}\n".encode("utf-8"))
+        self._conn.sendall(f"JOB {len(json_bytes)}\n".encode())
         self._conn.sendall(json_bytes)
-        self._conn.sendall(f"INPUT {len(input_bytes)}\n".encode("utf-8"))
+        self._conn.sendall(f"INPUT {len(input_bytes)}\n".encode())
         self._conn.sendall(input_bytes)
 
-    def receive_result(self, artifacts_dir: Path) -> dict[str, Any]:
+    def receive_result(
+        self, artifacts_dir: Path, max_extracted_bytes: int | None = None
+    ) -> dict[str, Any]:
         """Read RESULT then zero or more ARTIFACT frames then DONE.
 
         :param artifacts_dir: Host directory where ARTIFACT payloads are
             written. The worker-side relative path is preserved so e.g.
             ``embedded/0001.bin`` lands at ``artifacts_dir/embedded/0001.bin``.
+        :param max_extracted_bytes: Host-side cumulative cap on total extracted bytes
+            (metadata + all artifacts combined).
 
         Returns a dict with::
 
@@ -151,6 +169,7 @@ class VsockSlotServer:
 
         metadata: bytes | None = None
         artifacts: list[str] = []
+        total_bytes = 0
 
         while True:
             line = self._read_line()
@@ -162,12 +181,32 @@ class VsockSlotServer:
             if tag == "RESULT":
                 if len(parts) != 2:
                     raise VsockProtocolError(f"malformed RESULT header: {header}")
-                metadata = self._read_blob(int(parts[1]))
+                length = int(parts[1])
+                if length < 0:
+                    raise VsockProtocolError(f"negative RESULT length: {length}")
+                if max_extracted_bytes is not None and total_bytes + length > max_extracted_bytes:
+                    import shutil
+                    shutil.rmtree(artifacts_dir, ignore_errors=True)
+                    artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    raise VsockProtocolError(
+                        f"extracted output exceeds cap: >{max_extracted_bytes} bytes"
+                    )
+                metadata = self._read_blob(length)
+                total_bytes += length
             elif tag == "ARTIFACT":
                 if len(parts) < 3:
                     raise VsockProtocolError(f"malformed ARTIFACT header: {header}")
                 # Path may contain spaces; the LAST token is the length.
                 length = int(parts[-1])
+                if length < 0:
+                    raise VsockProtocolError(f"negative ARTIFACT length: {length}")
+                if max_extracted_bytes is not None and total_bytes + length > max_extracted_bytes:
+                    import shutil
+                    shutil.rmtree(artifacts_dir, ignore_errors=True)
+                    artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    raise VsockProtocolError(
+                        f"extracted output exceeds cap: >{max_extracted_bytes} bytes"
+                    )
                 rel_path = " ".join(parts[1:-1])
                 # Reject path-traversal: relative path with no .. components,
                 # no absolute paths.
@@ -178,6 +217,14 @@ class VsockSlotServer:
                 with open(dest, "wb") as f:
                     self._stream_blob_to_file(length, f)
                 artifacts.append(rel_path)
+                total_bytes += length
+            elif tag == "READY":
+                # CRaC restore can re-announce READY: afterRestore() reopens
+                # the socket and re-sends READY, and announceReady() is
+                # idempotent, so a second READY can trail the one consumed by
+                # accept_ready(). VsockIpcChannel.java documents that the
+                # dispatcher must tolerate duplicate READY frames — skip them.
+                continue
             elif tag == "DONE":
                 break
             else:
@@ -224,6 +271,13 @@ class VsockSlotServer:
                 continue
             buf.extend(b)
             if len(buf) > 4096:
+                # A control line this long means the byte stream desynced (a
+                # blob length didn't match the bytes on the wire). Log a prefix
+                # to aid diagnosis; see fc_vcpu_count note in limits.py.
+                _logger.warning(
+                    "vsock_server.control_line_overflow",
+                    extra={"prefix": repr(bytes(buf[:48]))},
+                )
                 raise VsockProtocolError("control line exceeds 4 KiB")
 
     def _read_blob(self, length: int) -> bytes:
@@ -244,7 +298,7 @@ class VsockSlotServer:
             remaining -= len(chunk)
         return b"".join(chunks)
 
-    def _stream_blob_to_file(self, length: int, fobj) -> None:
+    def _stream_blob_to_file(self, length: int, fobj: Any) -> None:
         """Same as _read_blob but streams to file to avoid holding huge
         payloads in memory."""
         assert self._conn is not None

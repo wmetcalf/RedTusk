@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from redtusk.errors import JobNotFoundError, StorageError
 from redtusk.types import JobRecord, JobState
@@ -72,7 +73,7 @@ class MemoryJobStore:
     async def list_recent(self, limit: int = 50, offset: int = 0,
                           state: str | None = None) -> list[JobRecord]:
         async with self._lock:
-            records = self._records.values()
+            records: list[JobRecord] = list(self._records.values())
             if state:
                 records = [r for r in records if r.state.value == state]
             ordered = sorted(
@@ -87,7 +88,7 @@ class MemoryJobStore:
                 out[r.state.value] = out.get(r.state.value, 0) + 1
             return out
 
-    async def search(self, query: str, limit: int = 50) -> list[JobRecord]:
+    async def search(self, query: str, limit: int = 50, offset: int = 0) -> list[JobRecord]:
         q = query.lower()
         async with self._lock:
             matches = [
@@ -95,7 +96,33 @@ class MemoryJobStore:
                 if q in (r.filename_hint or "").lower()
             ]
             ordered = sorted(matches, key=lambda r: r.submitted_at, reverse=True)
-            return [copy.deepcopy(r) for r in ordered[:limit]]
+            return [copy.deepcopy(r) for r in ordered[offset:offset + limit]]
+
+    # ── *_payloads variants ─────────────────────────────────────────────
+    # Memory store keeps JobRecord objects directly — there's no jsonb-roundtrip
+    # overhead to skip, so we just reuse the typed variants and call .to_dict().
+    # (Tests use the memory store; the sql_store implementations are what
+    # actually matter for the prod hot path.)
+
+    async def list_recent_payloads(
+        self, limit: int = 50, offset: int = 0, state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        records = await self.list_recent(limit=limit, offset=offset, state=state)
+        return [r.to_dict() for r in records]
+
+    async def search_payloads(
+        self, query: str, limit: int = 50, offset: int = 0,
+        state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        # Filter by state at the source: fetch a wider matching set, restrict
+        # by state, then page — so a state filter can't return a short page
+        # while more matches exist (which breaks the caller's has_more flag).
+        if state is None:
+            records = await self.search(query, limit=limit, offset=offset)
+            return [r.to_dict() for r in records]
+        matches = await self.search(query, limit=1_000_000, offset=0)
+        matches = [r for r in matches if r.state.value == state]
+        return [r.to_dict() for r in matches[offset:offset + limit]]
 
     async def delete(self, job_id: str) -> bool:
         async with self._lock:

@@ -13,11 +13,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from redtusk.errors import JobNotFoundError, StorageError
 from redtusk.types import JobRecord, JobState
+
+# Postgres identifier whitelist for the schema name. The schema is interpolated
+# into DDL/DML via f-strings (it cannot be a bound parameter), so it must match
+# a strict identifier pattern. This is defense-in-depth: the schema is not
+# user-reachable today, but validating here means a future caller can't smuggle
+# a `"` to break out of the quoted identifier. Postgres caps identifiers at 63
+# bytes, hence the {0,62} upper bound after the leading char.
+_VALID_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 def _serialize(record: JobRecord) -> str:
@@ -130,6 +139,12 @@ class SqlJobStore:
     """
 
     def __init__(self, url: str, *, schema: str = "public") -> None:
+        if not _VALID_SCHEMA_RE.match(schema):
+            raise ValueError(
+                f"invalid postgres schema name {schema!r}: must match "
+                f"{_VALID_SCHEMA_RE.pattern} (letters, digits, underscores; "
+                f"max 63 chars; cannot start with a digit)"
+            )
         self._url = url
         self._schema = schema
         self._connected = False
@@ -402,6 +417,108 @@ class SqlJobStore:
             out.append(JobRecord.from_dict(json.loads(payload)))
         return out
 
+    @staticmethod
+    def _rows_to_payloads(rows: list[Any]) -> list[dict[str, Any]]:
+        """Parse the SQL ``payload`` column out of each row into a dict, with
+        no further reconstruction. Postgres returns jsonb as a dict already,
+        SQLite returns it as TEXT — both paths end up as ``dict[str, Any]``.
+        Used by the ``*_payloads`` variants to skip ``JobRecord.from_dict``,
+        which dominates wall time on heavy results in the list-jobs API."""
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            cell = row[0]
+            if isinstance(cell, str):
+                out.append(json.loads(cell))
+            elif isinstance(cell, dict):
+                out.append(cell)
+            else:
+                out.append(json.loads(json.dumps(cell)))
+        return out
+
+    async def list_recent_payloads(
+        self, limit: int = 50, offset: int = 0, state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Raw-payload variant of ``list_recent`` — see base.JobStore."""
+        if self._dialect == "sqlite":
+            if state:
+                async with self._aiosqlite_conn.execute(
+                    "SELECT payload FROM jobs WHERE state = ? "
+                    "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                    (state, limit, offset),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with self._aiosqlite_conn.execute(
+                    "SELECT payload FROM jobs ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ) as cur:
+                    rows = await cur.fetchall()
+        else:
+            async with self._psycopg_pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    if state:
+                        await cur.execute(
+                            f'SELECT payload FROM "{self._schema}".jobs '
+                            "WHERE state = %s "
+                            "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
+                            (state, limit, offset),
+                        )
+                    else:
+                        await cur.execute(
+                            f'SELECT payload FROM "{self._schema}".jobs '
+                            "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
+                            (limit, offset),
+                        )
+                    rows = await cur.fetchall()
+        return self._rows_to_payloads(rows)
+
+    async def search_payloads(
+        self, query: str, limit: int = 50, offset: int = 0,
+        state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Raw-payload variant of ``search`` — see base.JobStore.
+
+        ``state`` (when given) is applied in SQL so LIMIT/OFFSET paginate the
+        state-filtered set rather than a post-filtered page."""
+        q = f"%{query}%"
+        if self._dialect == "sqlite":
+            state_clause = "AND state = ? " if state is not None else ""
+            params: tuple[Any, ...] = (
+                (q, q, q, state, limit, offset)
+                if state is not None
+                else (q, q, q, limit, offset)
+            )
+            async with self._aiosqlite_conn.execute(
+                "SELECT payload FROM jobs "
+                "WHERE (id LIKE ? "
+                "OR json_extract(payload, '$.filename_hint') LIKE ? "
+                "OR json_extract(payload, '$.input_sha256') LIKE ?) "
+                f"{state_clause}"
+                "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                params,
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            state_clause = "AND state = %s " if state is not None else ""
+            params = (
+                (q, q, q, state, limit, offset)
+                if state is not None
+                else (q, q, q, limit, offset)
+            )
+            async with self._psycopg_pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        f'SELECT payload FROM "{self._schema}".jobs '
+                        "WHERE (id ILIKE %s "
+                        "OR payload->>'filename_hint' ILIKE %s "
+                        "OR payload->>'input_sha256' ILIKE %s) "
+                        f"{state_clause}"
+                        "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
+                        params,
+                    )
+                    rows = await cur.fetchall()
+        return self._rows_to_payloads(rows)
+
     async def state_counts(self) -> dict[str, int]:
         """Returns the count of jobs per state. Used by the UI to surface
         a summary banner so users can navigate large queues by state."""
@@ -423,26 +540,34 @@ class SqlJobStore:
     async def search(self, query: str, limit: int = 50, offset: int = 0) -> list[JobRecord]:
         q = f"%{query}%"
         if self._dialect == "sqlite":
+            # Match on id + filename_hint + input_sha256 only — no full
+            # payload scan (see Postgres branch below for the rationale).
             async with self._aiosqlite_conn.execute(
                 "SELECT payload FROM jobs "
-                "WHERE id LIKE ? OR payload LIKE ? "
+                "WHERE id LIKE ? "
+                "OR json_extract(payload, '$.filename_hint') LIKE ? "
+                "OR json_extract(payload, '$.input_sha256') LIKE ? "
                 "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
-                (q, q, limit, offset),
+                (q, q, q, limit, offset),
             ) as cur:
                 rows = await cur.fetchall()
         else:
             async with self._psycopg_pool.connection() as conn:
                 async with conn.cursor() as cur:
-                    # Check top-level scalar fields directly, then fall back
-                    # to full payload text scan for content (QR URLs, OCR text)
+                    # Match on id + filename_hint + input_sha256. The earlier
+                    # `OR payload::text ILIKE %s` clause forced a seq scan
+                    # with a text cast on every row's jsonb — 37s @ 3.9 k
+                    # rows in prod (UI fetch times out → "failed to fetch").
+                    # These three scalar fields cover the common search use
+                    # cases; full-payload search (QR URLs, OCR text) would
+                    # need a pg_trgm GIN index — add when actually required.
                     await cur.execute(
                         f'SELECT payload FROM "{self._schema}".jobs '
                         "WHERE id ILIKE %s "
                         "OR payload->>'filename_hint' ILIKE %s "
                         "OR payload->>'input_sha256' ILIKE %s "
-                        "OR payload::text ILIKE %s "
                         "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
-                        (q, q, q, q, limit, offset),
+                        (q, q, q, limit, offset),
                     )
                     rows = await cur.fetchall()
         out: list[JobRecord] = []
@@ -613,7 +738,7 @@ class SqlJobStore:
 
     async def find_similar_phash(
         self, target_int8: int, max_distance: int, limit: int = 50
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Return rows whose phash is within ``max_distance`` Hamming bits of
         target. On Postgres uses bit_count for fast distance computation;
         on SQLite falls back to in-memory popcount over the full table."""
@@ -652,12 +777,12 @@ class SqlJobStore:
                     (target_int8, target_int8, max_distance, limit),
                 )
                 cols = [d.name for d in cur.description]
-                rows = [dict(zip(cols, row)) for row in await cur.fetchall()]
+                rows = [dict(zip(cols, row, strict=False)) for row in await cur.fetchall()]
         return rows
 
     async def find_by_colorhash(
         self, colorhash: str, limit: int = 50
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Exact-match colorhash lookup."""
         if self._dialect == "sqlite":
             async with self._aiosqlite_conn.execute(
@@ -669,7 +794,7 @@ class SqlJobStore:
                 rows = await cur.fetchall()
             keys = ("job_id", "entry_path", "phash", "colorhash", "sha256",
                     "filename", "content_type")
-            return [dict(zip(keys, r)) for r in rows]
+            return [dict(zip(keys, r, strict=False)) for r in rows]
         async with self._psycopg_pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -679,11 +804,11 @@ class SqlJobStore:
                     (colorhash, limit),
                 )
                 cols = [d.name for d in cur.description]
-                return [dict(zip(cols, row)) for row in await cur.fetchall()]
+                return [dict(zip(cols, row, strict=False)) for row in await cur.fetchall()]
 
     async def find_by_sha256(
         self, sha256: str, limit: int = 50
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Exact-match SHA-256 lookup."""
         if self._dialect == "sqlite":
             async with self._aiosqlite_conn.execute(
@@ -695,7 +820,7 @@ class SqlJobStore:
                 rows = await cur.fetchall()
             keys = ("job_id", "entry_path", "phash", "colorhash", "sha256",
                     "filename", "content_type")
-            return [dict(zip(keys, r)) for r in rows]
+            return [dict(zip(keys, r, strict=False)) for r in rows]
         async with self._psycopg_pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -705,4 +830,4 @@ class SqlJobStore:
                     (sha256, limit),
                 )
                 cols = [d.name for d in cur.description]
-                return [dict(zip(cols, row)) for row in await cur.fetchall()]
+                return [dict(zip(cols, row, strict=False)) for row in await cur.fetchall()]

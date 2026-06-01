@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
-import io
 import os
-import tempfile
 import re
+import tempfile
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -16,11 +15,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-import pyzipper
+import pyzipper  # type: ignore[import-untyped]
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.formparsers import MultiPartException
 
 from redtusk._version import __version__
 from redtusk.dispatcher import Dispatcher, artifact_dir
@@ -50,6 +50,11 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 _STATIC = Path(__file__).parent / "static"
 _BAD_FILENAME_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\xad]")
+
+# Bounds concurrent infected-zip builds. Each build AES-encrypts up to ~1 GiB
+# of artifacts (CPU + disk heavy); without a cap an unauthenticated burst could
+# exhaust the box. Mirrors the similarity endpoint's concurrency gate.
+_INFECTED_ZIP_SEMAPHORE = asyncio.Semaphore(2)
 
 
 def _load_ui() -> str:
@@ -179,7 +184,16 @@ async def _read_upload(request: Request) -> tuple[bytes, str]:
             pass
 
     if ct.startswith("multipart/form-data"):
-        form = await request.form()
+        # Bound the bytes buffered by the form parser so a client cannot force
+        # us to read an unbounded body into memory before the size check below.
+        # A missing/invalid Content-Length means the early check above was
+        # skipped, so this streaming cap is the only guard — always apply it.
+        try:
+            form = await request.form(max_part_size=limits.max_input + 1)
+        except MultiPartException as exc:
+            raise HTTPException(
+                status_code=413, detail="Request body too large"
+            ) from exc
         # Try common field names; fall back to first field present
         file_field = None
         for name in ("file", "upload", "data", "document"):
@@ -225,18 +239,37 @@ def _apply_per_request_limits(limits: Limits, request: Request) -> Limits:
     overrides: dict[str, object] = {}
     p = request.query_params
 
+    truthy = ("1", "true", "yes", "on")
+    falsey = ("0", "false", "no", "off")
+
     def flag(name: str) -> bool | None:
         v = p.get(name)
-        return None if v is None else v.lower() not in ("0", "false", "no")
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        if normalized in truthy:
+            return True
+        if normalized in falsey:
+            return False
+        # Reject malformed values rather than silently coercing them to True.
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid boolean value for query parameter '{name}'",
+        )
 
     def clamp_int(name: str, lo: int, hi: int) -> int | None:
         v = p.get(name)
         if v is None:
             return None
         try:
-            return max(lo, min(hi, int(v)))
-        except ValueError:
-            return None
+            parsed = int(v)
+        except (TypeError, ValueError) as exc:
+            # Reject malformed values rather than silently ignoring them.
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid integer value for query parameter '{name}'",
+            ) from exc
+        return max(lo, min(hi, parsed))
 
     for fname in ("enable_qr", "enable_ocr", "enable_thumbnails"):
         val = flag(fname)
@@ -251,7 +284,7 @@ def _apply_per_request_limits(limits: Limits, request: Request) -> Limits:
     if entries is not None:
         overrides["max_embedded_entries"] = entries
 
-    return dataclasses.replace(limits, **overrides) if overrides else limits
+    return dataclasses.replace(limits, **overrides) if overrides else limits  # type: ignore[arg-type]
 
 
 async def _run_sync(request: Request) -> ExtractResult:
@@ -271,8 +304,11 @@ async def _run_sync(request: Request) -> ExtractResult:
             headers={"Retry-After": "5"},
         ) from exc
     except (WorkerError, SchemaValidationError) as exc:
+        # Log the full error server-side, but return a generic detail to the
+        # client — schema pointers, exit codes and SHA-256 internals must not
+        # leak to unauthenticated callers.
         _logger.warning("api.sync_error", error=str(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail="extraction failed") from exc
 
 
 # ── List-view summary ─────────────────────────────────────────────────────────
@@ -305,6 +341,85 @@ def _job_summary(record: JobRecord) -> dict[str, Any]:
     d["has_ocr"] = has_ocr
     # queue_ms and processing_ms are already computed in to_dict(); keep them.
     return d
+
+
+def _summary_from_payload(d: dict[str, Any]) -> dict[str, Any]:
+    """Lightweight list-view summary built directly from a raw payload dict —
+    skips the ``JobRecord.from_dict`` reconstruction that dominates wall time
+    on heavy results (200 large xml/docx payloads = 20+ s of attr-by-attr
+    rebuild we throw away when we set result=None).
+
+    Same output shape as ``_job_summary`` — kept in lockstep so the UI doesn't
+    care which path produced it.
+    """
+    qr_count = 0
+    entry_count = 0
+    has_ocr = False
+    result = d.get("result")
+    if result:
+        entries = (result.get("extraction") or {}).get("entries") or []
+        entry_count = len(entries)
+        for e in entries:
+            qr_count += len((e.get("qr") or {}).get("codes") or [])
+            if (e.get("ocr") or {}).get("text"):
+                has_ocr = True
+
+    # Derived timing metrics — same formulae as JobRecord.to_dict(), recomputed
+    # from the ISO-8601 strings. fromisoformat is fast (~µs); the round-trip
+    # via JobRecord would also have parsed datetimes here, just with all the
+    # nested-result reconstruction tacked on for no reason in the list view.
+    def _parse(ts: str | None) -> datetime | None:
+        if not ts:
+            return None
+        from datetime import datetime
+        try:
+            return datetime.fromisoformat(ts)
+        except ValueError:
+            # A corrupted/legacy row with a malformed timestamp must not 500
+            # the whole list endpoint — treat it as missing.
+            return None
+
+    submitted = _parse(d.get("submitted_at"))
+    started = _parse(d.get("started_at"))
+    worker_started = _parse(d.get("worker_started_at"))
+    completed = _parse(d.get("completed_at"))
+
+    queue_ms = pool_wait_ms = processing_ms = parse_ms = None
+    if submitted and started:
+        queue_ms = int((started - submitted).total_seconds() * 1000)
+    if started and worker_started:
+        pool_wait_ms = int((worker_started - started).total_seconds() * 1000)
+    if completed:
+        anchor = worker_started or started
+        if anchor:
+            processing_ms = int((completed - anchor).total_seconds() * 1000)
+    if result:
+        try:
+            parse_ms = int(result["extraction"]["duration_ms"])
+        except (KeyError, TypeError, ValueError):
+            parse_ms = None
+
+    return {
+        "id": d.get("id"),
+        "state": d.get("state"),
+        "submitted_at": d.get("submitted_at"),
+        "started_at": d.get("started_at"),
+        "worker_started_at": d.get("worker_started_at"),
+        "completed_at": d.get("completed_at"),
+        "queue_ms": queue_ms,
+        "pool_wait_ms": pool_wait_ms,
+        "processing_ms": processing_ms,
+        "parse_ms": parse_ms,
+        "input_sha256": d.get("input_sha256"),
+        "input_size_bytes": d.get("input_size_bytes"),
+        "filename_hint": d.get("filename_hint"),
+        "result": None,  # heavy payload stripped — fetch per-job for details
+        "error_code": d.get("error_code"),
+        "error_detail": d.get("error_detail"),
+        "qr_count": qr_count,
+        "entry_count": entry_count,
+        "has_ocr": has_ocr,
+    }
 
 
 # ── Route registration ────────────────────────────────────────────────────────
@@ -475,21 +590,26 @@ def _register_routes(app: FastAPI) -> None:
         state: str = ""
     ) -> JSONResponse:
         store: JobStore = request.app.state.store
-        capped_limit = min(limit, 200)
+        capped_limit = max(1, min(limit, 200))
+        offset = max(0, offset)
         state_filter = state.strip().lower() if state else None
         if state_filter and state_filter not in (
                 "queued", "running", "succeeded", "failed"):
             raise HTTPException(400, "state must be one of: queued, running, succeeded, failed")
+        # Use the raw-payload variants — see _summary_from_payload for the
+        # rationale (skipping JobRecord.from_dict shaves ~20 s off 200-row
+        # responses when the rows have heavy extraction trees).
         if q.strip():
-            records = await store.search(q.strip(), limit=capped_limit, offset=offset)
-            if state_filter:
-                # Apply state filter client-side on top of search.
-                records = [r for r in records if r.state.value == state_filter]
+            payloads = await store.search_payloads(
+                q.strip(), limit=capped_limit, offset=offset, state=state_filter)
         else:
-            records = await store.list_recent(
+            payloads = await store.list_recent_payloads(
                 limit=capped_limit, offset=offset, state=state_filter)
-        has_more = len(records) == capped_limit
-        return JSONResponse({"jobs": [_job_summary(r) for r in records], "has_more": has_more})
+        has_more = len(payloads) == capped_limit
+        return JSONResponse({
+            "jobs": [_summary_from_payload(p) for p in payloads],
+            "has_more": has_more,
+        })
 
 
     # Similarity gate — same idea as clippyshot. Fuzzy phash queries with
@@ -630,7 +750,8 @@ def _register_routes(app: FastAPI) -> None:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
                 tmp_path = tmp.name
             import asyncio
-            await asyncio.to_thread(_build_zip, tmp_path)
+            async with _INFECTED_ZIP_SEMAPHORE:
+                await asyncio.to_thread(_build_zip, tmp_path)
         except ValueError as exc:
             if tmp_path:
                 try:
@@ -675,14 +796,19 @@ def _register_routes(app: FastAPI) -> None:
         body, content_type = render_for_endpoint()
         return Response(content=body, media_type=content_type)
 
-    _SECURITY_HEADERS = {
+    security_headers = {
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
         "Content-Security-Policy": (
+            # script-src drops 'unsafe-inline': all JS is served from the
+            # external /static/app.js bundle and inline on* handlers have been
+            # replaced by delegated listeners. style-src keeps 'unsafe-inline'
+            # for the remaining inline style="" attributes (style injection is
+            # far lower risk than script execution); the bundle is /static/app.css.
             "default-src 'self'; "
-            "style-src 'unsafe-inline'; "
-            "script-src 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
             "img-src 'self' data: blob:; "
             "connect-src 'self'"
         ),
@@ -693,7 +819,7 @@ def _register_routes(app: FastAPI) -> None:
     async def add_security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         response = await call_next(request)
         is_static = request.url.path.startswith("/static/")
-        for k, v in _SECURITY_HEADERS.items():
+        for k, v in security_headers.items():
             # Allow caching for immutable static assets (logo, favicon)
             if is_static and k == "Cache-Control":
                 response.headers.setdefault(k, "public, max-age=86400, immutable")
@@ -703,6 +829,22 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/")
     async def ui() -> HTMLResponse:
+        return HTMLResponse(
+            content=await asyncio.to_thread(_load_ui),
+        )
+
+    @app.get("/jobs/{job_id}", response_class=HTMLResponse)
+    async def ui_job_detail(job_id: str) -> HTMLResponse:
+        """SPA route — serves the same index.html as ``/``; client-side JS
+        reads ``window.location.pathname`` and dispatches to the dedicated
+        job-detail view. Lets users deep-link / share / bookmark a specific
+        job without the synthetic-row-in-the-list gymnastics the old
+        ``?job=<id>`` deep link required."""
+        # Validate the path param looks like a UUID-ish id; reject anything
+        # else with 404 so we don't quietly serve the UI for typos that the
+        # JS would then 404 on the API anyway.
+        if not all(c.isalnum() or c == "-" for c in job_id) or len(job_id) > 64:
+            raise HTTPException(status_code=404, detail="Not found")
         return HTMLResponse(
             content=await asyncio.to_thread(_load_ui),
         )

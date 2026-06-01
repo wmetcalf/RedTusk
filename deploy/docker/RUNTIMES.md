@@ -1,359 +1,118 @@
 # Worker container runtimes
 
-RedTusk's per-job worker is an OCI container; the dispatcher selects the
-OCI runtime at `docker run` time. The runtime is the security boundary
-between an untrusted document and the host kernel.
-
-Three runtimes are supported, set via the `REDTUSK_WORKER_RUNTIME` env
-var (in `deploy/docker/.env` for compose, or directly for one-shot mode).
-Empty (the default) means auto-detect — prefer runsc when registered,
-fall back to runc.
+RedTusk's per-job worker is a sandboxed process. The dispatcher selects
+the sandbox at slot-creation time via `REDTUSK_WORKER_RUNTIME` (in
+`deploy/docker/.env` for compose, or directly for one-shot mode).
 
 | Setting | Boundary | When | Cost |
 |---|---|---|---|
-| `""` (auto) | best available, prefer runsc | default | — |
-| `runc` | Linux namespaces + cgroups + seccomp + cap-drop | trusted-document deployments; CI smoke tests; hosts where gVisor 9p breaks something | shared host kernel |
-| `runsc` | gVisor — a userspace re-implementation of the Linux kernel intercepts syscalls | default for untrusted documents on most Linux hosts | ~10-30% throughput overhead vs runc; some workloads incompatible (large mmap, FIFOs, certain ioctls) |
-| `kata` | Kata Containers microVM — each container gets its own Linux kernel via Firecracker/QEMU, hardware-enforced boundary | strongest isolation; required for hostile/0-day-bearing inputs | needs `/dev/kvm` on the host; bare metal or AWS C8i/M8i/R8i with `NestedVirtualization=true`; small per-container memory overhead for the guest kernel |
+| `""` (auto) | best available, prefer `runsc` | default | — |
+| `runc` | Linux namespaces + cgroups + seccomp + cap-drop | trusted-document deployments; CI smoke tests; hosts where gVisor's 9p breaks something | shared host kernel |
+| `runsc` | gVisor — userspace re-implementation of the Linux kernel intercepts syscalls | default for untrusted documents on most Linux hosts | ~10-30% throughput overhead vs runc; some workloads incompatible (large mmap, FIFOs, certain ioctls) |
+| `firecracker` | Each job runs in a fresh Firecracker microVM with vsock IPC; Java CRaC restores in ~700 ms | strongest isolation; fresh hardware boundary per job; fastest p50 on a mixed-format corpus | needs `/dev/kvm` on the host; ~1 s slot creation; see `deploy/firecracker/` |
+| `kata` | Kata Containers microVM (passthrough to Docker's kata runtime if installed) | available if kata is already wired into Docker; not actively maintained by RedTusk | needs `/dev/kvm` + kata install on host |
 
-## Setting up `kata` on a Linux host
+## `runc` setup
 
-1. The host must expose KVM: `ls /dev/kvm` must succeed.
-   - Bare metal: usually works.
-   - AWS: only `c8i.*`, `m8i.*`, `r8i.*` instances with
-     `NestedVirtualization=true` set at launch (or any `.metal` instance).
-   - Other clouds vary; check their nested-virtualization documentation.
+Built into Docker. No setup.
 
-2. Install Kata Containers and register it as a Docker runtime:
-   ```sh
-   # Debian/Ubuntu — quickest path via kata-deploy or distro packages
-   curl -fsSL https://download.opensuse.org/repositories/home:/katacontainers:/releases:/$(uname -m):/master/Debian_11/Release.key | sudo gpg --dearmor -o /usr/share/keyrings/kata-containers.gpg
-   echo "deb [signed-by=/usr/share/keyrings/kata-containers.gpg] https://download.opensuse.org/repositories/home:/katacontainers:/releases:/$(uname -m):/master/Debian_11/ /" | sudo tee /etc/apt/sources.list.d/kata-containers.list
-   sudo apt-get update && sudo apt-get install -y kata-runtime kata-shim
-   ```
+## `runsc` (gVisor) setup
 
-3. Add the runtime to `/etc/docker/daemon.json`:
-   ```json
-   {
-     "runtimes": {
-       "kata": {
-         "path": "/usr/bin/kata-runtime"
-       }
-     }
-   }
-   ```
-   then `sudo systemctl restart docker`.
+```sh
+ARCH=$(uname -m)
+URL=https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}
+wget -q ${URL}/runsc ${URL}/runsc.sha512 ${URL}/containerd-shim-runsc-v1 ${URL}/containerd-shim-runsc-v1.sha512
+sha512sum -c runsc.sha512 -c containerd-shim-runsc-v1.sha512
+sudo install -m 755 runsc containerd-shim-runsc-v1 /usr/local/bin/
+```
 
-4. Verify with `docker info | grep -i runtimes` — `kata` should be listed.
-
-5. Set in `deploy/docker/.env`:
-   ```
-   REDTUSK_WORKER_RUNTIME=kata
-   ```
-   and restart the api: `./deploy/docker/redtusk-compose up -d --force-recreate api`.
-
-## Setting up on AWS
-
-For `kata`:
-- Launch a `c8i.2xlarge` or larger via the CLI/API with
-  `--nested-virtualization-enabled true` (or set in the launch template).
-- Install Kata as above on the instance.
-- Same `REDTUSK_WORKER_RUNTIME=kata` in `.env`.
-
-For `runsc` (gVisor):
-- Any EC2 instance type; install gVisor and register as Docker runtime.
-
-For local dev → AWS parity: same Dockerfile, same `--runtime` setting,
-just different host. The worker image (`redtusk-worker:default`) is
-runtime-agnostic — it works under all three.
-
-## microvm profile — code-complete, infrastructure-blocked
-
-The dispatcher's `microvm` profile (commits `3d50bfb` → `5efb418`) replaces
-file-IPC over bind-mounted scratch with vsock IPC over AF_VSOCK. This is
-the prerequisite for Kata VM templating + Firecracker snapshots — both
-require the absence of virtio-fs and file-backed shared memory.
-
-**What's done end-to-end:**
-
-| Half | Implementation | Status |
-|---|---|---|
-| Java worker (VsockIpcChannel) | junixsocket AF_VSOCK client w/ retry, line-framed binary protocol | shipped + tested |
-| Python dispatcher (VsockSlotServer) | per-slot AF_VSOCK listener, JOB + INPUT + RESULT + ARTIFACT + DONE | shipped + tested |
-| Worker runtime integration | per-slot vsock listener bound on spawn; signal_job sends GO + JOB; receive_result drains before container exit | shipped |
-| container.py microvm profile | no bind mounts, REDTUSK_WORKER_IPC=vsock env vars, --runtime kata | shipped |
-| Cross-validated protocol | matching AF_UNIX tests on both Java and Python sides | shipped |
-
-**Vsock IPC verified through Kata's microVM boundary**
-
-A direct test on toolz2 (May 2026): host runs
-`scripts/vsock_dispatcher_probe.py --port 50001`; an alpine container
-launched with `--runtime=kata` opens AF_VSOCK CID 2 port 50001 from
-inside the guest, sends `READY\n`, receives `GO\n`. Handshake completes
-cleanly. So both halves of our protocol cross the hypervisor boundary
-correctly — the code is right.
-
-**Final session findings — May 27 2026 part 2**
-
-After the partial setup, kept pushing on the nydus + Kata mount path
-through three distinct configurations. All hit the same class of issue:
-
-1. **fusedev mode** (default) — Mount fails with "failed to find image
-   ref of snapshot N, labels: [containerd.io/snapshot.ref:...,
-   nydus-bootstrap:true, nydus-fs-version:6]". The snapshotter looks
-   up `snpkg.TargetRefLabel` ("containerd.io/snapshot/cri.image-ref"),
-   which is set by Kubernetes' CRI plugin during image preparation but
-   NOT set by ctr or nerdctl. `disable_snapshot_annotations=false`
-   alone doesn't help — the label simply isn't being propagated by
-   the non-CRI client. `ctr run --label X=Y` sets container labels,
-   not snapshot labels.
-
-2. **proxy mode** (`fs_driver = "proxy"`, `enable_kata_volume = true`)
-   — Mount fails with "failed to find RAFS instance for snapshot N".
-   In proxy mode the snapshotter is supposed to pass mount info via
-   `extraoption` to the runtime, but containerd's snapshot metadata
-   tracking gets out of sync with the snapshotter's RAFS instance
-   table after the first failed attempt; subsequent pulls hit
-   "target snapshot already exists" because containerd thinks the
-   prepare succeeded.
-
-3. **shared_fs = virtio-fs-nydus + virtio_fs_daemon = nydusd**
-   — Same as (1), kata's daemon swap doesn't change the snapshotter
-   side of the label propagation issue.
-
-The root cause is a known-fragile compatibility triangle between
-versions of nerdctl, nydus-snapshotter, and containerd. The
-nydus-snapshotter project's CI matrix tests specific combinations
-that DO work together; iterating without matching one of those
-triplets is essentially a random walk. We have nerdctl 2.3.0,
-nydus-snapshotter 0.15.15, containerd 2.2.1 — combinations not
-all on the same CI lane.
-
-**Realistic paths forward for whoever picks this up:**
-
-1. Pin to a known-working version triplet from the nydus-snapshotter
-   CI logs (https://github.com/containerd/nydus-snapshotter/actions);
-   downgrade containerd or nerdctl as needed.
-
-2. Use the CRI path (k3s/k0s/k8s) instead of nerdctl. The nydus
-   snapshotter is primarily tested against the CRI workflow — that's
-   why all the labels it expects are CRI labels. RedTusk's
-   dispatcher could call ctr-cri or kubelet directly.
-
-3. Patch nydus-snapshotter locally to also accept a fallback label
-   that nerdctl DOES set (e.g. `containerd.io/snapshot.ref`'s value
-   as a synthetic image-ref). Trivial diff; takes 10 minutes; lives
-   as a vendored fork.
-
-4. Use Kata's own native nydus integration (kata-deploy) which sets
-   up containerd-shim-kata-v2 to talk to nydusd directly without
-   going through the proxy snapshotter — bypasses the label issue
-   entirely. The kata-deploy script is K8s-flavored but the host
-   plumbing it generates works standalone too.
-
-Toolz2 state RESTORED (production-stable):
-  - `shared_fs = "virtio-fs"`, `enable_template = false`,
-    `virtio_fs_daemon = /opt/kata/libexec/virtiofsd` (default)
-  - `REDTUSK_PROFILE=default`, gVisor + AOT bundle
-  - parse_ms 3.1s on the post-restore smoke test
-
-The nydus snapshotter + image registry + converted image all REMAIN
-installed on the host (the systemd service, the `localhost:5000`
-registry container, the `localhost:5000/redtusk-worker:nydus` image
-in it). They cost nothing while idle and are ready to fire once the
-version triangulation is resolved.
-
-**Followup session (May 27 2026) — nerdctl + nydus + image conversion**
-
-Pushed further on the cleanest-portable path: keep Docker untouched
-for `default`/`high-density` profiles, use `nerdctl --snapshotter=nydus`
-to drive containerd directly for `microvm`.
-
-Got working on toolz2 this session:
-  - nerdctl 2.3.0 installed at /usr/local/bin/nerdctl
-  - local OCI registry running (`docker run -d --name redtusk-registry
-    -p 5000:5000 registry:2`)
-  - `redtusk-worker:default` converted to nydus format via
-    `nydusify convert --source localhost:5000/redtusk-worker:default
-    --target localhost:5000/redtusk-worker:nydus` (succeeded; nydus
-    bootstrap + blobs pushed to local registry)
-  - containerd 2.x `unpack_config` added to
-    `[plugins.'io.containerd.transfer.v1.local']` so containerd can
-    unpack via the nydus snapshotter
-  - nydusd-config.json updated for the insecure http localhost:5000
-    registry (`skip_verify = true`, `scheme = "http"`)
-  - Kata factory init under `shared_fs=none` + `enable_template=true`
-    succeeded — "vm factory is on"
-  - `nerdctl --snapshotter=nydus pull` of the converted image:
-    succeeds, image extracted via nydus
-
-What's still failing (the last 5%):
-  ```
-  nerdctl --snapshotter=nydus run --runtime=io.containerd.kata.v2 ...
-  → fatal: "mount rafs, instance id 18: failed to find image ref of
-     snapshot 18, labels map[containerd.io/snapshot.ref:...
-     containerd.io/snapshot/nydus-bootstrap:true ...]"
-  ```
-
-The nydus snapshotter's mount step doesn't find an `image-ref` label
-on the prepared snapshot. The standard nerdctl pull doesn't set this
-label the way the snapshotter expects — likely a version-compatibility
-issue between nerdctl 2.3.0 / nydus-snapshotter v0.15.15 / containerd
-2.2.1 (config-format-mismatch between schema versions, probably).
-
-This is a real debug rather than blind iteration — needs reading the
-nydus-snapshotter source to see what label key it actually expects,
-then either using a wrapper around `nerdctl pull` that sets the label,
-or downgrading one of the three versions to a known-compatible combo
-(the nydus snapshotter ships test matrices against specific containerd
-versions in CI; matching those would likely resolve this).
-
-What's installed and ready on toolz2 for the next session:
-  - `/etc/nydus/{config.toml,nydusd-config.json}`
-  - `/etc/systemd/system/nydus-snapshotter.service` (active)
-  - `/etc/containerd/config.toml` (default + nydus proxy plugin +
-    unpack_config)
-  - `/opt/nydus-snapshotter/` (binaries)
-  - `localhost:5000` registry container (running)
-  - `localhost:5000/redtusk-worker:nydus` (converted image in registry)
-
-The teardown is simple if needed: stop nydus-snapshotter, remove
-/etc/containerd/config.toml (containerd falls back to defaults),
-docker rm -f redtusk-registry.
-
-Production state is RESTORED: `shared_fs=virtio-fs`,
-`enable_template=false`, REDTUSK_PROFILE=default, gVisor + AOT bundle
-running normally (parse_ms 2.9s post-restore).
-
-**Host setup script: `scripts/setup_microvm_host.sh`**
-
-Installs the prerequisites and validates each step:
-  - downloads nydus snapshotter v0.15.15 + nydus tools v2.4.3
-  - writes `/etc/nydus/{config.toml,nydusd-config.json}`
-  - installs the systemd unit `nydus-snapshotter.service`
-  - writes a minimal `/etc/containerd/config.toml` registering nydus as
-    a proxy snapshotter (verified with `ctr plugins ls | grep nydus`)
-  - configures Kata for templating-compatible boot (initrd, no virtio-fs)
-  - confirms `kata-runtime factory init` succeeds with `shared_fs=none`
-
-What it deliberately **doesn't** do (because each touches the wider host):
-  - convert worker images to nydus format (needs a local registry)
-  - enable Docker's containerd image store (restarts every Docker container
-    on the host; an alternative is rewriting the dispatcher's spawn path
-    to use `nerdctl run --snapshotter=nydus` instead of `docker run`)
-
-The deferred steps are documented inside the script's output so the
-operator knows exactly what's left.
-
-**What blocks actual deployment:**
-
-Kata's `factory init` (the step that pre-boots a donor VM for templating)
-refuses to run when `shared_fs` is any of `virtio-fs`, `virtio-fs-nydus`,
-or `virtio-9p` — the templating mechanism is incompatible with all of
-them. Setting `shared_fs = "none"` lets factory init succeed but breaks
-container start: Kata has nowhere to source the container rootfs from.
-
-The only paths from here are:
-
-1. **nydus snapshotter** (`containerd-nydus-grpc`) — full plugin install
-   in containerd, image conversion pipeline (nydus format), containerd
-   config registering the snapshotter, Kata config pointing at it.
-   Multi-day infrastructure work.
-
-2. **devmapper snapshotter** — alternative block-device rootfs. Requires
-   a dedicated thin-pool LV or loopback file, containerd config changes,
-   image conversion. Similar scope to nydus.
-
-3. **Pure-initrd rootfs** — bake the redtusk-worker JAR + AOT cache +
-   native scanners directly into Kata's initrd. Loses container
-   semantics entirely (no `docker run image-tag` model); image is
-   baked at host-setup time.
-
-For all three, the IPC code we shipped is what runs on the JVM side
-once the rootfs delivery is in place. The host-side dispatcher is
-already calling `VsockSlotServer.send_job(descriptor, input_bytes)`
-for any slot whose profile is `microvm` — the existing default and
-high-density profiles are untouched.
-
-If/when one of those snapshotters lands, flipping `REDTUSK_PROFILE=microvm`
-plus `REDTUSK_WORKER_RUNTIME=kata` is the only deploy-side change needed.
-
-## Empirical notes from production testing
-
-Tested on toolz2 (Ubuntu 24.04, Intel Xeon, KVM available) with Kata
-Containers 3.31.0 + the redtusk-worker:default image and a 200-file
-.lnk benchmark vs the gVisor baseline:
-
-| metric                 | gVisor (default)   | Kata + QEMU + virtio-fs |
-|------------------------|--------------------|-------------------------|
-| parse_ms p50           | 2.11s              | 1.67s  (-21%)           |
-| processing_ms p50      | 4.76s              | 3.79s  (-20%)           |
-| spawn_duration mean    | ~15s               | **64.75s**              |
-| pool_wait_ms p50       | 0.05s              | **48.02s**              |
-| throughput (batch)     | ~30 jobs/min       | ~24 jobs/min            |
-
-**Per-job parse work is genuinely faster under Kata** (likely because
-the JVM runs against a real Linux kernel instead of gVisor's userspace
-emulation). **But spawn cost dominates under load** — 16 concurrent
-QEMU boots serialize on the Docker daemon and KVM resource setup, and
-each fresh VM kernel-init costs several seconds.
-
-VM templating (Kata's [factory] section) would normally fix this, but
-it is **incompatible with virtio-fs / file-backed memory** by design
-(memory cloning vs host fd-sharing conflict). To use templating you'd
-have to redesign worker IPC to use vsock + a block-device rootfs
-instead of bind mounts — a significant change to the dispatcher and
-worker contract.
-
-Firecracker (`configuration-fc.toml`) doesn't ship with virtio-fs in
-this Kata build either, so it needs a containerd snapshotter swap
-(devmapper or nydus) before it can run a container with bind mounts.
-Also significant infra work.
-
-**Net recommendation**: stay on `runsc` for production today. Use
-`kata` only if you want the stronger sandbox AND can tolerate the
-~20% throughput hit. The microVM-isolation upgrade is most worthwhile
-when paired with a future IPC redesign (vsock + block-device rootfs);
-at that point templating or Firecracker become viable and Kata can
-beat gVisor on throughput AND security simultaneously.
-
-## Kernel-CVE exposure per runtime
-
-A worker that runs under `runc` shares the host kernel. Local-privilege-
-escalation CVEs in the Linux kernel (e.g. **CVE-2026-31431 "CopyFail"**
-in `algif_aead`) are reachable from inside the container unless seccomp
-explicitly blocks the entry point. Specifically: `socket(AF_ALG, ...)`
-is **NOT blocked by Docker's default seccomp profile** — verified
-empirically.
-
-| Runtime | Default exposure | How to harden |
-|---|---|---|
-| `runsc` (gVisor) | safe — gVisor's userspace kernel does not implement AF_ALG; `socket(AF_ALG, ...)` returns EAFNOSUPPORT | no action required |
-| `kata` | safe — guest microVM has its own kernel; host kernel CVEs don't traverse the hypervisor boundary | no action required |
-| `runc` | **VULNERABLE** with Docker default seccomp | set `REDTUSK_WORKER_SECCOMP_PROFILE=/host/path/to/redtusk.seccomp.json` (shipped under `deploy/seccomp/`); or set `REDTUSK_DEFAULT_RUNC_SECCOMP` to auto-apply it for every runc spawn |
-
-Our shipped `deploy/seccomp/redtusk.seccomp.json` is default-deny and
-does not allow `socket()` at all — it closes AF_ALG along with every
-other network family the worker doesn't need. The dispatcher logs a
-`container.runc_default_seccomp` warning at first spawn when runc is
-selected with no profile, so the exposure is visible in operational
-logs.
-
-## Verifying which runtime processed a job
-
-Each job result includes a sandbox subsection:
+Add to `/etc/docker/daemon.json`:
 ```json
 {
-  "sandbox": {
-    "profile": "default",
-    "runtime": "kata",         // ← effective runtime
-    "appcds": true,
-    "ksm": true,
-    "crac": false
+  "runtimes": {
+    "runsc": {"path": "/usr/local/bin/runsc"}
   }
 }
 ```
 
-`runtime` reflects what was actually used, not what was requested. If
-the configured runtime isn't registered with Docker, the dispatcher
-falls back to the auto-detected one and warns at startup.
+Restart Docker, verify with `docker info | grep -i runtimes`, then set
+`REDTUSK_WORKER_RUNTIME=runsc` in the .env.
+
+## `firecracker` setup
+
+See `deploy/firecracker/README.md`. Requires:
+
+1. `/dev/kvm` on the host (bare metal or AWS `c8i`/`m8i`/`r8i` with nested
+   virt enabled), `firecracker` binary, and e2fsprogs (`mkfs.ext4`/`debugfs`)
+2. A kernel built with `CONFIG_KSM=y` and `CONFIG_TRANSPARENT_HUGEPAGE=y`
+   (the Azul Zulu warp engine uses both internally on restore)
+3. A custom rootfs built from `redtusk-worker:crac-vsock` (init mounts the
+   per-slot virtio-blk output disk — see the build steps in the FC README)
+4. `REDTUSK_WORKER_RUNTIME=firecracker`. `FirecrackerWorkerRuntime` is wired
+   into the pool/dispatcher.
+
+Two ways to run it:
+
+* **Dockerized (just like gVisor):**
+
+  ```sh
+  scripts/setup_firecracker_host.sh --with-kernel    # one-time asset build
+  ./deploy/docker/redtusk-compose --firecracker up --build -d
+  ```
+
+  Uses `Dockerfile.fc-dispatcher` (api + firecracker + e2fsprogs) and
+  `docker-compose.firecracker.yml` (mounts `/dev/kvm`, adds `kvm` group,
+  bind-mounts the FC kernel + rootfs read-only). The wrapper auto-detects
+  `KVM_GID` from `/dev/kvm`, the same way it auto-detects `DOCKER_GID`.
+
+* **Host-level `redtusk serve`** (no compose) — useful for benchmarking or
+  hosts without docker. See `deploy/firecracker/README.md` for env vars.
+
+IPC split: vsock carries the control handshake + job descriptor + input;
+**output (metadata + artifacts) goes to a per-slot virtio-blk disk**, not
+vsock (the guest vsock layer corrupts large transfers under concurrency).
+Keep `fc_vcpu_count=1` and don't oversubscribe — see the FC README. The
+worker auto-detects disk-output mode by checking `/dev/vdb` existence at
+restore (no config flag), so the same rootfs serves both FC (with the
+output drive) and any legacy Docker-`microvm`/kata streaming setup
+(without it).
+
+Operator notes:
+* `REDTUSK_SCRATCH_ROOT` **must not contain whitespace** — the host's
+  `debugfs rdump` request would misparse otherwise. The runtime refuses
+  such paths up front.
+* The dispatcher needs `mkfs.ext4` + `debugfs` (e2fsprogs) for per-slot
+  output disks, plus the `firecracker` binary and `/dev/kvm` access
+  (kvm group or root). Under our containerized setup, these dependencies
+  are fully baked into the `Dockerfile.fc-dispatcher` image and mounted via the
+  `--firecracker` compose overlay, so you can run the dispatcher inside the
+  compose stack securely.
+* `max_extracted_bytes` is enforced **host-side** on the rdumped output
+  (a runaway worker can otherwise fill the slot dir up to
+  `fc_outdisk_mib`).
+
+Full 932-file stratified corpus (FC alone, in-flight 28):
+
+| Runtime | success | wall | pool_wait p50 | processing p95 |
+|---|---|---|---|---|
+| gVisor | 931/932 | 1661 s | 61.4 s | 27.9 s |
+| **FC (fixed)** | **932/932** | **707 s** | **0.29 s** | **12.0 s** |
+
+FC is 100% reliable and ~2.3× faster wall with the tightest p95 tail; gVisor's
+outliers are I/O-heavy formats (xlsx) where its 9p filesystem stalls, and its
+warm pool can't keep up under a burst (61 s median pool_wait).
+
+## `kata` setup
+
+Not documented here — RedTusk's dispatcher passes `--runtime=kata` to
+Docker if `REDTUSK_WORKER_RUNTIME=kata` is set, but we don't ship a
+recipe for installing kata anymore. If you have it working from a
+different source, just point at it. The `firecracker` runtime is the
+recommended microVM path going forward.
+
+## AWS notes
+
+- `runc` and `runsc`: any instance type.
+- `firecracker` and `kata`: only on instances with nested virtualization
+  (`c8i`/`m8i`/`r8i` with `--nested-virtualization-enabled true`, or
+  `.metal` instances).

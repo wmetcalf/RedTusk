@@ -116,4 +116,15 @@ public interface IpcChannel extends Closeable {
      */
     @Override
     default void close() throws IOException {}
+
+    /**
+     * Whether {@link #sendResult(byte[])} and {@link #sendArtifact} actually
+     * ship bytes over the channel. When false, the worker has already placed
+     * output where the dispatcher will read it (a bind-mounted /out, or a
+     * virtio-blk disk in FC's disk-output mode), and {@link Main} can skip
+     * the {@code Files.readAllBytes} that would otherwise be discarded by a
+     * no-op send. Defaults to true so legacy/streaming channels keep working
+     * unchanged.
+     */
+    default boolean outputsOverIpc() { return true; }
 }
