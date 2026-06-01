@@ -13,7 +13,7 @@ index 6602e1d..74f8d01 100644
  	"path"
  	"path/filepath"
  	"sync"
-@@ -335,17 +335,24 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
+@@ -335,17 +335,23 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
  	useSharedDaemon := fsDriver == config.FsDriverFscache || isSharedFusedev
  
  	var imageID string
@@ -41,7 +41,6 @@ index 6602e1d..74f8d01 100644
  		}
  	}
  
-+	log.L.Infof("DBG imageID=%q snapshotID=%q labels=%v", imageID, snapshotID, labels)
  	rafs, err = racache.NewRafs(snapshotID, imageID, fsDriver)
  	if err != nil {
  		return errors.Wrapf(err, "create rafs instance %s", snapshotID)
