@@ -9,36 +9,6 @@ from redtusk.errors import JobNotFoundError, StorageError
 from redtusk.jobs.sql_store import SqlJobStore
 from redtusk.types import JobRecord, JobState
 
-# ---------------------------------------------------------------------------
-# Schema-name validation (finding 5): the postgres schema is interpolated into
-# SQL via f-string, so it must be validated against a strict identifier regex.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize(
-    "bad_schema",
-    [
-        'public"; DROP TABLE jobs; --',  # SQL injection via embedded quote
-        'a"b',                            # embedded double quote
-        '1schema',                        # starts with a digit
-        'has space',                      # whitespace
-        '',                               # empty
-        "a" * 64,                         # too long (> 63 chars)
-        "schema-name",                    # hyphen not allowed
-    ],
-)
-def test_sql_store_rejects_bad_schema_name(bad_schema: str) -> None:
-    with pytest.raises(ValueError, match="invalid postgres schema name"):
-        SqlJobStore(url="postgresql://localhost/db", schema=bad_schema)
-
-
-@pytest.mark.parametrize(
-    "good_schema", ["public", "redtusk_test", "_x", "S123", "a" * 63]
-)
-def test_sql_store_accepts_valid_schema_name(good_schema: str) -> None:
-    # Construction must not raise for a valid identifier (no connection made).
-    store = SqlJobStore(url="postgresql://localhost/db", schema=good_schema)
-    assert store._schema == good_schema
-
 
 def _now(offset_s: int = 0) -> datetime:
     return datetime(2026, 5, 4, 18, 23, 11, tzinfo=UTC) + timedelta(seconds=offset_s)

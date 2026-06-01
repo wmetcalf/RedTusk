@@ -74,7 +74,9 @@ services:
       # proxy still issues full socket I/O, but the verb filter above is what
       # actually constrains it.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    read_only: true
+    # read_only removed: the haproxy-based proxy renders /usr/local/etc/haproxy/
+    # haproxy.cfg at startup, which a read-only rootfs blocks (crash-loop).
+    # cap_drop ALL + no-new-privileges are retained as the real hardening.
     cap_drop:
       - ALL
     security_opt:
@@ -143,7 +145,7 @@ services:
     # The api no longer needs the docker group — it reaches Docker over TCP via
     # the proxy, not the host socket. group_add removed (was for socket access).
     tmpfs:
-      - /tmp:rw,exec,nosuid,size=128m
+      - /tmp:rw,exec,nosuid,size=${REDTUSK_API_TMP_SIZE:-4g}
     volumes:
       # Bind-mount host state dir at the SAME path inside the API container so the
       # dispatcher's docker-run bind mounts (which docker resolves on the host)

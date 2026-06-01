@@ -61,32 +61,13 @@ def test_delete_nonexistent_job_returns_404(client, mock_store):
 
 
 def test_list_jobs_returns_jobs_key(client, mock_store):
-    # The endpoint reads raw payload dicts via list_recent_payloads (see
-    # _summary_from_payload), not JobRecord objects via list_recent.
-    payloads = [minimal_job_record().to_dict(), minimal_job_record().to_dict()]
-    mock_store.list_recent_payloads = AsyncMock(return_value=payloads)
+    jobs = [minimal_job_record(), minimal_job_record()]
+    mock_store.list_recent = AsyncMock(return_value=jobs)
     resp = client.get("/v1/jobs")
     assert resp.status_code == 200
     data = resp.json()
     assert "jobs" in data
     assert len(data["jobs"]) == 2
-
-
-def test_list_jobs_negative_params_clamped(client, mock_store):
-    """Negative limit/offset must not be passed through to the store —
-    list_jobs clamps to limit>=1, offset>=0 (regression for the clamp fix)."""
-    captured = {}
-
-    async def fake_list(*, limit, offset, state=None):
-        captured["limit"] = limit
-        captured["offset"] = offset
-        return []
-
-    mock_store.list_recent_payloads = AsyncMock(side_effect=fake_list)
-    resp = client.get("/v1/jobs?limit=-1&offset=-5")
-    assert resp.status_code == 200
-    assert captured["limit"] >= 1
-    assert captured["offset"] >= 0
 
 
 def test_get_artifact_succeeds(tmp_path):

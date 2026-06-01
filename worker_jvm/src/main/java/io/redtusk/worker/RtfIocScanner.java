@@ -122,19 +122,6 @@ public final class RtfIocScanner {
             Pattern.compile("\\\\'([0-9a-fA-F]{2})\\\\'00", Pattern.CASE_INSENSITIVE);
 
     /**
-     * UTF-16BE variant: the NUL byte LEADS each pair ({@code \'00\'XX}), i.e.
-     * {@code \'00h\'00t\'00t\'00p}. Big-endian interleave is the mirror of the
-     * little-endian case above and is just as effective at hiding URLs from
-     * single-byte scanners, so we detect and reconstruct it too.
-     */
-    private static final Pattern PAT_NULL_BYTE_INTERLEAVED_BE =
-            Pattern.compile("(?:\\\\'00\\\\'([0-9a-fA-F]{2})){4,}", Pattern.CASE_INSENSITIVE);
-
-    /** Inner pair pattern for the big-endian interleave. */
-    private static final Pattern PAT_NULL_BYTE_PAIR_BE =
-            Pattern.compile("\\\\'00\\\\'([0-9a-fA-F]{2})", Pattern.CASE_INSENSITIVE);
-
-    /**
      * URLs and UNC paths to look for in the reconstructed UTF-16LE text.
      * Only reconstruct strings that start with a recognisable URL prefix.
      */
@@ -224,18 +211,9 @@ public final class RtfIocScanner {
                         int lo = Character.digit(raw.charAt(i + 3), 16);
                         if (hi >= 0 && lo >= 0) {
                             int decoded = (hi << 4) | lo;
-                            // Materialise printable ASCII verbatim. For dropped
-                            // bytes (control chars, NUL interleave, high bytes)
-                            // emit a SPACE instead of deleting them — deletion
-                            // lets an attacker splice "ht\'00tp" into "http" and
-                            // evade the URL regexes; a delimiter keeps the tokens
-                            // separate so partial obfuscation can't reassemble a
-                            // clean IOC. (The dedicated null-byte-interleave path
-                            // still reconstructs intentional UTF-16 URLs.)
+                            // Only materialise printable ASCII; leave high bytes as-is
                             if (decoded >= 0x20 && decoded < 0x80) {
                                 out.append((char) decoded);
-                            } else {
-                                out.append(' ');
                             }
                             i += 4;
                             continue;
@@ -261,10 +239,6 @@ public final class RtfIocScanner {
                     int cp = (num < 0) ? (65536 + num) : num;
                     if (cp >= 0x20 && Character.isValidCodePoint(cp)) {
                         out.appendCodePoint(cp);
-                    } else {
-                        // Dropped (control / invalid) — emit a delimiter rather
-                        // than deleting, same anti-splice reasoning as \'HH above.
-                        out.append(' ');
                     }
                     // consume optional trailing space
                     if (j < len && raw.charAt(j) == ' ') {
@@ -330,28 +304,17 @@ public final class RtfIocScanner {
      * prefixes.  Only matches that look like URLs or UNC paths are recorded.
      */
     private static void extractNullByteUrls(String raw, Map<String, List<String>> out) {
-        // UTF-16LE: \'XX\'00 (NUL trails each char byte).
-        reconstructInterleaved(raw, PAT_NULL_BYTE_INTERLEAVED, PAT_NULL_BYTE_PAIR, out);
-        // UTF-16BE: \'00\'XX (NUL leads each char byte).
-        reconstructInterleaved(raw, PAT_NULL_BYTE_INTERLEAVED_BE, PAT_NULL_BYTE_PAIR_BE, out);
-    }
-
-    /**
-     * Find runs matching {@code runPattern}, pull the meaningful hex byte from
-     * each pair via {@code pairPattern} (group 1), assemble the BMP string, and
-     * record any URL/UNC matches under {@link #KEY_NULL_BYTE_URL}.
-     */
-    private static void reconstructInterleaved(String raw, Pattern runPattern,
-            Pattern pairPattern, Map<String, List<String>> out) {
-        Matcher m = runPattern.matcher(raw);
+        Matcher m = PAT_NULL_BYTE_INTERLEAVED.matcher(raw);
         while (m.find()) {
+            // Reconstruct UTF-16LE: collect the non-null hex byte from each pair
             StringBuilder sb = new StringBuilder();
             String region = m.group(0);
-            Matcher pair = pairPattern.matcher(region);
+            // Each pair is: \'XX\'00 — extract the XX bytes as UTF-16LE low bytes (BMP range)
+            Matcher pair = PAT_NULL_BYTE_PAIR.matcher(region);
             while (pair.find()) {
-                int b = Integer.parseInt(pair.group(1), 16);
-                if (b >= 0x20) {
-                    sb.append((char) b);
+                int lo = Integer.parseInt(pair.group(1), 16);
+                if (lo >= 0x20) {
+                    sb.append((char) lo);
                 }
             }
             String candidate = sb.toString().trim();

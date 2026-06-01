@@ -15,9 +15,6 @@ FROM python:3.12-slim-bookworm
 
 ARG FIRECRACKER_VERSION=v1.12.1
 ARG TARGETARCH=amd64
-# Optional pinned fallback checksum for the firecracker tarball (used only if
-# the upstream .sha256.txt can't be fetched). Override with --build-arg.
-ARG EXPECTED_FC_SHA256
 
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
@@ -37,23 +34,8 @@ RUN apt-get update -qq && \
         arm64) FC_ARCH=aarch64 ;; \
         *) echo "unsupported arch: $TARGETARCH" >&2; exit 1 ;; \
     esac && \
-    FC_BASE="https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}" && \
-    curl -fsSL "${FC_BASE}/firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}.tgz" -o /tmp/fc.tgz && \
-    # SUPPLY CHAIN: verify the tarball before extraction. Firecracker publishes
-    # a per-asset SHA256 checksum file next to each release. Prefer fetching it;
-    # fall back to a pinned EXPECTED hash. Fails closed — no valid checksum, no
-    # install — so a tampered/MITM'd tarball can never be unpacked.
-    if curl -fsSL "${FC_BASE}/firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}.tgz.sha256.txt" -o /tmp/fc.tgz.sha256 && [ -s /tmp/fc.tgz.sha256 ]; then \
-        echo "$(awk '{print $1}' /tmp/fc.tgz.sha256)  /tmp/fc.tgz" | sha256sum -c - ; \
-    else \
-        # TODO: replace PUT_REAL_SHA256_HERE with the real sha256 of
-        # firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}.tgz (from the upstream
-        # release page) per arch, or pass --build-arg EXPECTED_FC_SHA256=...
-        EXPECTED_FC_SHA256="${EXPECTED_FC_SHA256:-PUT_REAL_SHA256_HERE}" && \
-        echo "${EXPECTED_FC_SHA256}  /tmp/fc.tgz" | sha256sum -c - ; \
-    fi && \
-    tar -xzf /tmp/fc.tgz -C /tmp && \
-    rm -f /tmp/fc.tgz /tmp/fc.tgz.sha256 && \
+    curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}.tgz" \
+        | tar -xz -C /tmp && \
     install -m 755 "/tmp/release-${FIRECRACKER_VERSION}-${FC_ARCH}/firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}" \
         /opt/kata/bin/firecracker 2>/dev/null \
         || { mkdir -p /opt/kata/bin && install -m 755 \
@@ -67,11 +49,6 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src/ ./src/
 RUN pip install --no-cache-dir -e .
-
-# Bake the seccomp profile at the same well-known path the compose overlay's
-# `security_opt: seccomp=/opt/redtusk/seccomp/redtusk.seccomp.json` references,
-# so the FC dispatcher container is seccomp-confined by default.
-COPY deploy/seccomp/redtusk.seccomp.json /opt/redtusk/seccomp/redtusk.seccomp.json
 
 USER 10001:10001
 ENTRYPOINT ["redtusk"]

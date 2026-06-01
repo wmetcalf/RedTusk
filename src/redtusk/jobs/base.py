@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from redtusk.types import JobRecord, JobState
 
@@ -72,7 +72,7 @@ class JobStore(Protocol):
 
     async def list_recent_payloads(
         self, limit: int = 50, offset: int = 0, state: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict]:
         """Same shape as ``list_recent`` but returns raw payload dicts (skipping
         the ``JobRecord.from_dict`` reconstruction). Used by the list-jobs API
         path where Pydantic-style typing is wasted: the result tree is parsed
@@ -82,13 +82,9 @@ class JobStore(Protocol):
 
     async def search_payloads(
         self, query: str, limit: int = 50, offset: int = 0,
-        state: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict]:
         """Same as ``search`` but returns raw payload dicts — see
-        ``list_recent_payloads`` for the rationale.
-
-        When ``state`` is given, the match is restricted to that job state at
-        the storage layer so ``limit``/``offset`` paginate the filtered set."""
+        ``list_recent_payloads`` for the rationale."""
         ...
 
     async def delete(self, job_id: str) -> bool:

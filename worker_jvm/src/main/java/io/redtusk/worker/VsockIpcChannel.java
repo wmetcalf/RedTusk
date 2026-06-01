@@ -60,14 +60,6 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
     static final long INITIAL_RETRY_MS = 50L;
     static final long MAX_RETRY_MS = 2_000L;
     static final long GO_TIMEOUT_MS = 600_000L;
-    /**
-     * Upper bound on a single in-memory framed payload (the JOB JSON descriptor).
-     * The peer-declared frame length is attacker-influenced; without a cap a
-     * declared length near {@link Integer#MAX_VALUE} would trigger a multi-GB
-     * {@code new byte[len]} allocation and OOM the worker. The streamed
-     * INPUT-bytes path (copyStreamN) does not pre-allocate and is unaffected.
-     */
-    static final int MAX_JSON_FRAME_BYTES = 8 * 1024 * 1024;
 
     private static final ObjectMapper OM = new ObjectMapper();
     /** Where the worker stages input bytes received over vsock. The microvm
@@ -284,11 +276,6 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
         // Expect: "JOB <N>\n" + N bytes JSON, then "INPUT <M>\n" + M bytes
         String jobHdr = expectFrameHeader("JOB");
         int jsonLen = parseLength(jobHdr);
-        // Bound the in-memory JOB JSON allocation before touching new byte[len].
-        if (jsonLen > MAX_JSON_FRAME_BYTES) {
-            throw new IOException("JOB frame length " + jsonLen
-                    + " exceeds maximum " + MAX_JSON_FRAME_BYTES);
-        }
         byte[] jsonBytes = readFully(jsonLen);
 
         // Parse with the input path REWRITTEN to a local tmpfs location.
@@ -408,12 +395,6 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
     }
 
     private byte[] readFully(int len) throws IOException {
-        // Defensive backstop: every in-memory framed read is bounded so an
-        // attacker-declared length can never drive a giant allocation here.
-        if (len > MAX_JSON_FRAME_BYTES) {
-            throw new IOException("Framed payload length " + len
-                    + " exceeds maximum " + MAX_JSON_FRAME_BYTES);
-        }
         byte[] buf = new byte[len];
         int read = 0;
         while (read < len) {

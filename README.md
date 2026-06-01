@@ -129,15 +129,10 @@ flowchart TD
     — Tika-compat sync endpoints
     — /v1/jobs async API
     — /static assets
-    No raw Docker socket"]
+    No Docker socket"]
     db[(Postgres\nor SQLite)]
-    proxy["docker-socket-proxy
-    (only container with the
-    raw socket, mounted RO;
-    restricted verbs)"]
     disp["Dispatcher + warm pool
-    Talks to Docker via the proxy
-    (DOCKER_HOST), no raw socket
+    Docker socket access
     Maintains N idle worker
     containers ready for jobs"]
 
@@ -151,20 +146,15 @@ flowchart TD
     ui --> api
     api <--> db
     disp <--> db
-    disp -.->|"DOCKER_HOST → proxy"| proxy
-    proxy -.->|"restricted verbs\non raw socket (RO)"| w3
     disp -.->|"signal job.json\nvia control.go file"| w2
-    proxy -.->|"docker run"| w3
+    disp -.->|"docker run"| w3
     w2 -.->|"write metadata.json\nto scratch dir"| disp
 ```
 
 Brought up with `./deploy/docker/redtusk-compose up --build -d`. The API and
-dispatcher run in the same Python process (`redtusk serve`) and neither holds
-the raw Docker socket. A `docker-socket-proxy` sidecar is the only container
-that mounts the real socket (read-only), and it exposes only the restricted
-set of Docker verbs the dispatcher needs; the dispatcher reaches Docker
-through it via `DOCKER_HOST`. Worker containers have no database credentials
-and never talk to the network.
+dispatcher run in the same Python process (`redtusk serve`), but the API has
+no Docker socket — only the dispatcher does. Worker containers have no
+database credentials and never talk to the network.
 
 ### Compose deployment — Firecracker microVM workers (`--firecracker`)
 
@@ -231,11 +221,11 @@ flowchart TB
                     ocr[Tesseract OCR]
                     qr[ZXing-CPP QR scanner]
                 end
-                seccomp["seccomp BPF\n(deploy/seccomp/redtusk.seccomp.json)\nbaked-in, default-on for runc,\nfail-closed without it"]
+                seccomp["seccomp BPF\n(deploy/seccomp/redtusk.seccomp.json)"]
             end
         end
     end
-    runc["runc fallback if gVisor unavailable\n(seccomp required unless\nREDTUSK_ALLOW_INSECURE_RUNC=1)"]
+    runc["runc fallback if gVisor unavailable"]
     host --- runc
 ```
 
@@ -243,9 +233,9 @@ flowchart TB
 
 | Layer | What it does |
 |---|---|
-| **gVisor (runsc)** | Default runtime. Intercepts all syscalls with its own in-process kernel; the JVM never talks to the host kernel directly. Auto-detected; falls back to runc. |
-| **seccomp BPF** | `deploy/seccomp/redtusk.seccomp.json` — allowlist of ~50 syscalls, baked into the worker image and enabled by default on the runc path. On runc the runtime **fails closed** if no seccomp profile is present (override with `REDTUSK_ALLOW_INSECURE_RUNC=1`). Under gVisor, runsc does its own syscall interception. |
+| **gVisor (runsc)** | Intercepts all syscalls; the JVM never talks to the host kernel directly. Auto-detected; falls back to runc. |
 | **Container flags** | `--network=none` (no exfil), `--read-only` rootfs, `--cap-drop=ALL`, `no-new-privileges` |
+| **seccomp BPF** | `deploy/seccomp/redtusk.seccomp.json` — allowlist of ~50 syscalls, applied on runc workers via `REDTUSK_WORKER_SECCOMP_PROFILE` |
 | **AppArmor** | `deploy/apparmor/redtusk-worker` — `Pix` on scanner binaries, deny everything else (runc + AppArmor hosts) |
 | **JVM UID 10001** | Non-root, minimal capability set |
 | **One job per container** | Container is destroyed after job completes; no state leaks between jobs |
@@ -564,8 +554,7 @@ and HTTP API honor the same `REDTUSK_*` env vars.
 | `REDTUSK_WORKER_IMAGE` | `redtusk-worker:default` | Worker container image |
 | `REDTUSK_WORKER_RUNTIME` | auto | `runsc` or `runc` (auto-selects runsc if installed) |
 | `REDTUSK_WORKER_MEMORY_MB` | `1024` | Container `--memory` limit |
-| `REDTUSK_WORKER_SECCOMP_PROFILE` | baked-in default | runc seccomp profile path; defaults to the in-image profile. On runc, an empty/missing profile fails closed unless `REDTUSK_ALLOW_INSECURE_RUNC=1` |
-| `REDTUSK_ALLOW_INSECURE_RUNC` | `0` | Escape hatch: allow runc workers to start without a seccomp profile |
+| `REDTUSK_WORKER_SECCOMP_PROFILE` | empty | runc-only seccomp profile path |
 | `REDTUSK_WORKER_APPARMOR_PROFILE` | empty | runc-only AppArmor profile name |
 | `REDTUSK_DISABLE_KSM` | `0` | Set `1` to skip `madvise(MADV_MERGEABLE)` |
 
@@ -617,56 +606,24 @@ access. Use `runc` only.
 ```
 Worker isolation stack (outside → in)
 ══════════════════════════════════════
-  gVisor (runsc)                 default runtime; syscall-level interception
+  gVisor (runsc)                 syscall-level interception
   ┌─ --network=none              no exfiltration path
   ├─ --read-only rootfs          no persistent writes
   ├─ --cap-drop=ALL              zero Linux capabilities
   ├─ --security-opt no-new-priv  no setuid escalation
   ├─ --memory=1g --pids=256      resource caps
-  ├─ seccomp BPF allowlist       ~50 syscalls; default on runc, fail-closed
-  ├─ AppArmor profile            Pix on scanners (runc + AppArmor hosts)
+  ├─ seccomp BPF allowlist       ~50 syscalls (runc only)
+  ├─ AppArmor profile            Pix on scanners (runc only)
   └─ UID 10001, one job          no cross-job state
 ```
-
-The default runtime is gVisor (runsc), which interposes its own kernel and
-does its own syscall filtering. When workers run under runc instead, the
-~50-syscall seccomp allowlist is baked into the image and applied by default,
-and the runtime **fails closed** (refuses to start a worker) if no seccomp
-profile is present — unless the explicit `REDTUSK_ALLOW_INSECURE_RUNC=1`
-escape hatch is set. AppArmor confinement applies on runc hosts that have
-AppArmor enabled.
 
 Additional measures:
 
 - Input file deleted from shared volume immediately after worker reads it
 - `metadata.json` validated by dispatcher (JSON Schema + SHA-256 + size cap) before being trusted
 - All RTF files scanned by `RtfIocScanner` for template injection, UNC paths, protocol handlers, null-byte URLs, and OLE class obfuscation
-- Tika configured with `MacroSecurityLevel=3`, no Java, no OLE updates; XML/XXE hardening on the parser stack (secure JAXP processing, external entities, external DTDs, and remote-resource loading disabled), and a deny-all Batik policy that blocks external/remote resource loading from SVG
+- Tika configured with `MacroSecurityLevel=3`, no Java, no OLE updates, no remote resources
 - HTTP security headers: CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`
-
-### Authentication
-
-This service does **not** authenticate or authorize requests itself —
-authentication/authorization is intentionally out of scope and is expected to
-be provided by the upstream/front layer (e.g. an authenticating reverse
-proxy). The API binds to localhost by default; front it with a reverse proxy
-that terminates TLS and enforces access control.
-
-### Security hardening
-
-Additional defensive measures now in place:
-
-- Request size caps are enforced while streaming the upload (not just after a full buffer)
-- The infected-zip build is concurrency-limited to bound resource use
-- Job-list pagination (`limit`) is clamped to a sane maximum
-- Client-facing error messages are generic — no internal detail leakage
-- Worker scratch dirs are created `0o770` (not world-writable)
-- Artifact copy does not follow symlinks (no symlink traversal out of the scratch dir)
-- vsock/IPC frame sizes are bounded to reject oversized/malformed frames
-- Embedded extraction enforces both recursion-depth and aggregate-byte budgets
-- Linux capability drop fails closed (a worker that cannot drop capabilities does not run)
-- Supply-chain downloads are checksum-verified
-- The API binds to localhost by default — front it with a reverse proxy that also provides authentication (see above)
 
 ---
 

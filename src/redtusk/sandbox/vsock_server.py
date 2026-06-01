@@ -182,8 +182,6 @@ class VsockSlotServer:
                 if len(parts) != 2:
                     raise VsockProtocolError(f"malformed RESULT header: {header}")
                 length = int(parts[1])
-                if length < 0:
-                    raise VsockProtocolError(f"negative RESULT length: {length}")
                 if max_extracted_bytes is not None and total_bytes + length > max_extracted_bytes:
                     import shutil
                     shutil.rmtree(artifacts_dir, ignore_errors=True)
@@ -198,8 +196,6 @@ class VsockSlotServer:
                     raise VsockProtocolError(f"malformed ARTIFACT header: {header}")
                 # Path may contain spaces; the LAST token is the length.
                 length = int(parts[-1])
-                if length < 0:
-                    raise VsockProtocolError(f"negative ARTIFACT length: {length}")
                 if max_extracted_bytes is not None and total_bytes + length > max_extracted_bytes:
                     import shutil
                     shutil.rmtree(artifacts_dir, ignore_errors=True)

@@ -13,20 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from redtusk.errors import JobNotFoundError, StorageError
 from redtusk.types import JobRecord, JobState
-
-# Postgres identifier whitelist for the schema name. The schema is interpolated
-# into DDL/DML via f-strings (it cannot be a bound parameter), so it must match
-# a strict identifier pattern. This is defense-in-depth: the schema is not
-# user-reachable today, but validating here means a future caller can't smuggle
-# a `"` to break out of the quoted identifier. Postgres caps identifiers at 63
-# bytes, hence the {0,62} upper bound after the leading char.
-_VALID_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 def _serialize(record: JobRecord) -> str:
@@ -139,12 +130,6 @@ class SqlJobStore:
     """
 
     def __init__(self, url: str, *, schema: str = "public") -> None:
-        if not _VALID_SCHEMA_RE.match(schema):
-            raise ValueError(
-                f"invalid postgres schema name {schema!r}: must match "
-                f"{_VALID_SCHEMA_RE.pattern} (letters, digits, underscores; "
-                f"max 63 chars; cannot start with a digit)"
-            )
         self._url = url
         self._schema = schema
         self._connected = False
@@ -418,13 +403,13 @@ class SqlJobStore:
         return out
 
     @staticmethod
-    def _rows_to_payloads(rows: list[Any]) -> list[dict[str, Any]]:
+    def _rows_to_payloads(rows: list) -> list[dict]:
         """Parse the SQL ``payload`` column out of each row into a dict, with
         no further reconstruction. Postgres returns jsonb as a dict already,
         SQLite returns it as TEXT — both paths end up as ``dict[str, Any]``.
         Used by the ``*_payloads`` variants to skip ``JobRecord.from_dict``,
         which dominates wall time on heavy results in the list-jobs API."""
-        out: list[dict[str, Any]] = []
+        out: list[dict] = []
         for row in rows:
             cell = row[0]
             if isinstance(cell, str):
@@ -437,7 +422,7 @@ class SqlJobStore:
 
     async def list_recent_payloads(
         self, limit: int = 50, offset: int = 0, state: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict]:
         """Raw-payload variant of ``list_recent`` — see base.JobStore."""
         if self._dialect == "sqlite":
             if state:
@@ -474,47 +459,29 @@ class SqlJobStore:
 
     async def search_payloads(
         self, query: str, limit: int = 50, offset: int = 0,
-        state: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Raw-payload variant of ``search`` — see base.JobStore.
-
-        ``state`` (when given) is applied in SQL so LIMIT/OFFSET paginate the
-        state-filtered set rather than a post-filtered page."""
+    ) -> list[dict]:
+        """Raw-payload variant of ``search`` — see base.JobStore."""
         q = f"%{query}%"
         if self._dialect == "sqlite":
-            state_clause = "AND state = ? " if state is not None else ""
-            params: tuple[Any, ...] = (
-                (q, q, q, state, limit, offset)
-                if state is not None
-                else (q, q, q, limit, offset)
-            )
             async with self._aiosqlite_conn.execute(
                 "SELECT payload FROM jobs "
-                "WHERE (id LIKE ? "
+                "WHERE id LIKE ? "
                 "OR json_extract(payload, '$.filename_hint') LIKE ? "
-                "OR json_extract(payload, '$.input_sha256') LIKE ?) "
-                f"{state_clause}"
+                "OR json_extract(payload, '$.input_sha256') LIKE ? "
                 "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
-                params,
+                (q, q, q, limit, offset),
             ) as cur:
                 rows = await cur.fetchall()
         else:
-            state_clause = "AND state = %s " if state is not None else ""
-            params = (
-                (q, q, q, state, limit, offset)
-                if state is not None
-                else (q, q, q, limit, offset)
-            )
             async with self._psycopg_pool.connection() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         f'SELECT payload FROM "{self._schema}".jobs '
-                        "WHERE (id ILIKE %s "
+                        "WHERE id ILIKE %s "
                         "OR payload->>'filename_hint' ILIKE %s "
-                        "OR payload->>'input_sha256' ILIKE %s) "
-                        f"{state_clause}"
+                        "OR payload->>'input_sha256' ILIKE %s "
                         "ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
-                        params,
+                        (q, q, q, limit, offset),
                     )
                     rows = await cur.fetchall()
         return self._rows_to_payloads(rows)

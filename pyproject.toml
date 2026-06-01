@@ -32,6 +32,7 @@ dependencies = [
     "rfc3339-validator>=0.1.4,<0.2",
     "python-magic>=0.4.27,<0.5",
     "pyzipper>=0.3.6,<0.4",
+    "detonator",
 ]
 
 [project.optional-dependencies]

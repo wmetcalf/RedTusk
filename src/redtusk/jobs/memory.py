@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import copy
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from redtusk.errors import JobNotFoundError, StorageError
 from redtusk.types import JobRecord, JobState
@@ -106,23 +105,15 @@ class MemoryJobStore:
 
     async def list_recent_payloads(
         self, limit: int = 50, offset: int = 0, state: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict]:
         records = await self.list_recent(limit=limit, offset=offset, state=state)
         return [r.to_dict() for r in records]
 
     async def search_payloads(
         self, query: str, limit: int = 50, offset: int = 0,
-        state: str | None = None,
-    ) -> list[dict[str, Any]]:
-        # Filter by state at the source: fetch a wider matching set, restrict
-        # by state, then page — so a state filter can't return a short page
-        # while more matches exist (which breaks the caller's has_more flag).
-        if state is None:
-            records = await self.search(query, limit=limit, offset=offset)
-            return [r.to_dict() for r in records]
-        matches = await self.search(query, limit=1_000_000, offset=0)
-        matches = [r for r in matches if r.state.value == state]
-        return [r.to_dict() for r in matches[offset:offset + limit]]
+    ) -> list[dict]:
+        records = await self.search(query, limit=limit, offset=offset)
+        return [r.to_dict() for r in records]
 
     async def delete(self, job_id: str) -> bool:
         async with self._lock:

@@ -33,7 +33,6 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 /**
@@ -51,14 +50,6 @@ public final class EmbeddedFileExtractor {
 
     private static final Logger LOG = Logger.getLogger(EmbeddedFileExtractor.class.getName());
     static final long MAX_FILE_BYTES = 50L * 1024 * 1024; // 50 MB per-file cap
-    /**
-     * Aggregate extracted-bytes budget for a single Pass-2 extraction. Without
-     * this, a zip/embed bomb (many entries × {@link #MAX_FILE_BYTES} each) can
-     * amplify to tens of GB of disk writes (~25 GB at the default 500-entry
-     * limit). Mirrors {@code Pass1ImageCapture.MAX_BUFFER_BUDGET_BYTES} (256 MB).
-     * Once the running total exceeds this, further entries are skipped.
-     */
-    static final long MAX_EXTRACTED_BUDGET_BYTES = 256L * 1024 * 1024;
 
     private final int maxDepth;
     private final int maxFiles;
@@ -98,24 +89,9 @@ public final class EmbeddedFileExtractor {
         enableImageHashing(parser);
 
         ParseContext context = new ParseContext();
-        // XXE / SSRF hardening — same secure JAXP factories Pass-1 uses, so the
-        // second extraction pass also rejects external entities, DTDs,
-        // stylesheets and remote-resource loading.
-        ParserRunner.hardenXmlParsing(context);
-
-        // Embedded recursion / count limits (Tika-side enforcement). Pass-1's
-        // RecursiveParserWrapper enforced these; Pass-2 drives AutoDetectParser
-        // directly, so without an explicit EmbeddedLimits a malicious container
-        // could declare far more nested entries than Pass-1 allowed. Mirror
-        // Pass-1's limits here (recursion depth + entry count).
-        context.set(org.apache.tika.config.EmbeddedLimits.class,
-                new org.apache.tika.config.EmbeddedLimits(maxDepth, false, maxFiles, false));
-
         AtomicInteger fileCount = new AtomicInteger(0);
-        AtomicLong extractedBytesTotal = new AtomicLong(0);
         context.set(EmbeddedDocumentExtractor.class,
-                new SavingExtractor(parser, embDir, maxDepth, maxFiles, enableThumbnails,
-                        fileCount, extractedBytesTotal, hashes));
+                new SavingExtractor(parser, embDir, maxDepth, maxFiles, enableThumbnails, fileCount, hashes));
         context.set(Parser.class, parser);
         // OCR already ran in the first pass (ParserRunner). Skip it here to avoid
         // running Tesseract a second time on every file in the extraction pass.
@@ -213,10 +189,8 @@ public final class EmbeddedFileExtractor {
                         java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(base + "-" + i + ".png"));
                 }
             } else if ("image/svg+xml".equals(ct)) {
-                // Untrusted SVG → Batik. Install a deny-all security policy so a
-                // malicious SVG cannot fetch external resources (SSRF, e.g. via
-                // <image href="http://..."> or external CSS) or run scripts.
-                org.apache.batik.transcoder.image.PNGTranscoder transcoder = newSecureSvgTranscoder();
+                org.apache.batik.transcoder.image.PNGTranscoder transcoder =
+                    new org.apache.batik.transcoder.image.PNGTranscoder();
                 transcoder.addTranscodingHint(
                     org.apache.batik.transcoder.image.ImageTranscoder.KEY_MAX_WIDTH, (float) THUMB_MAX_PX);
                 transcoder.addTranscodingHint(
@@ -241,77 +215,6 @@ public final class EmbeddedFileExtractor {
             LOG.fine("EmbeddedFileExtractor: metafile decode failed (" + ct + "): " + e.getMessage());
         }
         return null;
-    }
-
-    /**
-     * Build a {@link org.apache.batik.transcoder.image.PNGTranscoder} hardened
-     * against untrusted SVG. We override the transcoder's UserAgent so that:
-     * <ul>
-     *   <li>{@code getExternalResourceSecurity} returns
-     *       {@code NoLoadExternalResourceSecurity} — every external resource
-     *       (remote {@code <image>}, external CSS/DTD, {@code use href},
-     *       {@code xlink:href}) is denied, killing the SSRF vector
-     *       (CVE-2022-44729 / CVE-2022-44730 class).</li>
-     *   <li>{@code getScriptSecurity} returns {@code NoLoadScriptSecurity} —
-     *       no SVG {@code <script>} or event-handler script executes.</li>
-     * </ul>
-     * We also set {@code KEY_ALLOW_EXTERNAL_RESOURCES=false},
-     * {@code KEY_CONSTRAIN_SCRIPT_ORIGIN=true} and {@code KEY_EXECUTE_ONLOAD=false}
-     * as belt-and-suspenders TranscodingHints. Thumbnailing of benign SVG (which
-     * needs no external resources or scripts) is unaffected.
-     */
-    static org.apache.batik.transcoder.image.PNGTranscoder newSecureSvgTranscoder() {
-        org.apache.batik.transcoder.image.PNGTranscoder transcoder =
-            new org.apache.batik.transcoder.image.PNGTranscoder() {
-                @Override
-                protected org.apache.batik.bridge.UserAgent createUserAgent() {
-                    // UserAgentAdapter is the public, version-stable UserAgent
-                    // base. Its defaults allow (relaxed) external resources and
-                    // scripts; override the two security hooks to deny-all.
-                    return new org.apache.batik.bridge.UserAgentAdapter() {
-                        @Override
-                        public org.apache.batik.bridge.ExternalResourceSecurity
-                                getExternalResourceSecurity(org.apache.batik.util.ParsedURL resourceURL,
-                                                            org.apache.batik.util.ParsedURL docURL) {
-                            // Deny ALL external resource loading (SSRF guard).
-                            return new org.apache.batik.bridge.NoLoadExternalResourceSecurity();
-                        }
-
-                        @Override
-                        public org.apache.batik.bridge.ScriptSecurity
-                                getScriptSecurity(String scriptType,
-                                                  org.apache.batik.util.ParsedURL scriptURL,
-                                                  org.apache.batik.util.ParsedURL docURL) {
-                            // Deny ALL script execution.
-                            return new org.apache.batik.bridge.NoLoadScriptSecurity(scriptType);
-                        }
-                    };
-                }
-            };
-        // Belt-and-suspenders TranscodingHints.
-        transcoder.addTranscodingHint(
-            org.apache.batik.transcoder.SVGAbstractTranscoder.KEY_CONSTRAIN_SCRIPT_ORIGIN, Boolean.TRUE);
-        transcoder.addTranscodingHint(
-            org.apache.batik.transcoder.SVGAbstractTranscoder.KEY_EXECUTE_ONLOAD, Boolean.FALSE);
-        setHintIfPresent(transcoder, "KEY_ALLOW_EXTERNAL_RESOURCES", Boolean.FALSE);
-        return transcoder;
-    }
-
-    /** Set a TranscodingHint by reflective key name so the worker still compiles
-     *  against Batik builds that lack a given KEY constant (e.g. the
-     *  CVE-2022-44729 KEY_ALLOW_EXTERNAL_RESOURCES hint added in newer Batik). */
-    private static void setHintIfPresent(org.apache.batik.transcoder.Transcoder t,
-                                         String keyFieldName, Object value) {
-        try {
-            java.lang.reflect.Field f =
-                org.apache.batik.transcoder.SVGAbstractTranscoder.class.getField(keyFieldName);
-            Object key = f.get(null);
-            if (key instanceof org.apache.batik.transcoder.TranscodingHints.Key k) {
-                t.addTranscodingHint(k, value);
-            }
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            LOG.fine("Batik hint " + keyFieldName + " unavailable: " + e.getMessage());
-        }
     }
 
     /**
@@ -427,58 +330,13 @@ public final class EmbeddedFileExtractor {
             rel = name;
         }
         Path result = root;
-        boolean lossy = false;
-        String[] parts = rel.split("/");
-        for (int idx = 0; idx < parts.length; idx++) {
-            String original = parts[idx];
-            String part = original.replaceAll("[^a-zA-Z0-9._+\\- ]", "_").trim();
+        for (String part : rel.split("/")) {
+            part = part.replaceAll("[^a-zA-Z0-9._+\\- ]", "_").trim();
             if (part.isEmpty() || part.equals(".") || part.equals("..")) part = "_";
-            // Sanitization is lossy when it changed the component — distinct
-            // raw names (e.g. "résumé.doc" vs "resume_.doc", or "a/b" vs "a_b")
-            // can collapse to the same sanitized path and silently overwrite
-            // each other's saved bytes, desyncing hashes/forensics. When the
-            // LAST (filename) component was altered, disambiguate it with a
-            // short, deterministic hash of the original relative path so the
-            // mapping is stable across Pass-1 and Pass-2 for the same entry.
-            if (!part.equals(original)) {
-                lossy = true;
-            }
-            if (lossy && idx == parts.length - 1) {
-                part = disambiguate(part, rel);
-            }
             result = result.resolve(part);
         }
         if (!result.normalize().startsWith(root.normalize())) return null;
         return result;
-    }
-
-    /**
-     * Append a short hash of the entry's original relative path to a sanitized
-     * filename component so two distinct entries whose names sanitize to the
-     * same string land at distinct paths. Deterministic per entry, so Pass-1 and
-     * Pass-2 compute the same disambiguated path for the same entry. The hash is
-     * inserted before the file extension to keep the suffix recognizable.
-     */
-    private static String disambiguate(String sanitized, String originalRel) {
-        String tag = shortHash(originalRel);
-        int dot = sanitized.lastIndexOf('.');
-        if (dot > 0) {
-            return sanitized.substring(0, dot) + "_" + tag + sanitized.substring(dot);
-        }
-        return sanitized + "_" + tag;
-    }
-
-    /** First 8 hex chars of SHA-256(s); falls back to hashCode hex if unavailable. */
-    private static String shortHash(String s) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] d = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(8);
-            for (int i = 0; i < 4; i++) sb.append(String.format("%02x", d[i]));
-            return sb.toString();
-        } catch (Exception e) {
-            return Integer.toHexString(s.hashCode());
-        }
     }
 
     private static void enableImageHashing(Parser root) {
@@ -515,22 +373,18 @@ public final class EmbeddedFileExtractor {
         private final int maxFiles;
         private final boolean enableThumbnails;
         private final AtomicInteger fileCount;
-        /** Running total of bytes extracted in this pass; aborts past the budget. */
-        private final AtomicLong extractedBytesTotal;
         private final Map<String, FileHashes> hashes;
 
         SavingExtractor(AutoDetectParser parser, Path root, int maxDepth,
                         int maxFiles, boolean enableThumbnails,
-                        AtomicInteger fileCount, AtomicLong extractedBytesTotal,
-                        Map<String, FileHashes> hashes) {
-            this.parser              = parser;
-            this.root                = root;
-            this.maxDepth            = maxDepth;
-            this.maxFiles            = maxFiles;
-            this.enableThumbnails    = enableThumbnails;
-            this.fileCount           = fileCount;
-            this.extractedBytesTotal = extractedBytesTotal;
-            this.hashes              = hashes;
+                        AtomicInteger fileCount, Map<String, FileHashes> hashes) {
+            this.parser           = parser;
+            this.root             = root;
+            this.maxDepth         = maxDepth;
+            this.maxFiles         = maxFiles;
+            this.enableThumbnails = enableThumbnails;
+            this.fileCount        = fileCount;
+            this.hashes           = hashes;
         }
 
         @Override
@@ -546,14 +400,6 @@ public final class EmbeddedFileExtractor {
                 throws SAXException, IOException {
 
             if (fileCount.get() >= maxFiles) return;
-            // Aggregate extracted-bytes budget — abort further extraction once a
-            // zip/embed bomb has already amplified past the cap.
-            if (extractedBytesTotal.get() >= MAX_EXTRACTED_BUDGET_BYTES) {
-                LOG.warning("EmbeddedFileExtractor: extracted-bytes budget exceeded ("
-                        + extractedBytesTotal.get() + " >= " + MAX_EXTRACTED_BUDGET_BYTES
-                        + "); skipping remaining embedded entries");
-                return;
-            }
 
             // Buffer bytes with size cap
             byte[] bytes = stream.readNBytes((int) Math.min(MAX_FILE_BYTES, Integer.MAX_VALUE));
@@ -582,25 +428,12 @@ public final class EmbeddedFileExtractor {
             Path outFile = EmbeddedFileExtractor.resolveOutFile(root, embPath, metadata);
             if (outFile == null) return;
 
-            // Re-check the aggregate budget WITH this entry's size before writing.
-            // The pre-read guard above runs before bytes are buffered, so it
-            // can't see this entry's length; without this check a single entry
-            // could push extractedBytesTotal past MAX_EXTRACTED_BUDGET_BYTES
-            // (bounded by MAX_FILE_BYTES, but still an overshoot of the cap).
-            if (extractedBytesTotal.get() + bytes.length > MAX_EXTRACTED_BUDGET_BYTES) {
-                LOG.warning("EmbeddedFileExtractor: extracted-bytes budget would be exceeded ("
-                        + extractedBytesTotal.get() + " + " + bytes.length + " > "
-                        + MAX_EXTRACTED_BUDGET_BYTES + "); skipping entry");
-                return;
-            }
-
             // Save file
             try {
                 Files.createDirectories(outFile.getParent());
                 Files.write(outFile, bytes,
                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
                 fileCount.incrementAndGet();
-                extractedBytesTotal.addAndGet(bytes.length);
             } catch (IOException e) {
                 LOG.warning("EmbeddedFileExtractor: write failed " + outFile + ": " + e.getMessage());
                 return;
@@ -657,10 +490,8 @@ public final class EmbeddedFileExtractor {
             // Recurse into nested embedded content
             if (embPath != null && countSlashes(embPath) < maxDepth - 1) {
                 ParseContext nested = new ParseContext();
-                ParserRunner.hardenXmlParsing(nested);
                 nested.set(EmbeddedDocumentExtractor.class,
-                        new SavingExtractor(parser, root, maxDepth, maxFiles, enableThumbnails,
-                                fileCount, extractedBytesTotal, hashes));
+                        new SavingExtractor(parser, root, maxDepth, maxFiles, enableThumbnails, fileCount, hashes));
                 nested.set(Parser.class, parser);
                 TesseractOCRConfig noOcr = new TesseractOCRConfig();
                 noOcr.setSkipOcr(true);

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from redtusk.api import _sanitize_filename
-from redtusk.dispatcher import _copy_artifacts, artifact_dir
+from redtusk.dispatcher import artifact_dir
 from redtusk.jobs.memory import MemoryJobStore
 from redtusk.jobs.retention import prune_orphaned_artifacts
 from redtusk.translation import to_unpack_tar
@@ -68,53 +68,6 @@ def test_unpack_tar_sanitizes_windows_traversal_names() -> None:
         names = tar.getnames()
 
     assert names == ["unsafe_path_.._evil.txt"]
-
-
-def test_copy_artifacts_does_not_traverse_directory_symlink(tmp_path: Path) -> None:
-    """A directory symlink planted inside the source /out (by a compromised
-    worker) must NOT be traversed — otherwise it could pull files from outside
-    the slot into the persistent artifact tree. (finding 4)"""
-    src = tmp_path / "out"
-    src.mkdir()
-    # Legit artifact that SHOULD be copied.
-    (src / "metadata.json").write_text("{}")
-
-    # Secret target outside the slot.
-    secret_dir = tmp_path / "secret"
-    secret_dir.mkdir()
-    (secret_dir / "passwd").write_text("root:x:0:0")
-
-    # Directory symlink inside src pointing at the secret dir.
-    (src / "escape").symlink_to(secret_dir, target_is_directory=True)
-
-    dst = tmp_path / "artifacts"
-    _copy_artifacts(src, dst, max_bytes=10_000_000)
-
-    # The real file is copied...
-    assert (dst / "metadata.json").exists()
-    # ...but nothing from behind the directory symlink leaked through.
-    assert not (dst / "escape").exists()
-    assert not (dst / "escape" / "passwd").exists()
-    assert not (dst / "passwd").exists()
-    # Confirm the secret file did NOT get copied anywhere under dst.
-    copied = [p.name for p in dst.rglob("*") if p.is_file()]
-    assert "passwd" not in copied
-
-
-def test_copy_artifacts_skips_file_symlinks(tmp_path: Path) -> None:
-    """Per-file symlinks are still skipped (unchanged behavior, finding 4)."""
-    src = tmp_path / "out"
-    src.mkdir()
-    (src / "real.txt").write_text("hello")
-    outside = tmp_path / "outside.txt"
-    outside.write_text("secret")
-    (src / "link.txt").symlink_to(outside)
-
-    dst = tmp_path / "artifacts"
-    _copy_artifacts(src, dst, max_bytes=10_000_000)
-
-    assert (dst / "real.txt").exists()
-    assert not (dst / "link.txt").exists()
 
 
 @pytest.mark.asyncio

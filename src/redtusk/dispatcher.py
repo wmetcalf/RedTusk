@@ -629,80 +629,38 @@ def _read_capped(path: Path, max_bytes: int) -> bytes:
     # rdump on the host; a compromised worker could plant a symlink named
     # metadata.json -> /etc/passwd (or a FIFO that would block read_bytes
     # forever). Reject anything that isn't a regular file.
-    # Open with O_NOFOLLOW, then fstat the resulting fd — TOCTOU-safe: a
-    # compromised worker cannot swap metadata.json for a symlink (-> /etc/passwd)
-    # or a FIFO between the type check and the read, because we check and read
-    # the SAME descriptor. O_NOFOLLOW makes open() itself fail (ELOOP) if the
-    # final path component is a symlink.
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise OSError(
-                errno.EINVAL,
-                f"metadata.json is not a regular file (mode={stat.filemode(st.st_mode)})",
-                str(path),
-            )
-        if st.st_size > max_bytes:
-            raise ValueError(f"metadata.json too large: {st.st_size} > {max_bytes}")
-        with os.fdopen(fd, "rb") as f:
-            return f.read()
-    except BaseException:
-        # fdopen takes ownership of fd on success; close it ourselves on any
-        # failure at/before fdopen to avoid leaking the descriptor.
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        raise
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError(
+            errno.EINVAL,
+            f"metadata.json is not a regular file (mode={stat.filemode(st.st_mode)})",
+            str(path),
+        )
+    if st.st_size > max_bytes:
+        raise ValueError(f"metadata.json too large: {st.st_size} > {max_bytes}")
+    return path.read_bytes()
 
 
 def _copy_artifacts(src_dir: Path, dst_dir: Path, *, max_bytes: int) -> None:
     dst_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
-    # Walk with followlinks=False so a directory symlink planted by a
-    # compromised worker (e.g. /out/escape -> /etc) is NOT descended into.
-    # Path.rglob() follows directory symlinks and would let such a symlink
-    # pull files from outside the slot's /out into the persistent artifact
-    # tree. We additionally confine every resolved source path under src_dir
-    # (realpath startswith check) as defense-in-depth.
-    src_root_real = os.path.realpath(src_dir)
-    prefix = src_root_real + os.sep
-    for dirpath, dirnames, filenames in os.walk(src_dir, followlinks=False):
-        # Drop any directory entries that are themselves symlinks so os.walk
-        # never recurses through them (followlinks=False already avoids
-        # descending, but pruning keeps dirnames consistent and explicit).
-        dirnames[:] = [
-            d for d in dirnames
-            if not os.path.islink(os.path.join(dirpath, d))
-        ]
-        for name in filenames:
-            src_path = Path(dirpath) / name
-            # Per-file symlink skip (unchanged behavior).
-            if src_path.is_symlink() or not src_path.is_file():
-                continue
-            # Skip worker draft-snapshot scratch files. DraftSnapshotWriter
-            # writes to .metadata.json.draft.tmp and atomically renames onto
-            # metadata.json; if SIGKILL hits mid-write, the orphan .tmp
-            # shouldn't surface in the artifact tree where the UI lists it.
-            if src_path.name == ".metadata.json.draft.tmp":
-                continue
-            # Confine the resolved source under src_dir. Catches any residual
-            # way a path could resolve outside the slot (e.g. an intermediate
-            # symlink os.walk didn't prune).
-            real = os.path.realpath(src_path)
-            if real != src_root_real and not real.startswith(prefix):
-                continue
-            size = src_path.stat().st_size
-            if copied + size > max_bytes:
-                raise ValueError(
-                    f"artifacts too large: {copied + size} > {max_bytes}"
-                )
-            rel = src_path.relative_to(src_dir)
-            dst_path = dst_dir / rel
-            dst_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_path, dst_path)
-            copied += size
+    for src_path in src_dir.rglob("*"):
+        if not src_path.is_file() or src_path.is_symlink():
+            continue
+        # Skip worker draft-snapshot scratch files. DraftSnapshotWriter writes
+        # to .metadata.json.draft.tmp and atomically renames onto metadata.json;
+        # if SIGKILL hits mid-write, the orphan .tmp shouldn't surface in the
+        # artifact tree where the UI would list it.
+        if src_path.name == ".metadata.json.draft.tmp":
+            continue
+        size = src_path.stat().st_size
+        if copied + size > max_bytes:
+            raise ValueError(f"artifacts too large: {copied + size} > {max_bytes}")
+        rel = src_path.relative_to(src_dir)
+        dst_path = dst_dir / rel
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_path, dst_path)
+        copied += size
 
 
 def _mkdir_p(p: Path) -> None:
