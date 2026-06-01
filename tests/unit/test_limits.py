@@ -199,3 +199,32 @@ def test_from_env_rejects_fc_outdisk_exceeding_max_extracted() -> None:
         assert ok.fc_outdisk_mib == 2048
         ok = Limits.from_env(worker_runtime="runsc", fc_outdisk_mib=2048)
         assert ok.fc_outdisk_mib == 2048
+
+
+def test_worker_runtime_accepts_all_valid_values() -> None:
+    """"" (auto), runc, runsc, kata (Docker backend) and firecracker (FC
+    backend) are all valid at config time. (finding 2)"""
+    for rt in ("", "runc", "runsc", "kata", "firecracker"):
+        with patch.dict(
+            os.environ, {"REDTUSK_WORKER_RUNTIME": rt}, clear=True
+        ):
+            limits = Limits.from_env()
+        assert limits.worker_runtime == rt
+
+
+def test_worker_runtime_rejects_typo_via_env() -> None:
+    """A typo'd runtime (e.g. "firercracker") must be rejected centrally at
+    config time with a clear ConfigurationError, not silently accepted and
+    then blow up per-spawn inside build_run_argv. (finding 2)"""
+    with patch.dict(
+        os.environ, {"REDTUSK_WORKER_RUNTIME": "firercracker"}, clear=True
+    ):
+        with pytest.raises(ConfigurationError) as ei:
+            Limits.from_env()
+    assert "REDTUSK_WORKER_RUNTIME" in str(ei.value)
+
+
+def test_worker_runtime_rejects_unknown_via_override() -> None:
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(ConfigurationError):
+            Limits.from_env(worker_runtime="podman")

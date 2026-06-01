@@ -118,6 +118,25 @@ if [ "$WITH_KERNEL" -eq 1 ] && { [ ! -f "$KERNEL" ] || [ "$FORCE" -eq 1 ]; }; th
     cd "$KBUILD"
     KMAJOR=$(echo "$KERNEL_VERSION" | cut -d. -f1)
     curl -fsSL -O "https://cdn.kernel.org/pub/linux/kernel/v${KMAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
+    # SUPPLY CHAIN: verify the kernel tarball before extracting. kernel.org
+    # publishes a sha256sums.asc per release directory; we fetch the matching
+    # sha256sums.asc and check the line for our tarball. If the checksum file
+    # can't be fetched, fall back to a pinned EXPECTED_KERNEL_SHA256 env var.
+    # Fails closed — no verified checksum, no extraction.
+    if curl -fsSL -o /tmp/kernel-sha256sums.asc \
+        "https://cdn.kernel.org/pub/linux/kernel/v${KMAJOR}.x/sha256sums.asc" \
+        && grep -q "linux-${KERNEL_VERSION}.tar.xz" /tmp/kernel-sha256sums.asc; then
+        grep " linux-${KERNEL_VERSION}.tar.xz\$" /tmp/kernel-sha256sums.asc \
+            | sha256sum -c - \
+            || die "kernel tarball checksum verification FAILED"
+    else
+        # TODO: fill in the real sha256 of linux-${KERNEL_VERSION}.tar.xz, or
+        # export EXPECTED_KERNEL_SHA256 before running. Empty value fails closed.
+        : "${EXPECTED_KERNEL_SHA256:?kernel checksum unavailable and EXPECTED_KERNEL_SHA256 unset — refusing to extract an unverified kernel tarball}"
+        echo "${EXPECTED_KERNEL_SHA256}  linux-${KERNEL_VERSION}.tar.xz" \
+            | sha256sum -c - \
+            || die "kernel tarball checksum verification FAILED"
+    fi
     tar -xf "linux-${KERNEL_VERSION}.tar.xz"
     cd "linux-${KERNEL_VERSION}"
     # Start from a minimal x86_64 microvm-friendly config. Firecracker's

@@ -9,6 +9,9 @@
 #define _GNU_SOURCE
 #include <jni.h>
 #include <sys/prctl.h>
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
 
 #ifndef PR_SET_MEMORY_MERGE
 #define PR_SET_MEMORY_MERGE 67
@@ -17,5 +20,19 @@
 JNIEXPORT void JNICALL
 Java_io_redtusk_worker_KsmHelper_nativeMarkHeapMergeable(JNIEnv *env, jclass clazz)
 {
-    prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0);
+    (void) env;
+    (void) clazz;
+    /*
+     * KSM marking is a best-effort memory-footprint optimization, not a
+     * security control, so a failure here must stay non-fatal (don't throw).
+     * But silently ignoring the return value hides real misconfiguration
+     * (kernel < 5.18, PR_SET_MEMORY_MERGE unsupported, seccomp filter). Check
+     * it and log to stderr so the failure is observable without changing KSM
+     * semantics.
+     */
+    if (prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0) != 0) {
+        fprintf(stderr,
+                "ksm_helper: prctl(PR_SET_MEMORY_MERGE, 1) failed: %s\n",
+                strerror(errno));
+    }
 }

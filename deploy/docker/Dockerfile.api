@@ -19,5 +19,13 @@ COPY pyproject.toml ./
 COPY src/ ./src/
 RUN pip install --no-cache-dir -e .
 
+# Bake the worker seccomp profile into the image at a stable, well-known path.
+# This is the default referenced by the Python container.py constant
+# _DEFAULT_RUNC_SECCOMP and by REDTUSK_WORKER_SECCOMP_PROFILE in
+# docker-compose.yml, so the runc worker path is seccomp-hardened by default
+# (no opt-in required). gVisor/runsc ignores it and applies its own filter.
+# Build context is the repo root (see docker-compose.yml build.context).
+COPY deploy/seccomp/redtusk.seccomp.json /opt/redtusk/seccomp/redtusk.seccomp.json
+
 USER 10001:10001
 ENTRYPOINT ["redtusk"]

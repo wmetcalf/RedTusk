@@ -79,6 +79,31 @@ def _mkdir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
+# The worker container runs as UID:GID 10001:10001 (see build_run_argv's
+# --user). Scratch dirs are bind-mounted into the container and must be
+# writable by that UID without being world-writable.
+_WORKER_UID = 10001
+_WORKER_GID = 10001
+
+
+def _secure_scratch_perms(p: Path) -> None:
+    """chmod a scratch dir to 0o770 and (best-effort) chown it to the worker
+    UID/GID so container UID 10001 can write but the world cannot.
+
+    Replaces the old 0o777. The chown only runs when we're root (the common
+    container/prod case); in local dev/tests where geteuid() != 0 we can't
+    chown to an arbitrary uid, so we skip it and rely on the current user
+    already owning the dir (0o770 keeps it writable for the owner). Any
+    PermissionError/OSError from chown is swallowed for the same reason.
+    """
+    os.chmod(p, 0o770)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        try:
+            os.chown(p, _WORKER_UID, _WORKER_GID)
+        except (PermissionError, OSError):
+            pass
+
+
 def _rmtree(p: Path) -> None:
     import shutil
     shutil.rmtree(p, ignore_errors=True)
@@ -191,11 +216,12 @@ class DockerWorkerRuntime:
         await asyncio.to_thread(_mkdir, slot_dir / "in")
         await asyncio.to_thread(_mkdir, slot_dir / "out")
         await asyncio.to_thread(_mkdir, slot_dir / "control")
-        # chmod 0o777 so container UID 10001 can write to out/
-        await asyncio.to_thread(os.chmod, slot_dir, 0o777)
-        await asyncio.to_thread(os.chmod, slot_dir / "in", 0o777)
-        await asyncio.to_thread(os.chmod, slot_dir / "out", 0o777)
-        await asyncio.to_thread(os.chmod, slot_dir / "control", 0o777)
+        # 0o770 + chown to worker UID 10001 (when root) so container UID 10001
+        # can write but the world cannot. Was 0o777 (world-writable).
+        await asyncio.to_thread(_secure_scratch_perms, slot_dir)
+        await asyncio.to_thread(_secure_scratch_perms, slot_dir / "in")
+        await asyncio.to_thread(_secure_scratch_perms, slot_dir / "out")
+        await asyncio.to_thread(_secure_scratch_perms, slot_dir / "control")
         return slot_dir
 
     async def spawn(self, slot: Slot, limits: Limits, profile: str) -> str:
@@ -205,6 +231,16 @@ class DockerWorkerRuntime:
         # Limits.worker_runtime overrides auto-detected runtime (useful when runsc/gVisor
         # is available but its 9p filesystem cannot propagate FIFOs to the host).
         effective_runtime = limits.worker_runtime or self.docker.runtime
+        # "firecracker" is not a Docker runtime — it selects FirecrackerWorkerRuntime
+        # in cli.py. If it reaches here, the deployment is misconfigured (FC value
+        # but Docker backend); fail with a clear message rather than letting
+        # build_run_argv raise a generic "runtime must be one of ..." per spawn.
+        if effective_runtime == "firecracker":
+            raise WorkerError(
+                "worker_runtime='firecracker' requires the Firecracker backend, "
+                "not DockerWorkerRuntime. This is a deployment wiring bug: the FC "
+                "value reached the Docker spawn path."
+            )
         self._effective_runtime_by_slot[slot.id] = effective_runtime
         self._profile_by_slot[slot.id] = profile
 
@@ -434,8 +470,9 @@ class FirecrackerWorkerRuntime:
         # rdumps the disk into, for the dispatcher's _ingest_result.
         slot_dir = self._scratch_root / str(slot_id)
         await asyncio.to_thread(_mkdir, slot_dir / "out")
-        await asyncio.to_thread(os.chmod, slot_dir, 0o777)
-        await asyncio.to_thread(os.chmod, slot_dir / "out", 0o777)
+        # 0o770 + chown to worker UID 10001 (when root); was 0o777.
+        await asyncio.to_thread(_secure_scratch_perms, slot_dir)
+        await asyncio.to_thread(_secure_scratch_perms, slot_dir / "out")
         await asyncio.to_thread(
             _make_ext4_sync, slot_dir / "outdisk.ext4", self.limits.fc_outdisk_mib
         )
