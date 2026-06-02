@@ -74,6 +74,14 @@ services:
       # proxy still issues full socket I/O, but the verb filter above is what
       # actually constrains it.
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # The tecnativa entrypoint renders haproxy.cfg.template -> haproxy.cfg
+      # *in this dir* at every boot, which fails under `read_only: true`. A
+      # named volume is writable even when the rootfs is read-only, and Docker
+      # seeds it from the image on first creation so the baked template and
+      # errors/ pages survive. (Footgun: if the proxy image is ever bumped and
+      # its template changes, `docker volume rm redtusk_proxy-haproxy-cfg` to
+      # re-seed — irrelevant while the image is pinned to 0.3.0.)
+      - proxy-haproxy-cfg:/usr/local/etc/haproxy
     read_only: true
     cap_drop:
       - ALL
@@ -112,6 +120,9 @@ services:
       - REDTUSK_WORKER_IMAGE=${REDTUSK_WORKER_IMAGE:-redtusk:0.1.0}
       - REDTUSK_PROFILE=${REDTUSK_PROFILE:-default}
       - REDTUSK_ENABLE_OCR=true
+      # Expose Swagger /docs + /redoc + /openapi.json. Off by default; set
+      # REDTUSK_EXPOSE_DOCS=true in .env to publish the API surface.
+      - REDTUSK_EXPOSE_DOCS=${REDTUSK_EXPOSE_DOCS:-false}
       - REDTUSK_WORKER_RUNTIME=${REDTUSK_WORKER_RUNTIME:-}
       # Default to the seccomp profile baked into the API image (runc path).
       # gVisor/runsc ignores this and applies its own filter, so it stays safe
@@ -131,10 +142,11 @@ services:
       - REDTUSK_ARTIFACT_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}/artifacts
       - REDTUSK_SCRATCH_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}/scratch
     ports:
-      # Bind to localhost only by default — operators front this with a reverse
-      # proxy (TLS termination, auth, rate limiting). Set REDTUSK_PORT or
-      # override the bind address explicitly if you intend to expose it.
-      - "127.0.0.1:${REDTUSK_PORT:-8000}:8000"
+      # Listens on all addresses (0.0.0.0) by default. Front with a reverse
+      # proxy (TLS termination, auth, rate limiting) for any exposed deploy —
+      # the app does not authenticate. Set REDTUSK_BIND_ADDR=127.0.0.1 in .env
+      # to restrict to localhost, or REDTUSK_PORT to change the host port.
+      - "${REDTUSK_BIND_ADDR:-0.0.0.0}:${REDTUSK_PORT:-8000}:8000"
     read_only: true
     cap_drop:
       - ALL
@@ -159,12 +171,17 @@ services:
       start_period: 30s
       retries: 3
     networks:
+      # backend only. The api was previously dual-homed on `frontend` too, but
+      # nothing else used that network — being multi-homed broke external access
+      # to the published port: the inbound DNAT lands on the backend IP while the
+      # reply egressed the frontend gateway (asymmetric routing), so SYNs arrived
+      # but replies never came back. Single-homing fixes that. (Re-introduce a
+      # frontend network only if a reverse proxy is added there too.)
       - backend
-      - frontend
 
 volumes:
   postgres-data:
+  proxy-haproxy-cfg:
 
 networks:
   backend:
-  frontend:

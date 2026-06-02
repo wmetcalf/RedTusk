@@ -46,13 +46,17 @@ services:
     # We re-assert no-new-privileges AND add the baked-in seccomp profile.
     security_opt: !override
       - no-new-privileges:true
-      # Seccomp profile baked into the FC dispatcher image (inherits from the
-      # api image). Constrains the api/dispatcher process even while it holds
-      # /dev/kvm. The firecracker binary applies its OWN seccomp filter to the
-      # microVM in addition to this. TODO(follow-up): the profile permits
-      # clone/ioctl broadly (the JVM + firecracker need them); arg-level BPF
-      # filtering of ioctl (KVM_* only) and clone flags is a future tightening.
-      - seccomp=/opt/redtusk/seccomp/redtusk.seccomp.json
+      # NOTE: we deliberately use Docker's DEFAULT seccomp profile here (by not
+      # setting seccomp=), same as the base api container. The repo's
+      # redtusk.seccomp.json is a *worker* whitelist — applied to the
+      # api/dispatcher container it blocks the new mount-API syscalls
+      # (fsopen/fsmount/fstatfs/move_mount) that modern runc uses to reopen its
+      # exec fifo, so runc init dies with EPERM ("reopen exec fifo ...
+      # operation not permitted") and the container crash-loops. The dispatcher
+      # also needs clone/ioctl(KVM_*) broadly while holding /dev/kvm, which the
+      # worker profile isn't shaped for. FOLLOW-UP: author a dedicated
+      # dispatcher profile (default + KVM ioctl arg-filtering) rather than
+      # reusing the worker one, then re-enable a custom seccomp= here.
     # FC-only mode drops the Docker socket: in pure-FC the dispatcher never
     # calls `docker run` (it spawns firecracker subprocesses directly). The
     # base file already removed the raw socket bind in favour of the proxy;
