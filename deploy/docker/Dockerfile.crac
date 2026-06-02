@@ -130,6 +130,7 @@ RUN java \
     java \
     -XX:CRaCEngine=warp \
     --enable-native-access=ALL-UNNAMED \
+    -XX:CPUFeatures=0x102100055bbd7,0x1c8 \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \

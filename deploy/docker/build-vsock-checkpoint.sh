@@ -41,6 +41,7 @@ REDTUSK_VSOCK_HOST_CID=2 \
 REDTUSK_DISABLE_KSM=1 \
 java \
     -XX:CRaCEngine=warp \
+    -XX:CPUFeatures=0x102100055bbd7,0x1c8 \
     -XX:CRaCCheckpointTo=/app/checkpoint \
     -XX:AOTCache=/app/redtusk.aot \
     --enable-native-access=ALL-UNNAMED \
