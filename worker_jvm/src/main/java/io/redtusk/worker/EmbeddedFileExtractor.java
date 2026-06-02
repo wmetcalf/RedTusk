@@ -473,8 +473,12 @@ public final class EmbeddedFileExtractor {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] d = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(8);
-            for (int i = 0; i < 4; i++) sb.append(String.format("%02x", d[i]));
+            // 8 bytes (64-bit) of the digest. A 32-bit prefix lets a document
+            // with tens of thousands of lossy-sanitized embed names hit a
+            // birthday collision and silently overwrite an extracted artifact;
+            // 64 bits pushes that threshold beyond any realistic document.
+            StringBuilder sb = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) sb.append(String.format("%02x", d[i]));
             return sb.toString();
         } catch (Exception e) {
             return Integer.toHexString(s.hashCode());
