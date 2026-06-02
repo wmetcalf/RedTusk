@@ -132,7 +132,13 @@ services:
       # docker's built-in docker-default. Load `redtusk-worker` on the host to
       # use a tighter profile, or leave default below.
       - REDTUSK_WORKER_APPARMOR_PROFILE=${REDTUSK_WORKER_APPARMOR_PROFILE:-}
-      - REDTUSK_POOL_SIZE=${REDTUSK_POOL_SIZE:-8}
+      - REDTUSK_POOL_WARM_SIZE=${REDTUSK_POOL_WARM_SIZE:-8}
+      # Hard ceiling on total in-flight slots (idle+assigned+warming); empty =
+      # code default max(8, cores). Passed through so the cap is configurable in
+      # Compose (Copilot review: it was previously non-overridable here). Uses
+      # the canonical names to match .env.example (legacy REDTUSK_POOL_SIZE /
+      # _MAX_SIZE still work as aliases — just don't set both old and new).
+      - REDTUSK_POOL_CONCURRENT_SIZE=${REDTUSK_POOL_CONCURRENT_SIZE:-}
       - REDTUSK_POOL_BURST_SIZE=${REDTUSK_POOL_BURST_SIZE:-5}
       - REDTUSK_JOB_TIMEOUT_S=${REDTUSK_JOB_TIMEOUT_S:-90}
       - REDTUSK_WORKER_WARMUP_TIMEOUT_S=${REDTUSK_WORKER_WARMUP_TIMEOUT_S:-120}

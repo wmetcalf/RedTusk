@@ -169,7 +169,7 @@ async def test_signal_job_writes_job_json(
     # control.go is created (file-based signal, no FIFO)
     assert (tmp_path / "control" / "control.go").exists()
 
-    # job.json at scratch root
+    # job.json under control/
     job_bytes = (tmp_path / "control" / "job.json").read_bytes()
     job_json = json.loads(job_bytes)
     assert job_json["sha256"] == "deadbeef"

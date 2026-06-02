@@ -26,7 +26,7 @@ SLOT_ID=${3:-fc-$$-$(date +%N)}
 WORK=${FC_WORK_DIR:-/tmp/fc-work}
 FC=${FC_BIN:-/opt/kata/bin/firecracker}
 TIMEOUT=${FC_TIMEOUT:-120}
-VCPU=${FC_VCPU_COUNT:-2}
+VCPU=${FC_VCPU_COUNT:-1}  # MUST be 1 - vcpu>1 corrupts the virtio-vsock stream under load
 MEM=${FC_MEM_MIB:-1024}
 SCRATCH=${FC_SCRATCH_MIB:-32}
 

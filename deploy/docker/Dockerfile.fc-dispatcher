@@ -46,10 +46,16 @@ RUN apt-get update -qq && \
     if curl -fsSL "${FC_BASE}/firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}.tgz.sha256.txt" -o /tmp/fc.tgz.sha256 && [ -s /tmp/fc.tgz.sha256 ]; then \
         echo "$(awk '{print $1}' /tmp/fc.tgz.sha256)  /tmp/fc.tgz" | sha256sum -c - ; \
     else \
-        # TODO: replace PUT_REAL_SHA256_HERE with the real sha256 of
-        # firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}.tgz (from the upstream
-        # release page) per arch, or pass --build-arg EXPECTED_FC_SHA256=...
-        EXPECTED_FC_SHA256="${EXPECTED_FC_SHA256:-PUT_REAL_SHA256_HERE}" && \
+        # Upstream checksum fetch failed. Fail closed with a CLEAR message
+        # rather than comparing against a placeholder (which yields a confusing
+        # "sha256 mismatch" instead of "no verified checksum"). Operators can
+        # pin one explicitly via --build-arg EXPECTED_FC_SHA256=<sha256>.
+        if [ -z "${EXPECTED_FC_SHA256}" ]; then \
+            echo "ERROR: no verified checksum for firecracker-${FIRECRACKER_VERSION}-${FC_ARCH}.tgz" >&2 ; \
+            echo "       (upstream .sha256.txt fetch failed). Re-run the build with network access," >&2 ; \
+            echo "       or pass --build-arg EXPECTED_FC_SHA256=<sha256> to pin it explicitly." >&2 ; \
+            exit 1 ; \
+        fi && \
         echo "${EXPECTED_FC_SHA256}  /tmp/fc.tgz" | sha256sum -c - ; \
     fi && \
     tar -xzf /tmp/fc.tgz -C /tmp && \
