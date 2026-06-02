@@ -20,6 +20,15 @@
 # internet-facing process. Tracked as a follow-up.
 
 services:
+  # Pure-FC never talks to the Docker daemon, so the proxy (which holds the raw
+  # /var/run/docker.sock) must not run at all. Park it behind a profile that is
+  # never activated in FC mode, so `--firecracker up` won't start it; gVisor
+  # mode uses the base file alone (no profile) and keeps it running. (Copilot
+  # review — dropping the api's depends_on wasn't enough; compose still started
+  # the base service.)
+  docker-socket-proxy:
+    profiles: ["fc-disabled"]
+
   api:
     image: ${REDTUSK_API_IMAGE:-redtusk-api-fc:dev}
     build:
