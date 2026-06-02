@@ -48,6 +48,9 @@ class Limits:
     max_extracted_bytes: int = 500 * 1024 * 1024
     max_metadata_bytes: int = 64 * 1024 * 1024
 
+    # API server
+    expose_docs: bool = False  # serve Swagger /docs + /redoc + /openapi.json; off by default (REDTUSK_EXPOSE_DOCS=true to enable)
+
     # Extraction options
     enable_thumbnails: bool = True
 

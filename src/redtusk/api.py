@@ -135,8 +135,13 @@ def create_app(
     app = FastAPI(
         title="RedTusk",
         version=__version__,
-        docs_url=None,
-        redoc_url=None,
+        # Swagger/ReDoc and the OpenAPI schema are withheld unless explicitly
+        # enabled (REDTUSK_EXPOSE_DOCS=true) — a malware-processing service
+        # shouldn't publish its API surface by default. When off, /openapi.json
+        # is suppressed too (previously it leaked even with the UIs disabled).
+        docs_url="/docs" if limits.expose_docs else None,
+        redoc_url="/redoc" if limits.expose_docs else None,
+        openapi_url="/openapi.json" if limits.expose_docs else None,
         lifespan=lifespan,
     )
     app.state.dispatcher = dispatcher
@@ -815,14 +820,37 @@ def _register_routes(app: FastAPI) -> None:
         "Referrer-Policy": "no-referrer",
     }
 
+    # Swagger UI / ReDoc load their JS+CSS bundle and an inline init script from
+    # jsdelivr; the strict app CSP (script-src 'self') blanks the page. Relax the
+    # CSP for the opt-in, internal /docs + /redoc routes only — same-origin
+    # /openapi.json fetch stays covered by connect-src 'self'.
+    docs_csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https://fastapi.tiangolo.com; "
+        "worker-src 'self' blob:; "
+        "connect-src 'self'"
+    )
+
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         response = await call_next(request)
-        is_static = request.url.path.startswith("/static/")
+        path = request.url.path
+        is_static = path.startswith("/static/")
+        is_docs = path in ("/docs", "/redoc")
         for k, v in security_headers.items():
-            # Allow caching for immutable static assets (logo, favicon)
-            if is_static and k == "Cache-Control":
-                response.headers.setdefault(k, "public, max-age=86400, immutable")
+            if k == "Content-Security-Policy" and is_docs:
+                response.headers.setdefault(k, docs_csp)
+            elif is_static and k == "Cache-Control":
+                # Non-versioned code bundles (app.js/app.css) must revalidate so a
+                # deploy propagates without a hard refresh — the ETag StaticFiles
+                # sets makes this a cheap conditional 304 when unchanged. Other
+                # assets (logo, favicon, fonts) are content-stable → cache a day.
+                if path.endswith((".js", ".css")):
+                    response.headers.setdefault(k, "no-cache")
+                else:
+                    response.headers.setdefault(k, "public, max-age=86400")
             else:
                 response.headers.setdefault(k, v)
         return response
