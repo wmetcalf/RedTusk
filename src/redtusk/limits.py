@@ -211,6 +211,12 @@ class Limits:
             if env_name not in os.environ:
                 continue
             raw = os.environ[env_name]
+            # An empty numeric value (e.g. a Compose `${VAR:-}` passthrough for
+            # an unset variable) means "not configured" — fall through to the
+            # field default rather than crashing on int("")/float(""). Bools keep
+            # their documented behaviour ("" is falsy); strings keep "".
+            if raw == "" and fld.type in ("int", "float"):
+                continue
             try:
                 kwargs[name] = _coerce(fld.type, raw, env_name)
             except ValueError as e:
@@ -226,7 +232,7 @@ class Limits:
         ]
         for env_suffix, new_field in legacy_aliases:
             env_name = f"REDTUSK_{env_suffix}"
-            if env_name in os.environ:
+            if os.environ.get(env_name, "") != "":
                 new_env = f"REDTUSK_{new_field.upper()}"
                 if new_field in kwargs or new_env in os.environ:
                     raise ConfigurationError(
