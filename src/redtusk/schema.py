@@ -96,6 +96,9 @@ _ENTRY_SCHEMA = {
         "colorhash": {"type": ["string", "null"]},
         "metadata": {"type": "object"},
         "text": {"type": "string"},
+        # Whitespace-normalised view of `text` (see types.wsnorm). Optional so
+        # pre-existing results without it still validate; new ones always carry it.
+        "text_wsnorm": {"type": "string"},
         "language": {"type": ["string", "null"]},
         "qr": _QR_RESULT_SCHEMA,
         "ocr": _OCR_RESULT_SCHEMA,

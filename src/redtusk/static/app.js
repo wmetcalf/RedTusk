@@ -140,6 +140,34 @@
     // script-src), so all interactive elements declare a `data-act` (and
     // optional `data-arg`) attribute and are dispatched from here. Works for
     // any dynamically-inserted markup.
+    // ── Job-detail view state: whitespace-collapse + raw-JSON toggles ──
+    let _wsCollapse = false;     // collapse runs of h-ws + blank lines in shown text
+    let _lastJobDetail = null;   // {id, job} cached so the ws toggle can re-render
+
+    // Collapse extracted-text whitespace for readability — kept in EXACT sync
+    // with types.py wsnorm(). Strips zero-width/invisible chars (U+200B-D,
+    // U+2060, BOM U+FEFF); normalises CRLF/CR + Unicode line/para separators
+    // (U+2028/9) to LF; collapses a run of horizontal whitespace (ASCII space/
+    // tab + the Unicode Zs category: NBSP, ideographic, en/em/thin/hair, …) to
+    // one char — a tab if the run held a tab ("whatever is longest"), else a
+    // space; strips trailing h-ws; collapses 3+ newlines to one blank line.
+    function collapseWs(s) {
+      return String(s)
+        .replace(/[\u200b\u200c\u200d\u2060\ufeff]/g, '')
+        .replace(/\r\n|\r|\u2028|\u2029/g, '\n')
+        .replace(/[ \t\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+/g, (m) => (m.indexOf('\t') >= 0 ? '\t' : ' '))
+        .replace(/[ \t\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n');
+    }
+
+    function toggleRawJson(btn) {
+      const pre = document.getElementById('raw-json-view');
+      if (!pre) return;
+      const show = pre.style.display === 'none';
+      pre.style.display = show ? 'block' : 'none';
+      btn.textContent = show ? '{ } hide JSON' : '{ } raw JSON';
+    }
+
     const CLICK_ACTIONS = {
       'nav-list': () => navigateToList(),
       'nav-job': (el) => navigateToJob(el.dataset.arg),
@@ -151,6 +179,8 @@
       'go-page': (el) => goToPage(parseInt(el.dataset.arg, 10)),
       'set-state': (el) => setStateFilter(el.dataset.arg || null),
       'delete-job': (el) => deleteJobAndGoBack(el.dataset.arg),
+      'toggle-raw': (el) => toggleRawJson(el),
+      'toggle-ws': () => { _wsCollapse = !_wsCollapse; if (_lastJobDetail) renderJobDetail(_lastJobDetail.id, _lastJobDetail.job); },
     };
 
     document.addEventListener('click', (ev) => {
@@ -367,10 +397,13 @@
       const sandbox = result.sandbox || {};
 
       const allQr = [];
-      let fullText = '';
+      let fullText = '', fullTextNorm = '';
       for (const e of entries) {
         for (const c of (e.qr?.codes||[])) allQr.push({entry:e.path,...c});
-        if (!fullText && e.text) fullText = e.text.trim().replace(/\n{3,}/g, '\n\n');
+        if (!fullText && e.text) {
+          fullText = e.text.trim().replace(/\n{3,}/g, '\n\n');
+          fullTextNorm = (e.text_wsnorm || '').trim();   // stored normalized form, if present
+        }
       }
       // Always show expander when there's text — max-height CSS clips regardless of char count
       const hasMore = fullText.length > 0;
@@ -430,10 +463,11 @@
       // ── Text preview ──
       if (fullText) {
         const uid = 'txt-'+(Math.random().toString(36).slice(2));
+        const dispFull = _wsCollapse ? (fullTextNorm || collapseWs(fullText)) : fullText;
         html += '<div class="job-section"><div class="job-section-hdr">Text</div><div class="job-section-body">';
-        html += '<div class="text-preview" id="'+uid+'">'+esc(fullText)+'</div>';
-        if (fullText.length > 300) {
-          html += '<span class="text-toggle" data-act="toggle-text" data-uid="'+uid+'" data-full="'+esc(fullText)+'">▼ show full ('+fullText.length.toLocaleString()+' chars)</span>';
+        html += '<div class="text-preview" id="'+uid+'">'+esc(dispFull)+'</div>';
+        if (dispFull.length > 300) {
+          html += '<span class="text-toggle" data-act="toggle-text" data-uid="'+uid+'" data-full="'+esc(dispFull)+'">▼ show full ('+dispFull.length.toLocaleString()+' chars)</span>';
         }
         html += '</div></div>';
       }
@@ -550,14 +584,17 @@
         // For raster images show e.text directly (it's the OCR output); label it "ocr text".
         const imageOcrText = isRasterImage ? (e.text||'').trim().replace(/\n{3,}/g,'\n\n') : '';
 
-        function renderTextBlock(text, label) {
+        function renderTextBlock(text, label, norm) {
           if (!text) return '';
+          // Prefer the server-stored wsnorm (norm); fall back to client collapse
+          // (e.g. OCR text, or jobs processed before text_wsnorm existed).
+          if (_wsCollapse) text = (norm && norm.trim()) ? norm.trim() : collapseWs(text);
           const uid_='tb-'+(Math.random().toString(36).slice(2));
           let out = '<div class="tree-meta">';
           out += '<div class="tree-meta" style="color:#888;font-size:0.7rem;margin-bottom:0.2rem">'+label+'</div>';
           out += '<div class="text-preview" id="'+uid_+'">'+esc(text)+'</div>';
           if (text.length > 300) {
-            out += '<span class="text-toggle" data-uid="'+uid_+'" data-full="'+esc(text)+'" onclick="toggleText(this)">▼ show full ('+text.length.toLocaleString()+' chars)</span>';
+            out += '<span class="text-toggle" data-act="toggle-text" data-uid="'+uid_+'" data-full="'+esc(text)+'">▼ show full ('+text.length.toLocaleString()+' chars)</span>';
           }
           out += '</div>';
           return out;
@@ -565,10 +602,10 @@
 
         // SVG: label as "extracted text" (not OCR — it comes from <text> elements)
         const entryLabel = isSvg ? 'extracted text' : 'extracted text';
-        html += renderTextBlock(rawEntryText, entryLabel);
+        html += renderTextBlock(rawEntryText, entryLabel, e.text_wsnorm);
 
         // Raster images: show OCR output once under "ocr text"
-        html += renderTextBlock(imageOcrText, 'ocr text');
+        html += renderTextBlock(imageOcrText, 'ocr text', e.text_wsnorm);
 
         // Non-image OCR output (e.g. OCR ran on a PDF page image embedded in a doc)
         if (ocrText && ocrText !== rawEntryText) {
@@ -768,8 +805,10 @@
       el.innerHTML = states.map(s => {
         const active = (activeStateFilter === s.key);
         const classes = 'pill' + (s.key ? ' pill-' + s.key : '') + (active ? ' active' : '');
-        const onclick = `onclick="setStateFilter(${s.key ? "'"+s.key+"'" : 'null'})"`;
-        return `<span class="${classes}" ${onclick}>${s.label}<span class="n">${s.n}</span></span>`;
+        // data-act delegation (CSP blocks inline onclick); set-state handler
+        // reads dataset.arg, falling back to null for the "all" pill.
+        const act = s.key ? `data-act="set-state" data-arg="${s.key}"` : 'data-act="set-state"';
+        return `<span class="${classes}" ${act}>${s.label}<span class="n">${s.n}</span></span>`;
       }).join('');
     }
 
@@ -911,6 +950,7 @@
     }
 
     function renderJobDetail(id, job) {
+      _lastJobDetail = { id, job };   // cache for the whitespace-collapse re-render
       const stateEl = document.getElementById('detail-state');
       if (stateEl) stateEl.innerHTML = stateCell(job.state);
 
@@ -923,7 +963,15 @@
       if (isTerminal) {
         html += '<button class="danger" data-act="delete-job" data-arg="' + esc(id) + '">Delete</button>';
       }
+      if (job.result) {
+        html += '<button class="dl" data-act="toggle-raw">{ } raw JSON</button>';
+        html += '<button class="dl" data-act="toggle-ws">↹ whitespace: ' + (_wsCollapse ? 'collapsed' : 'raw') + '</button>';
+      }
       html += '</div>';
+
+      if (job.result) {
+        html += '<pre id="raw-json-view" style="display:none;max-height:420px;overflow:auto;background:#0d0d0d;color:#cfcfcf;padding:0.75rem;border-radius:4px;font:0.72rem/1.45 \'Courier New\',monospace;white-space:pre;margin-bottom:0.75rem">' + esc(JSON.stringify(job, null, 2)) + '</pre>';
+      }
 
       if (job.state === 'failed') {
         html += '<div style="color:#ef5350;font-size:0.9rem;margin-bottom:0.75rem">' + esc(job.error_detail || 'Worker error') + '</div>';
