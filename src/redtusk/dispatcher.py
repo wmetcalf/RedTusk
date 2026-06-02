@@ -645,16 +645,17 @@ def _read_capped(path: Path, max_bytes: int) -> bytes:
             )
         if st.st_size > max_bytes:
             raise ValueError(f"metadata.json too large: {st.st_size} > {max_bytes}")
-        with os.fdopen(fd, "rb") as f:
-            return f.read()
+        f = os.fdopen(fd, "rb")  # takes ownership of fd on success
     except BaseException:
-        # fdopen takes ownership of fd on success; close it ourselves on any
-        # failure at/before fdopen to avoid leaking the descriptor.
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        # Nothing took ownership of fd yet (fdopen wasn't reached, or itself
+        # raised), so we still own it — close to avoid leaking the descriptor.
+        os.close(fd)
         raise
+    # fd is now owned by f; its context manager closes it exactly once, even if
+    # read() raises. (Previously the `with` lived inside the try, so a failing
+    # read() closed fd via the CM and AGAIN in the except — a double close.)
+    with f:
+        return f.read()
 
 
 def _copy_artifacts(src_dir: Path, dst_dir: Path, *, max_bytes: int) -> None:
