@@ -174,6 +174,15 @@ def _rdump_ext4_sync(image: Path, dest: Path, max_bytes: int) -> list[str]:
     # Enforce the host-side extracted-size cap. A compromised worker that
     # ignored max_extracted_bytes guest-side could otherwise dump up to
     # fc_outdisk_mib bytes into the slot dir.
+    #
+    # NOTE: debugfs rdump extracts the WHOLE ext4 tree before this cap is checked,
+    # so the transient host-disk footprint is bounded by fc_outdisk_mib (not
+    # max_bytes) PER SLOT. Size the scratch filesystem accordingly:
+    #   scratch_free >= fc_outdisk_mib * pool_concurrent_size.
+    # The window is bounded (the enforced fc_outdisk_mib <= max_extracted_bytes
+    # + 128 MiB invariant keeps it near ~600 MiB/slot) and rglob does not follow
+    # symlinks, so this is a bounded host-scratch DoS only — no escape/poisoning.
+    # A future tightening could add an entry-COUNT ceiling alongside the byte cap.
     total = 0
     for p in dest.rglob("*"):
         if p.is_file() and not p.is_symlink():

@@ -529,7 +529,15 @@ def _register_routes(app: FastAPI) -> None:
         sha256 = hashlib.sha256(body).hexdigest()
         job_id = str(uuid4())
 
-        # Stage input to artifact_root/{job_id}/pending/{filename}
+        # Stage input to artifact_root/{job_id}/pending/{filename}.
+        # NOTE on the "input deleted after conversion" invariant: that holds for
+        # the SYNC path (which unlinks the input immediately). On THIS async path
+        # the upload persists under pending/ and is only reclaimed by DELETE
+        # /v1/jobs or the retention sweeper (~24h default) — the dispatcher reaps
+        # the per-slot copy, not this original. The host never parses the staged
+        # input, so this is a data-retention nuance, not a trust-boundary crossing;
+        # set a shorter retention TTL (or unlink in _ingest_result) if prompt
+        # deletion of untrusted uploads is a requirement.
         pending_dir = Path(limits.artifact_root) / job_id[:2] / job_id / "pending"
         await asyncio.to_thread(pending_dir.mkdir, parents=True, exist_ok=True)
         input_path = pending_dir / filename
