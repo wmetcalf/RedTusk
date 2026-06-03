@@ -156,14 +156,20 @@ def test_rejects_path_traversal_artifact(tmp_path: Path) -> None:
                 buf.extend(cli.recv(1))
             jl = int(buf.decode("utf-8").strip().split(" ")[1])
             while jl > 0:
-                jl -= len(cli.recv(jl))
+                chunk = cli.recv(jl)
+                if not chunk:  # peer closed early — fail fast, don't spin forever
+                    break
+                jl -= len(chunk)
             # Read+discard INPUT
             buf.clear()
             while not buf.endswith(b"\n"):
                 buf.extend(cli.recv(1))
             il = int(buf.decode("utf-8").strip().split(" ")[1])
             while il > 0:
-                il -= len(cli.recv(il))
+                chunk = cli.recv(il)
+                if not chunk:
+                    break
+                il -= len(chunk)
             # Send RESULT then a malicious ARTIFACT path
             _send_line(cli, "RESULT 2")
             _send_blob(cli, b"{}")
@@ -260,14 +266,20 @@ def test_cumulative_max_extracted_bytes_exceeded(tmp_path: Path) -> None:
                 buf.extend(cli.recv(1))
             jl = int(buf.decode("utf-8").strip().split(" ")[1])
             while jl > 0:
-                jl -= len(cli.recv(jl))
+                chunk = cli.recv(jl)
+                if not chunk:  # peer closed early — fail fast, don't spin forever
+                    break
+                jl -= len(chunk)
             # Read+discard INPUT
             buf.clear()
             while not buf.endswith(b"\n"):
                 buf.extend(cli.recv(1))
             il = int(buf.decode("utf-8").strip().split(" ")[1])
             while il > 0:
-                il -= len(cli.recv(il))
+                chunk = cli.recv(il)
+                if not chunk:
+                    break
+                il -= len(chunk)
 
             # Send RESULT (10 bytes)
             _send_line(cli, "RESULT 10")

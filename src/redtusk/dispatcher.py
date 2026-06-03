@@ -634,7 +634,7 @@ def _read_capped(path: Path, max_bytes: int) -> bytes:
     # or a FIFO between the type check and the read, because we check and read
     # the SAME descriptor. O_NOFOLLOW makes open() itself fail (ELOOP) if the
     # final path component is a symlink.
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):

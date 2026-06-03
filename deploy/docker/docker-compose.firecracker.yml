@@ -95,12 +95,11 @@ services:
       # max_extracted_bytes + 128 MiB slack the validation enforces.
       # Raise BOTH together if you raise either.
       - REDTUSK_FC_OUTDISK_MIB=${REDTUSK_FC_OUTDISK_MIB:-600}
-      # Pool sizing uses the existing REDTUSK_POOL_SIZE / REDTUSK_POOL_BURST_SIZE
-      # from .env (the base compose already passes them through; setting them
-      # again here would land both the legacy name and the new name in the
-      # container env, which Limits.from_env rejects as a deprecated-alias
-      # conflict). For FC, just set REDTUSK_POOL_SIZE in .env to your warm
-      # target — DON'T oversubscribe: (warm + burst) × fc_vcpu_count ≤ host cores.
+      # Pool sizing uses REDTUSK_POOL_WARM_SIZE / REDTUSK_POOL_BURST_SIZE from
+      # .env — the base compose passes these canonical names through. The legacy
+      # REDTUSK_POOL_SIZE alias is NOT injected, so setting it has no effect in
+      # FC mode. For FC, set REDTUSK_POOL_WARM_SIZE in .env to your warm target
+      # — DON'T oversubscribe: (warm + burst) × fc_vcpu_count ≤ host cores.
     # /tmp must be at least the size of the largest single artifact we'd
     # process — Starlette spools multipart uploads here. The default
     # 128m blew up under concurrent large uploads; bump to 1g for FC.

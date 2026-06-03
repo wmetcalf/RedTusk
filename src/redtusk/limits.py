@@ -49,7 +49,9 @@ class Limits:
     max_metadata_bytes: int = 64 * 1024 * 1024
 
     # API server
-    expose_docs: bool = False  # serve Swagger /docs + /redoc + /openapi.json; off by default (REDTUSK_EXPOSE_DOCS=true to enable)
+    # serve Swagger /docs + /redoc + /openapi.json; off by default
+    # (set REDTUSK_EXPOSE_DOCS=true to enable)
+    expose_docs: bool = False
 
     # Extraction options
     enable_thumbnails: bool = True
@@ -234,7 +236,10 @@ class Limits:
             env_name = f"REDTUSK_{env_suffix}"
             if os.environ.get(env_name, "") != "":
                 new_env = f"REDTUSK_{new_field.upper()}"
-                if new_field in kwargs or new_env in os.environ:
+                # Treat the new var as "set" only when non-empty — consistent
+                # with the empty-numeric handling above, so a Compose ${VAR:-}
+                # passthrough (present but empty) doesn't false-trigger this.
+                if new_field in kwargs or os.environ.get(new_env, "") != "":
                     raise ConfigurationError(
                         f"both {env_name} and {new_env} are set; "
                         f"{env_name} is a deprecated alias — pick one"
