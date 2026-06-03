@@ -172,6 +172,12 @@ class Limits:
     # compromised worker could otherwise fill the slot dir up to whatever
     # huge disk size we chose (GPT-5.5 review G3).
     fc_outdisk_mib: int = 600
+    # Run the per-slot Firecracker VMM under the official `jailer` (chroot +
+    # cgroups + fresh net/mount/pid/ipc namespaces + uid-drop + the jailer's own
+    # seccomp) instead of bare `firecracker --no-api`. Defense-in-depth on the
+    # KVM-holding process. Default OFF: the chroot/resource handling is host-fs
+    # dependent and must be validated on an FC host before flipping on.
+    fc_use_jailer: bool = False
 
     # Artifact persistence/download caps. The worker has per-file embedded caps;
     # these bound aggregate host-side copy and zip creation.
