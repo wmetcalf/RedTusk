@@ -251,6 +251,27 @@ the `firecracker` binary executable, and `mkfs.ext4` + `debugfs` (e2fsprogs)
 for the per-slot output disks. The container/compose dispatcher cannot host FC
 (it has no `/dev/kvm`); run the FC dispatcher on the bare-metal host.
 
+### Optional: confine the VMM with the firecracker jailer (Mode B only)
+
+On bare metal — where there is **no outer container** isolating the VMM — wrap
+each microVM in the firecracker **jailer** (chroot + cgroup v2 + uid-drop +
+mount namespace + the jailer's own seccomp). A VMM escape then lands in the jail
+as uid 10001, not loose on the host.
+
+```sh
+export REDTUSK_FC_USE_JAILER=1
+export REDTUSK_FC_JAILER_BIN=/opt/kata/bin/jailer   # ships in the FC tarball
+redtusk serve --port 8000     # must run as root: the jailer needs
+                              # CAP_SYS_CHROOT/MKNOD/SETUID to build the jail
+```
+
+The dispatcher stages a per-slot chroot under the scratch dir (hardlinking the
+kernel+rootfs in, copy-fallback across filesystems) and reaps it with the slot.
+**Do NOT enable this in compose** — the jailer must run as root, which would
+un-harden the cap-dropped, non-root dispatcher container for no net gain over
+firecracker's built-in seccomp (see `docs/design/privsep-split-and-jailer.md`).
+Validate with the 342-doc corpus before relying on it; the flag defaults off.
+
 ## Tunables (`Limits` / `REDTUSK_*`)
 
 | field | default | note |

@@ -1,7 +1,8 @@
 # Privilege separation: process split + FC jailer
 
-Status: **container-split SHIPPED + live-validated** · jailer pending · 2026-06-03
-· addresses the multi-agent review's single HIGH finding.
+Status: **container-split SHIPPED + live-validated; jailer (bare-metal) SHIPPED,
+mechanics-validated** · 2026-06-03 · addresses the multi-agent review's single
+HIGH finding.
 
 **Live validation (toolz2, 2026-06-03):** deployed the split — `docker inspect`
 confirmed the public **api has no `/dev/kvm`** and the internal **dispatcher** holds
@@ -113,16 +114,30 @@ so the proven bare-spawn path stays the default until validated on an FC host.
 
 ---
 
-## Validation (toolz2, required before flipping defaults)
+## Validation
 
-1. Rebuild the FC dispatcher image (jailer binary + role + jailer spawn).
-2. Deploy the split overlay; confirm `docker inspect` shows **no `/dev/kvm` on the
-   api**, and the dispatcher holds it.
-3. Pool warms in the dispatcher; the auto-bake probe still returns COMPATIBLE.
-4. `REDTUSK_FC_USE_JAILER=1`: a jailed microVM boots + restores (probe COMPATIBLE).
-5. **342-doc corpus: no regression** (baseline 342/342) on the split + jailed path.
-6. Back up the live rootfs + compose first; roll back on any failure.
+**Container split — DONE (toolz2, 2026-06-03):** `docker inspect` confirmed no
+`/dev/kvm` on the api + dispatcher holds it; dispatcher drained the queue;
+**342/342 corpus, zero failures**.
+
+**Jailer mechanics — DONE (toolz2, root-side bare-metal-style, 2026-06-03):** a
+jailed boot of the live CRaC rootfs reached `warp: Restore successful!`
+**byte-identically to the bare boot** — same `virtio-mmio … error -16` +
+`init: vsock bind FAILED for virtio2` console lines the *working production pool*
+emits (confirmed by diffing against a warm slot's `fc.log`). Hardlink staging
+worked same-fs; the jailer mknod'd `/dev/kvm` owned by the dropped uid; the CRaC
+restore is in-guest so the host-side jail can't perturb it. Pure builders are
+unit-tested (`test_jailer_argv_shape_and_seccomp_invariant` et al.).
+
+**Jailer end-to-end — operator step (Mode B host).** The full job round-trip
+under the jailer can only run where the dispatcher is *not* containerized (the
+jailer needs root+caps the compose dispatcher deliberately drops). On a bare-metal
+Mode B host: set `REDTUSK_FC_USE_JAILER=1`, warm the pool, run the 342-doc corpus,
+expect no regression vs the bare-spawn baseline. Back up first; the flag defaults
+off so the proven path stays default until you flip it.
 
 Non-goals: the `127.0.0.1` default bind (operator chose `0.0.0.0`; documented in
-`.env.example`) and a bespoke dispatcher seccomp profile (marginal over Docker's
-default, high break-risk).
+`.env.example`); a bespoke dispatcher seccomp profile (marginal over Docker's
+default, high break-risk); `--new-pid-ns`/`--netns` (the jailer would fork instead
+of exec-ing into FC, breaking the spawn's same-PID kill/reap tracking — a future
+enhancement that needs that tracking reworked, not a drop-in flag).
