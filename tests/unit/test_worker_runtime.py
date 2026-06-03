@@ -358,3 +358,80 @@ def test_fc_argv_seccomp() -> None:
     # The built-in BPF filter must never be turned off or swapped out.
     for forbidden in ("--no-seccomp", "--seccomp-filter", "--seccomp-level"):
         assert forbidden not in argv, f"{forbidden} disables firecracker's built-in seccomp"
+
+
+# ---------------------------------------------------------------------------
+# Jailer (bare-metal Mode B) — pure builders. The full job round-trip is
+# operator-validated on an FC host; here we lock the wiring: chroot-relative
+# config, jailer argv shape, chroot path convention, seccomp invariant carried.
+# ---------------------------------------------------------------------------
+
+
+def test_build_fc_config_bare_uses_absolute_paths() -> None:
+    from redtusk.worker_runtime import _build_fc_config
+
+    cfg = _build_fc_config(
+        "/var/lib/redtusk/firecracker/vmlinux",
+        "/var/lib/redtusk/firecracker/rootfs-vsock.ext4",
+        "/scratch/0/outdisk.ext4",
+        "/scratch/0/vsock.sock",
+        10001, 1, 1024,
+    )
+    assert cfg["boot-source"]["kernel_image_path"] == "/var/lib/redtusk/firecracker/vmlinux"
+    assert cfg["drives"][0]["path_on_host"].endswith("rootfs-vsock.ext4")
+    assert cfg["drives"][0]["is_root_device"] is True
+    assert cfg["drives"][1]["path_on_host"] == "/scratch/0/outdisk.ext4"
+    assert cfg["vsock"]["uds_path"] == "/scratch/0/vsock.sock"
+    assert cfg["machine-config"] == {"vcpu_count": 1, "mem_size_mib": 1024, "smt": False}
+    assert "redtusk.vsock_port=10001" in cfg["boot-source"]["boot_args"]
+
+
+def test_build_fc_config_jail_uses_chroot_relative_paths() -> None:
+    from redtusk.worker_runtime import (
+        _JAIL_KERNEL,
+        _JAIL_OUTDISK,
+        _JAIL_ROOTFS,
+        _JAIL_VSOCK,
+        _build_fc_config,
+    )
+
+    cfg = _build_fc_config(
+        _JAIL_KERNEL, _JAIL_ROOTFS, _JAIL_OUTDISK, _JAIL_VSOCK, 10001, 1, 1024,
+    )
+    # Inside the chroot firecracker sees plain top-level paths.
+    assert cfg["boot-source"]["kernel_image_path"] == "/vmlinux"
+    assert cfg["drives"][0]["path_on_host"] == "/rootfs.ext4"
+    assert cfg["drives"][1]["path_on_host"] == "/outdisk.ext4"
+    assert cfg["vsock"]["uds_path"] == "/vsock.sock"
+
+
+def test_jail_root_matches_jailer_convention() -> None:
+    from redtusk.worker_runtime import _jail_base, _jail_root
+
+    slot_dir = Path("/scratch/abc")
+    # jailer lays the chroot at <chroot_base>/<exec_basename>/<id>/root.
+    assert _jail_base(slot_dir) == Path("/scratch/abc/jail")
+    assert _jail_root(slot_dir, "sid-1") == Path("/scratch/abc/jail/firecracker/sid-1/root")
+
+
+def test_jailer_argv_shape_and_seccomp_invariant() -> None:
+    from redtusk.worker_runtime import _jailer_argv
+
+    argv = _jailer_argv(
+        "/opt/kata/bin/jailer", "/opt/kata/bin/firecracker", "sid-1",
+        Path("/scratch/abc/jail"), 10001, 10001,
+    )
+    assert argv[0] == "/opt/kata/bin/jailer"
+    # required jailer args
+    for flag, val in (("--id", "sid-1"), ("--uid", "10001"), ("--gid", "10001"),
+                      ("--exec-file", "/opt/kata/bin/firecracker"),
+                      ("--chroot-base-dir", "/scratch/abc/jail"),
+                      ("--cgroup-version", "2")):
+        assert argv[argv.index(flag) + 1] == val
+    # everything after `--` is the firecracker argv (chroot-relative config)
+    sep = argv.index("--")
+    fc_args = argv[sep + 1:]
+    assert fc_args == ["--no-api", "--config-file", "/fc.json"]
+    # the seccomp invariant must hold in the jailed path too
+    for forbidden in ("--no-seccomp", "--seccomp-filter", "--seccomp-level"):
+        assert forbidden not in argv

@@ -137,6 +137,9 @@ class Limits:
     # Firecracker microVM runtime config — used only when worker_runtime="firecracker".
     # See deploy/firecracker/README.md for how to populate fc_kernel + fc_rootfs.
     fc_bin:        str = "/opt/kata/bin/firecracker"
+    # The firecracker `jailer` (ships in the same release tarball). Only used on
+    # the bare-metal Mode B dispatcher when fc_use_jailer=1; see worker_runtime.
+    fc_jailer_bin: str = "/opt/kata/bin/jailer"
     fc_kernel:     str = "/var/lib/redtusk/firecracker/vmlinux"
     fc_rootfs:     str = "/var/lib/redtusk/firecracker/rootfs-vsock.ext4"
     # MUST stay 1: with >1 vCPU the guest's virtio-vsock driver races the JVM's

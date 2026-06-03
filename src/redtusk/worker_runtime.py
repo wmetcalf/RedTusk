@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from redtusk._version import __version__
@@ -104,6 +104,164 @@ def _fc_base_argv(fc_bin: str, config_path: str) -> list[str]:
     guards that this argv never disables the built-in filter.
     """
     return [fc_bin, "--no-api", "--config-file", config_path]
+
+
+def _build_fc_config(
+    kernel_path: str,
+    rootfs_path: str,
+    outdisk_path: str,
+    vsock_uds: str,
+    port: int,
+    vcpu_count: int,
+    mem_mib: int,
+) -> dict[str, Any]:
+    """The firecracker config JSON, shared by the bare-spawn and jailer paths.
+
+    Paths are **absolute** for the bare spawn and **chroot-relative** for the
+    jailer (where firecracker is chrooted into ``<jail>/root`` and sees
+    ``/vmlinux`` etc.). Keeping one builder means the two paths can't drift in
+    boot args / drive layout / vsock wiring.
+    """
+    return {
+        "boot-source": {
+            "kernel_image_path": kernel_path,
+            "boot_args": (
+                "console=ttyS0 reboot=k panic=1 pci=off init=/init ro "
+                f"redtusk.vsock_port={port}"
+            ),
+        },
+        "drives": [
+            {
+                "drive_id": "rootfs",
+                "path_on_host": rootfs_path,
+                "is_root_device": True,
+                "is_read_only": True,
+            },
+            {
+                "drive_id": "outdisk",
+                "path_on_host": outdisk_path,
+                "is_root_device": False,
+                "is_read_only": False,
+            },
+        ],
+        "machine-config": {
+            "vcpu_count": vcpu_count,
+            "mem_size_mib": mem_mib,
+            "smt": False,
+        },
+        "vsock": {"guest_cid": 3, "uds_path": vsock_uds},
+    }
+
+
+# Firecracker jailer chroot layout. The jailer creates
+# ``<chroot_base>/firecracker/<id>/root`` (exec basename is "firecracker"),
+# chroots the VMM into it, and uid-drops. We anchor the chroot base under the
+# slot's scratch dir so reap()'s rmtree(scratch_dir) cleans the whole jail
+# (removing a hardlink leaves the shared rootfs/kernel inode intact). These are
+# the paths firecracker sees *after* chroot — toolz2-validated: a CRaC restore
+# inside this jail reaches a state byte-identical to the bare boot.
+_JAIL_KERNEL = "/vmlinux"
+_JAIL_ROOTFS = "/rootfs.ext4"
+_JAIL_OUTDISK = "/outdisk.ext4"
+_JAIL_VSOCK = "/vsock.sock"
+_JAIL_CONFIG = "/fc.json"
+
+
+def _jail_base(slot_dir: Path) -> Path:
+    return slot_dir / "jail"
+
+
+def _jail_root(slot_dir: Path, slot_id: object) -> Path:
+    # MUST match the jailer's <chroot_base>/<exec_basename>/<id>/root convention.
+    return _jail_base(slot_dir) / "firecracker" / str(slot_id) / "root"
+
+
+def _jailer_argv(
+    jailer_bin: str,
+    fc_bin: str,
+    slot_id: object,
+    jail_base: Path,
+    uid: int,
+    gid: int,
+) -> list[str]:
+    """jailer argv that confines the VMM (chroot + cgroup v2 + uid-drop) then
+    execs firecracker inside the chroot.
+
+    **Bare-metal Mode B only** — the jailer must start as root with
+    CAP_SYS_CHROOT/MKNOD/SETUID, so it is never used inside the hardened,
+    non-root compose dispatcher (whose VMM confinement is firecracker's built-in
+    seccomp + the container's cap-drop/uid/read-only; see ``_fc_base_argv``).
+    """
+    # Reuse the seccomp-safe base argv so the jailed path also never disables
+    # firecracker's built-in filter; the jailer supplies the exec-file itself,
+    # so we pass only the args after the binary token.
+    fc_args = _fc_base_argv(fc_bin, _JAIL_CONFIG)
+    return [
+        jailer_bin,
+        "--id", str(slot_id),
+        "--exec-file", fc_bin,
+        "--uid", str(uid),
+        "--gid", str(gid),
+        "--cgroup-version", "2",
+        "--chroot-base-dir", str(jail_base),
+        "--",
+        *fc_args[1:],
+    ]
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Hardlink src→dst (instant, no extra space) when same-fs; copy across
+    filesystems. Keeps the jailer chroot portable regardless of where the FC
+    assets vs. the scratch dir live."""
+    import shutil
+
+    if dst.exists():
+        dst.unlink()
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def _populate_jail_chroot(
+    jail_root: Path, kernel: str, rootfs: str, outdisk: Path
+) -> None:
+    """Lay out the jailer chroot: hardlink-or-copy the kernel + rootfs in, and
+    hardlink the *already-prepared* per-slot output disk in so the guest's writes
+    land on the same inode wait()'s _read_outdisk reads back via the slot-dir
+    path. Kernel/rootfs stay world-readable (0644) so the uid-dropped firecracker
+    can read them without us chowning — and mutating — the shared source inode."""
+    jail_root.mkdir(parents=True, exist_ok=True)
+    _link_or_copy(Path(kernel), jail_root / "vmlinux")
+    _link_or_copy(Path(rootfs), jail_root / "rootfs.ext4")
+    _link_or_copy(outdisk, jail_root / "outdisk.ext4")
+
+
+def _chown_jail_writables(jail_root: Path) -> None:
+    """chown only the *writable* chroot bits to the worker uid so the uid-dropped
+    firecracker can create the vsock UDS (in jail_root) + write the output disk.
+    No-op when not root (dev/test). Deliberately not recursive: chowning the
+    kernel/rootfs hardlinks would mutate the shared source inode."""
+    if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+        return
+    for p in (jail_root, jail_root / "outdisk.ext4"):
+        try:
+            os.chown(p, _WORKER_UID, _WORKER_GID)
+        except OSError:
+            pass
+
+
+def _remove_jail_cgroup(slot_id: object) -> None:
+    """Best-effort rmdir of the empty cgroup v2 dir the jailer creates at
+    ``/sys/fs/cgroup/firecracker/<id>`` (left behind after FC exits). Harmless
+    no-op if the path differs or we're not root; an empty cgroup is low-severity
+    so we don't fail reap over it."""
+    if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+        return
+    try:
+        (Path("/sys/fs/cgroup/firecracker") / str(slot_id)).rmdir()
+    except OSError:
+        pass
 
 
 def _secure_scratch_perms(p: Path) -> None:
@@ -513,10 +671,16 @@ class FirecrackerWorkerRuntime:
         slot_dir = Path(slot.scratch_dir)
         port = limits.fc_vsock_port
 
+        # Lay out the config + chroot (jailer) or plain config (bare), and learn
+        # where FC's host-side vsock UDS will be — bare-metal Mode B wraps the VMM
+        # in the firecracker jailer; compose uses the hardened bare spawn.
+        if limits.fc_use_jailer:
+            argv, listener_path = await self._prepare_jail(slot, slot_dir, limits, port)
+        else:
+            argv, listener_path = await self._prepare_bare(slot_dir, limits, port)
+
         # Bind the host listener BEFORE launching FC so the worker's
         # afterRestore-driven connect succeeds on first try.
-        vsock_uds = slot_dir / "vsock.sock"          # FC owns this path
-        listener_path = f"{vsock_uds}_{port}"        # we own this one
         server = VsockSlotServer(
             unix_path=listener_path,
             ready_timeout_s=float(limits.worker_warmup_timeout_s),
@@ -525,55 +689,76 @@ class FirecrackerWorkerRuntime:
         await asyncio.to_thread(server.bind)
         self._vsock_servers[slot.id] = server
 
-        # FC config JSON
-        fc_config = {
-            "boot-source": {
-                "kernel_image_path": limits.fc_kernel,
-                "boot_args": (
-                    "console=ttyS0 reboot=k panic=1 pci=off init=/init ro "
-                    f"redtusk.vsock_port={port}"
-                ),
-            },
-            "drives": [
-                {
-                    "drive_id": "rootfs",
-                    "path_on_host": limits.fc_rootfs,
-                    "is_root_device": True,
-                    "is_read_only": True,
-                },
-                {
-                    # Output disk (vdb): guest mounts it at /tmp/redtusk-out,
-                    # worker writes results here, host rdumps it after exit.
-                    "drive_id": "outdisk",
-                    "path_on_host": str(slot_dir / "outdisk.ext4"),
-                    "is_root_device": False,
-                    "is_read_only": False,
-                },
-            ],
-            "machine-config": {
-                "vcpu_count": limits.fc_vcpu_count,
-                "mem_size_mib": limits.fc_mem_mib,
-                "smt": False,
-            },
-            "vsock": {"guest_cid": 3, "uds_path": str(vsock_uds)},
-        }
-        config_path = slot_dir / "fc-config.json"
-        await asyncio.to_thread(
-            config_path.write_text,
-            json.dumps(fc_config, indent=2),
-        )
         log_path = slot_dir / "fc.log"
-
-        # Launch FC. `sudo` is needed to set up KVM unless the redtusk user
-        # is in the kvm group. We document the latter and don't shell out
+        # Launch FC (or the jailer, which execs FC after chroot+uid-drop). KVM
+        # access needs the redtusk user in the kvm group (bare) or the jailer's
+        # chroot /dev/kvm owned by the dropped uid (jailer); we don't shell out
         # to sudo here (avoids password prompts in the dispatcher).
         proc = await asyncio.create_subprocess_exec(
-            *_fc_base_argv(limits.fc_bin, str(config_path)),
+            *argv,
             stdout=await asyncio.to_thread(open, log_path, "w"),
             stderr=asyncio.subprocess.STDOUT,
         )
         self._fc_procs[slot.id] = proc
         return str(proc.pid)
+
+    async def _prepare_bare(
+        self, slot_dir: Path, limits: Limits, port: int
+    ) -> tuple[list[str], str]:
+        """Plain `firecracker --no-api` spawn (compose default). Absolute paths;
+        the VMM's confinement is its built-in seccomp + the container hardening."""
+        vsock_uds = slot_dir / "vsock.sock"          # FC owns this path
+        listener_path = f"{vsock_uds}_{port}"        # we own this one
+        fc_config = _build_fc_config(
+            limits.fc_kernel,
+            limits.fc_rootfs,
+            str(slot_dir / "outdisk.ext4"),
+            str(vsock_uds),
+            port,
+            limits.fc_vcpu_count,
+            limits.fc_mem_mib,
+        )
+        config_path = slot_dir / "fc-config.json"
+        await asyncio.to_thread(config_path.write_text, json.dumps(fc_config, indent=2))
+        return _fc_base_argv(limits.fc_bin, str(config_path)), listener_path
+
+    async def _prepare_jail(
+        self, slot: Slot, slot_dir: Path, limits: Limits, port: int
+    ) -> tuple[list[str], str]:
+        """Bare-metal Mode B: stage the jailer chroot + a chroot-relative config,
+        and return the jailer argv. The chroot lives under slot_dir so reap()'s
+        rmtree cleans it. toolz2-validated: the CRaC restore inside this jail is
+        byte-identical to the bare boot."""
+        jail_base = _jail_base(slot_dir)
+        jail_root = _jail_root(slot_dir, slot.id)
+        await asyncio.to_thread(
+            _populate_jail_chroot,
+            jail_root,
+            limits.fc_kernel,
+            limits.fc_rootfs,
+            slot_dir / "outdisk.ext4",
+        )
+        fc_config = _build_fc_config(
+            _JAIL_KERNEL,
+            _JAIL_ROOTFS,
+            _JAIL_OUTDISK,
+            _JAIL_VSOCK,
+            port,
+            limits.fc_vcpu_count,
+            limits.fc_mem_mib,
+        )
+        await asyncio.to_thread(
+            (jail_root / "fc.json").write_text, json.dumps(fc_config, indent=2)
+        )
+        await asyncio.to_thread(_chown_jail_writables, jail_root)
+        # FC (chrooted) creates <jail_root>/vsock.sock; the guest dialing host
+        # port P makes FC connect to <jail_root>/vsock.sock_P, so we listen there.
+        listener_path = f"{jail_root / 'vsock.sock'}_{port}"
+        argv = _jailer_argv(
+            limits.fc_jailer_bin, limits.fc_bin, slot.id, jail_base,
+            _WORKER_UID, _WORKER_GID,
+        )
+        return argv, listener_path
 
     async def poll_fifo(self, slot: Slot, timeout: float) -> bool:  # noqa: ASYNC109
         server = self._vsock_servers.get(slot.id)
@@ -737,6 +922,11 @@ class FirecrackerWorkerRuntime:
             await asyncio.to_thread(server.close)
         if slot.scratch_dir:
             await asyncio.to_thread(_rmtree, slot.scratch_dir)
+        # rmtree(scratch_dir) already removes the jailer chroot (hardlinks — the
+        # shared rootfs/kernel inode survives). The jailer also leaves an *empty*
+        # cgroup behind after FC exits; best-effort rmdir it (jailer + root only).
+        if self.limits.fc_use_jailer:
+            await asyncio.to_thread(_remove_jail_cgroup, slot.id)
 
     async def is_container_running(self, slot: Slot) -> bool:
         proc = self._fc_procs.get(slot.id)
