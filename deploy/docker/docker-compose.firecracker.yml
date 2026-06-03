@@ -1,5 +1,5 @@
-# Compose overlay that switches the api/dispatcher to the Firecracker worker
-# runtime. Use via the wrapper:
+# Compose overlay: switch RedTusk to the Firecracker worker runtime AND split the
+# process for privilege separation. Use via the wrapper:
 #
 #   ./deploy/docker/redtusk-compose --firecracker up --build -d
 #
@@ -8,101 +8,67 @@
 #
 #   scripts/setup_firecracker_host.sh --with-kernel
 #
-# The dispatcher still runs in the api container, but now opens /dev/kvm
-# and spawns Firecracker microVMs as sibling subprocesses inside the
-# container. The FC code path requires no Docker socket, so this overlay
-# also drops the docker-socket-proxy dependency from the base file.
+# PRIVILEGE SPLIT (the review's HIGH finding): the public **api** container runs
+# `serve --role api` — HTTP + enqueue only, NO /dev/kvm, NO microVM-spawn. A
+# separate internal **dispatcher** container runs `serve --role dispatcher`, holds
+# /dev/kvm + spawns Firecracker microVMs, and has NO published ports. The Postgres
+# queue is the api<->dispatcher channel, so a front-end RCE no longer reaches a KVM
+# ioctl primitive. Both keep cap_drop ALL + no-new-privileges + read_only.
 #
-# ── SECURITY HARDENING FOLLOW-UPS (need an FC-host validation pass) ──────────
-# FC mode concentrates the internet-facing api + dispatcher + /dev/kvm + the
-# Postgres DATABASE_URL + microVM-spawn into ONE container under Docker's default
-# seccomp — a real blast-radius regression vs the gVisor docker-socket-proxy
-# split. It is post-RCE only (untrusted documents are parsed in the isolated
-# worker microVM, NOT in this process), and cap_drop ALL + no-new-privileges +
-# read_only are retained. The three mitigations below are each deferred because
-# they change the FC boot/seccomp path and MUST be validated on an FC host (a
-# bad seccomp profile or namespace wrap silently breaks microVM spawn — the
-# known FC-churn failure mode), and one conflicts with the operator's chosen
-# 0.0.0.0 bind:
-#   1. SPLIT the FC launcher into a separate non-public container (no published
-#      ports, no DATABASE_URL) holding /dev/kvm, reached over the internal
-#      backend network; leave the api container networked-only with no /dev/kvm.
-#   2. BIND 127.0.0.1 by default in FC mode (require a reverse proxy). NOT done
-#      here: the operator deliberately set REDTUSK_BIND_ADDR=0.0.0.0; the
-#      recommendation is documented in .env.example + the base compose instead.
-#   3. SECCOMP: author a dedicated dispatcher profile (Docker default minus the
-#      families the dispatcher never needs) to replace the permissive default
-#      below — must keep clone/ioctl(KVM_*) + the mount-API syscalls runc init
-#      needs, so it needs FC-host testing (the worker whitelist cannot be reused).
-#   Also: the FC VMM is exec'd bare — running it under the Firecracker jailer (or
-#   a preexec helper entering fresh net/mount/pid namespaces + a dedicated uid +
-#   a cgroup bound) is defense-in-depth on top of the cap-stripped container.
+# Remaining defense-in-depth (tracked): the VMM runs under the Firecracker jailer
+# when REDTUSK_FC_USE_JAILER=1 (chroot + cgroups + namespaces + uid-drop), and a
+# dedicated dispatcher seccomp profile (the worker whitelist can't be reused — it
+# blocks the mount-API syscalls runc init needs + the KVM ioctls). The 127.0.0.1
+# default bind is intentionally NOT forced (operator chose 0.0.0.0; see .env.example).
 
 services:
-  # Pure-FC never talks to the Docker daemon, so the proxy (which holds the raw
-  # /var/run/docker.sock) must not run at all. Park it behind a profile that is
-  # never activated in FC mode, so `--firecracker up` won't start it; gVisor
-  # mode uses the base file alone (no profile) and keeps it running. (Copilot
-  # review — dropping the api's depends_on wasn't enough; compose still started
-  # the base service.)
+  # Pure-FC never talks to the Docker daemon, so the proxy (raw docker.sock) must
+  # not run. Park it behind a profile never activated in FC mode; gVisor mode (the
+  # base file alone) keeps it running.
   docker-socket-proxy:
     profiles: ["fc-disabled"]
 
+  # PUBLIC api — role=api: HTTP + enqueue only. Inherits the base Dockerfile.api,
+  # published ports, command, state-dir volume, and hardening. NO /dev/kvm, NO
+  # firecracker binary, NO microVM-spawn.
   api:
-    image: ${REDTUSK_API_IMAGE:-redtusk-api-fc:dev}
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.fc-dispatcher
-    # Pure-FC never talks to the Docker daemon — drop the proxy dependency the
-    # base file declares (otherwise compose would still wait on / start it).
+    # Drop the proxy dependency the base declares (it's profile-disabled in FC).
     depends_on: !override
       postgres:
         condition: service_healthy
+    # Appended to the base environment — the --role envvar.
+    environment:
+      - REDTUSK_ROLE=api
+
+  # INTERNAL dispatcher — role=dispatcher: warm pool + claim-loop + FC spawn.
+  # Holds /dev/kvm, NO published ports, reached only over the backend network.
+  dispatcher:
+    image: ${REDTUSK_DISPATCHER_IMAGE:-redtusk-dispatcher-fc:dev}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.fc-dispatcher
+    restart: unless-stopped
+    command: ["serve", "--role", "dispatcher"]
+    depends_on:
+      postgres:
+        condition: service_healthy
     devices:
-      # Pass /dev/kvm through so the firecracker subprocess can ioctl(KVM_*).
-      # Combined with the group_add below this lets UID 10001 open the device.
+      # /dev/kvm so the firecracker subprocess can ioctl(KVM_*); group_add below
+      # lets UID 10001 open it.
       - /dev/kvm
-    # SECURITY: re-assert the base hardening explicitly so a future merge/edit
-    # of the overlay cannot silently drop it. Compose merges scalars by
-    # override and these would normally inherit, but /dev/kvm + a kvm group is
-    # a privileged combination — make the constraints non-negotiable here.
+    group_add:
+      # Host's kvm group GID — auto-detected by redtusk-compose into .env.
+      - "${KVM_GID:?KVM_GID not set — run via ./deploy/docker/redtusk-compose --firecracker}"
     read_only: true
     cap_drop:
       - ALL
-    # !override REPLACES the base security_opt list (rather than appending,
-    # which would duplicate no-new-privileges and fail compose validation).
-    # We re-assert no-new-privileges AND add the baked-in seccomp profile.
-    security_opt: !override
+    security_opt:
+      # Docker's DEFAULT seccomp (NOT the worker whitelist, which blocks the
+      # mount-API syscalls runc init needs + the KVM ioctls). A dedicated
+      # dispatcher profile is the tracked follow-up.
       - no-new-privileges:true
-      # NOTE: we deliberately use Docker's DEFAULT seccomp profile here (by not
-      # setting seccomp=), same as the base api container. The repo's
-      # redtusk.seccomp.json is a *worker* whitelist — applied to the
-      # api/dispatcher container it blocks the new mount-API syscalls
-      # (fsopen/fsmount/fstatfs/move_mount) that modern runc uses to reopen its
-      # exec fifo, so runc init dies with EPERM ("reopen exec fifo ...
-      # operation not permitted") and the container crash-loops. The dispatcher
-      # also needs clone/ioctl(KVM_*) broadly while holding /dev/kvm, which the
-      # worker profile isn't shaped for. FOLLOW-UP: author a dedicated
-      # dispatcher profile (default + KVM ioctl arg-filtering) rather than
-      # reusing the worker one, then re-enable a custom seccomp= here.
-    # FC-only mode drops the Docker socket: in pure-FC the dispatcher never
-    # calls `docker run` (it spawns firecracker subprocesses directly). The
-    # base file already removed the raw socket bind in favour of the proxy;
-    # here we also omit the proxy entirely. Compose-2.x `!override` REPLACES
-    # the base list (vs `!reset` which clears it to null and discards the
-    # entries below) — GPT-5.5 review G1 / G1' caught the `!reset` bug.
-    volumes: !override
-      # Preserve the state-dir bind-mount from the base; explicitly omit the
-      # docker socket. Same path inside and outside the api container so the
-      # vsock UDS + per-slot output disks resolve identically.
-      - "${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}:${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}"
-      # FC assets (kernel + rootfs) — read-only.
-      - "${REDTUSK_FC_HOST_DIR:-/var/lib/redtusk/firecracker}:/var/lib/redtusk/firecracker:ro"
-    group_add: !override
-      # Host's kvm group GID — auto-detected by redtusk-compose, written to .env.
-      # No DOCKER_GID: pure-FC doesn't talk to the Docker daemon.
-      - "${KVM_GID:?KVM_GID not set — run via ./deploy/docker/redtusk-compose --firecracker, not raw docker compose}"
     environment:
+      - REDTUSK_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
       - REDTUSK_WORKER_RUNTIME=firecracker
       - REDTUSK_FC_BIN=/opt/kata/bin/firecracker
       - REDTUSK_FC_KERNEL=/var/lib/redtusk/firecracker/vmlinux
@@ -110,17 +76,31 @@ services:
       # vcpu_count MUST stay 1 (guest vsock SMP race); see deploy/firecracker/README.md.
       - REDTUSK_FC_VCPU_COUNT=1
       - REDTUSK_FC_VSOCK_RETRIES=${REDTUSK_FC_VSOCK_RETRIES:-2}
-      # Default 600 MiB matches limits.py's default; stays under the
-      # max_extracted_bytes + 128 MiB slack the validation enforces.
-      # Raise BOTH together if you raise either.
+      # MUST stay <= REDTUSK_MAX_EXTRACTED_BYTES + 128 MiB; raise both together.
       - REDTUSK_FC_OUTDISK_MIB=${REDTUSK_FC_OUTDISK_MIB:-600}
-      # Pool sizing uses REDTUSK_POOL_WARM_SIZE / REDTUSK_POOL_BURST_SIZE from
-      # .env — the base compose passes these canonical names through. The legacy
-      # REDTUSK_POOL_SIZE alias is NOT injected, so setting it has no effect in
-      # FC mode. For FC, set REDTUSK_POOL_WARM_SIZE in .env to your warm target
-      # — DON'T oversubscribe: (warm + burst) × fc_vcpu_count ≤ host cores.
-    # /tmp must be at least the size of the largest single artifact we'd
-    # process — Starlette spools multipart uploads here. The default
-    # 128m blew up under concurrent large uploads; bump to 1g for FC.
+      # Run the VMM under the firecracker jailer (chroot+cgroups+namespaces+uid).
+      # Default off until validated on an FC host; set to 1 to enable.
+      - REDTUSK_FC_USE_JAILER=${REDTUSK_FC_USE_JAILER:-0}
+      - REDTUSK_PROFILE=${REDTUSK_PROFILE:-default}
+      # Pool sizing — DON'T oversubscribe: (warm + burst) x fc_vcpu_count <= cores.
+      - REDTUSK_POOL_WARM_SIZE=${REDTUSK_POOL_WARM_SIZE:-8}
+      - REDTUSK_POOL_CONCURRENT_SIZE=${REDTUSK_POOL_CONCURRENT_SIZE:-}
+      - REDTUSK_POOL_BURST_SIZE=${REDTUSK_POOL_BURST_SIZE:-5}
+      - REDTUSK_JOB_TIMEOUT_S=${REDTUSK_JOB_TIMEOUT_S:-90}
+      - REDTUSK_WORKER_WARMUP_TIMEOUT_S=${REDTUSK_WORKER_WARMUP_TIMEOUT_S:-120}
+      # Same state-dir path inside + outside so the vsock UDS + per-slot output
+      # disks resolve identically on the host.
+      - REDTUSK_ARTIFACT_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env}/artifacts
+      - REDTUSK_SCRATCH_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env}/scratch
     tmpfs:
       - /tmp:rw,exec,nosuid,size=1g
+    volumes:
+      - "${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env}:${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env}"
+      - "${REDTUSK_FC_HOST_DIR:-/var/lib/redtusk/firecracker}:/var/lib/redtusk/firecracker:ro"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redtusk", "selftest"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
