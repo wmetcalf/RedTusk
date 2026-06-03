@@ -1,7 +1,14 @@
 # Privilege separation: process split + FC jailer
 
-Status: **proposed / implementing** · 2026-06-03 · addresses the multi-agent
-review's single HIGH finding.
+Status: **container-split SHIPPED + live-validated** · jailer pending · 2026-06-03
+· addresses the multi-agent review's single HIGH finding.
+
+**Live validation (toolz2, 2026-06-03):** deployed the split — `docker inspect`
+confirmed the public **api has no `/dev/kvm`** and the internal **dispatcher** holds
+it; the dispatcher warmed the pool and drained the Postgres queue; **342/342 corpus,
+zero failures** (api enqueue → dispatcher process). The HIGH is fixed in production.
+The **jailer** (defense-in-depth on the now-non-public dispatcher VMM) is the
+remaining FC-host-iterated step (gated `REDTUSK_FC_USE_JAILER`, default off).
 
 ## Problem
 
