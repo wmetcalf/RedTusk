@@ -10,6 +10,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import fc_cpu_probe as p  # noqa: E402  (path injected above)
@@ -47,3 +49,9 @@ def test_classify_custom_ok_marker():
 
 def test_exit_codes_distinct():
     assert {p._EXIT[p.COMPATIBLE], p._EXIT[p.MISMATCH], p._EXIT[p.INCONCLUSIVE]} == {0, 10, 20}
+
+
+def test_main_rejects_invalid_marker():
+    argv = ["--fc-bin", "fc", "--kernel", "/k", "--rootfs", "/r", "--restore-ok-marker", "(bad"]
+    with pytest.raises(SystemExit):
+        p.main(argv)

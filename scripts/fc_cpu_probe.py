@@ -101,9 +101,8 @@ def probe(args: argparse.Namespace) -> tuple[str, str | None]:
 
     work = Path(tempfile.mkdtemp(prefix="fc-cpu-probe-"))
     cfg_path = work / "probe-fc-config.json"
-    cfg_path.write_text(
-        json.dumps(_build_config(args.kernel, args.rootfs, args.boot_args, args.mem_mib, args.vcpu))
-    )
+    config = _build_config(args.kernel, args.rootfs, args.boot_args, args.mem_mib, args.vcpu)
+    cfg_path.write_text(json.dumps(config), encoding="utf-8")
     log_path = work / "probe-fc.log"
     argv = [args.fc_bin, "--no-api", "--config-file", str(cfg_path)]
 
@@ -132,7 +131,7 @@ def probe(args: argparse.Namespace) -> tuple[str, str | None]:
 
 def _read(path: Path) -> str:
     try:
-        return path.read_text(errors="replace")
+        return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
 
@@ -160,6 +159,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=float, default=20.0)
     ap.add_argument("--restore-ok-marker", default=_DEFAULT_OK_MARKER)
     args = ap.parse_args(argv)
+
+    try:
+        re.compile(args.restore_ok_marker)
+    except re.error as exc:
+        ap.error(f"--restore-ok-marker is not a valid regex: {exc}")
 
     status, value = probe(args)
     print(f"{status} {value}" if value else status)
