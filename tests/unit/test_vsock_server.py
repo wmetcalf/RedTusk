@@ -302,3 +302,18 @@ def test_cumulative_max_extracted_bytes_exceeded(tmp_path: Path) -> None:
     finally:
         t.join(timeout=5)
         server.close()
+
+
+def test_parse_frame_length_rejects_lenient_and_nonnumeric():
+    """Frame lengths must be strict non-negative base-10 ints; int()'s leniency
+    (underscores, signs, whitespace) and non-numeric tokens become a
+    VsockProtocolError (handled by the dispatcher's retry), not a raw ValueError."""
+    import pytest
+
+    from redtusk.sandbox.vsock_server import VsockProtocolError, _parse_frame_length
+
+    assert _parse_frame_length("123", "RESULT") == 123
+    assert _parse_frame_length("0", "ARTIFACT") == 0
+    for bad in ("abc", "1_000", "+5", "-5", " 5", "5 ", "0x5", ""):
+        with pytest.raises(VsockProtocolError):
+            _parse_frame_length(bad, "RESULT")

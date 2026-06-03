@@ -285,7 +285,10 @@ def _apply_per_request_limits(limits: Limits, request: Request) -> Limits:
     if depth is not None:
         overrides["max_recursion_depth"] = depth
 
-    entries = clamp_int("max_embedded_entries", 1, 10000)
+    # Cap the client override at the operator's configured ceiling (not a
+    # hardcoded 10000, which let a client raise it to 2x the operator default and
+    # defeat that knob). 10000 stays as an absolute upper bound.
+    entries = clamp_int("max_embedded_entries", 1, min(limits.max_embedded_entries, 10000))
     if entries is not None:
         overrides["max_embedded_entries"] = entries
 

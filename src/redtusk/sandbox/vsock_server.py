@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,22 @@ DEFAULT_MAX_FRAME_BYTES = 64 * 1024 * 1024
 
 class VsockProtocolError(Exception):
     """Raised when the worker's framing doesn't conform to the protocol."""
+
+
+_FRAME_LENGTH_RE = re.compile(r"^[0-9]+$")
+
+
+def _parse_frame_length(token: str, what: str) -> int:
+    """Parse a frame-length token strictly as a non-negative base-10 integer.
+
+    Rejects ``int()``'s leniency (underscores, +/- signs, surrounding whitespace)
+    and turns a malformed/non-numeric length (e.g. ``"RESULT abc"``) into a
+    :class:`VsockProtocolError` — so a corruption-class wire fault is handled by
+    the dispatcher's bounded retry instead of a raw ``ValueError`` escaping it.
+    """
+    if not _FRAME_LENGTH_RE.match(token):
+        raise VsockProtocolError(f"malformed {what} length token: {token!r}")
+    return int(token)
 
 
 class VsockSlotServer:
@@ -181,9 +198,7 @@ class VsockSlotServer:
             if tag == "RESULT":
                 if len(parts) != 2:
                     raise VsockProtocolError(f"malformed RESULT header: {header}")
-                length = int(parts[1])
-                if length < 0:
-                    raise VsockProtocolError(f"negative RESULT length: {length}")
+                length = _parse_frame_length(parts[1], "RESULT")
                 if max_extracted_bytes is not None and total_bytes + length > max_extracted_bytes:
                     import shutil
                     shutil.rmtree(artifacts_dir, ignore_errors=True)
@@ -197,9 +212,7 @@ class VsockSlotServer:
                 if len(parts) < 3:
                     raise VsockProtocolError(f"malformed ARTIFACT header: {header}")
                 # Path may contain spaces; the LAST token is the length.
-                length = int(parts[-1])
-                if length < 0:
-                    raise VsockProtocolError(f"negative ARTIFACT length: {length}")
+                length = _parse_frame_length(parts[-1], "ARTIFACT")
                 if max_extracted_bytes is not None and total_bytes + length > max_extracted_bytes:
                     import shutil
                     shutil.rmtree(artifacts_dir, ignore_errors=True)
