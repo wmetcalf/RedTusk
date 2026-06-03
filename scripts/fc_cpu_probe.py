@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -100,33 +101,44 @@ def probe(args: argparse.Namespace) -> tuple[str, str | None]:
             sys.exit(2)
 
     work = Path(tempfile.mkdtemp(prefix="fc-cpu-probe-"))
-    cfg_path = work / "probe-fc-config.json"
-    config = _build_config(args.kernel, args.rootfs, args.boot_args, args.mem_mib, args.vcpu)
-    cfg_path.write_text(json.dumps(config), encoding="utf-8")
-    log_path = work / "probe-fc.log"
-    argv = [args.fc_bin, "--no-api", "--config-file", str(cfg_path)]
+    try:
+        cfg_path = work / "probe-fc-config.json"
+        config = _build_config(args.kernel, args.rootfs, args.boot_args, args.mem_mib, args.vcpu)
+        cfg_path.write_text(json.dumps(config), encoding="utf-8")
+        log_path = work / "probe-fc.log"
+        argv = [args.fc_bin, "--no-api", "--config-file", str(cfg_path)]
 
-    deadline = time.monotonic() + args.timeout
-    with open(log_path, "w") as log_fh:
-        try:
-            proc = subprocess.Popen(argv, stdout=log_fh, stderr=subprocess.STDOUT)
-        except OSError as exc:
-            print(f"fc_cpu_probe: failed to launch {args.fc_bin}: {exc}", file=sys.stderr)
-            sys.exit(2)
-        try:
-            while True:
-                console = _read(log_path)
-                if _terminal(console, args.restore_ok_marker):
-                    break
-                if proc.poll() is not None:
-                    break
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.25)
-        finally:
-            _kill(proc)
+        deadline = time.monotonic() + args.timeout
+        with open(log_path, "w") as log_fh:
+            try:
+                proc = subprocess.Popen(argv, stdout=log_fh, stderr=subprocess.STDOUT)
+            except OSError as exc:
+                print(f"fc_cpu_probe: failed to launch {args.fc_bin}: {exc}", file=sys.stderr)
+                sys.exit(2)
+            try:
+                while True:
+                    console = _read(log_path)
+                    if _terminal(console, args.restore_ok_marker):
+                        break
+                    if proc.poll() is not None:
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.25)
+            finally:
+                _kill(proc)
 
-    return classify(_read(log_path), restore_ok_marker=args.restore_ok_marker)
+        console = _read(log_path)
+        status, value = classify(console, restore_ok_marker=args.restore_ok_marker)
+        if status == INCONCLUSIVE:
+            # Preserve the diagnostic before we delete the work dir: an
+            # INCONCLUSIVE result usually means the VM never reached the restore.
+            sys.stderr.write("fc_cpu_probe: INCONCLUSIVE — guest console tail:\n")
+            sys.stderr.write(console[-1500:] + "\n")
+        return status, value
+    finally:
+        # Don't leak the root-owned temp dir (FC config + guest console) per run.
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _read(path: Path) -> str:

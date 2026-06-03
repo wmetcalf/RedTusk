@@ -137,3 +137,31 @@ async def test_poll_fifo_returns_false_on_generic_timeout(tmp_path: Path):
     rt, slot = _runtime(tmp_path), _slot(tmp_path)
     rt._vsock_servers[slot.id] = _TimeoutServer()  # type: ignore[assignment]
     assert await rt.poll_fifo(slot, timeout=0.05) is False
+
+
+# ---------------------------------------------------------------------------
+# Vendored-copy drift guard
+# ---------------------------------------------------------------------------
+
+
+def test_vendored_cpu_mismatch_regex_in_sync():
+    """The CRaC CPU-mismatch regex is vendored in 3 places (canonical:
+    blastbox.host.runtime.cpu_features). Lock RedTusk's two copies together, and
+    the blastbox canonical too when it's importable (it lives in an unreleased
+    branch today, so that arm skips on the pinned wheel)."""
+    import sys
+
+    from redtusk.fc_cpu_features import _MISMATCH_RE as REDTUSK_RE
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import fc_cpu_probe
+
+    assert fc_cpu_probe._MISMATCH_RE.pattern == REDTUSK_RE.pattern
+    assert fc_cpu_probe._MISMATCH_RE.flags == REDTUSK_RE.flags
+
+    try:
+        from blastbox.host.runtime.cpu_features import _MISMATCH_RE as BLASTBOX_RE
+    except Exception:
+        pytest.skip("blastbox.host.runtime.cpu_features not importable (unreleased branch)")
+    assert BLASTBOX_RE.pattern == REDTUSK_RE.pattern
+    assert BLASTBOX_RE.flags == REDTUSK_RE.flags

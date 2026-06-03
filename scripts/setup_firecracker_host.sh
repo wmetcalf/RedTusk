@@ -192,15 +192,23 @@ probe_guest() {  # prints "STATUS [value]" on stdout (COMPATIBLE|MISMATCH <v>|IN
         --fc-bin "$FC_BIN" --kernel "$KERNEL" --rootfs "$ROOTFS"
 }
 
-if [ "$BUILT" -eq 1 ] && [ -f "$KERNEL" ]; then
-    log "auto-bake: probing the guest to confirm the checkpoint restores"
+# Probe whenever a kernel is present — including on an idempotent re-run that
+# REUSED an existing rootfs (BUILT=0). A reused rootfs may carry a stale pin
+# after a microcode/BIOS/kernel change, so re-validating (and auto-rebuilding on
+# MISMATCH) is exactly what catches that silently.
+if [ -f "$KERNEL" ]; then
+    if [ "$BUILT" -eq 1 ]; then
+        log "auto-bake: probing the guest to confirm the checkpoint restores"
+    else
+        log "auto-bake: re-validating the existing rootfs's CPU-feature pin against this host"
+    fi
     set +e; PROBE=$(probe_guest); set -e
     case "${PROBE%% *}" in
         COMPATIBLE)
-            log "auto-bake: checkpoint restores in the guest (CPUFeatures=$FC_CPU_FEATURES) ✓" ;;
+            log "auto-bake: checkpoint restores in the guest ✓" ;;
         MISMATCH)
             NEW=${PROBE#MISMATCH }
-            warn "auto-bake: guest needs -XX:CPUFeatures=$NEW (built with $FC_CPU_FEATURES) — rebuilding pinned"
+            warn "auto-bake: guest needs -XX:CPUFeatures=$NEW — rebuilding the rootfs pinned to it"
             build_and_stage_rootfs "$NEW"
             set +e; PROBE2=$(probe_guest); set -e
             [ "${PROBE2%% *}" = "COMPATIBLE" ] \
@@ -210,8 +218,8 @@ if [ "$BUILT" -eq 1 ] && [ -f "$KERNEL" ]; then
         *)
             die "auto-bake: probe could not confirm the checkpoint restores in the guest ($PROBE). Boot it manually — 'firecracker --no-api --config-file <cfg with console=ttyS0>' — and read the serial console." ;;
     esac
-elif [ "$BUILT" -eq 1 ]; then
-    warn "auto-bake: skipped — no kernel at $KERNEL yet (re-run with --with-kernel to enable the guest CPU-feature check)"
+else
+    warn "auto-bake: skipped — no kernel at $KERNEL yet; the rootfs CPU-feature pin is NOT validated (re-run with --with-kernel, or provide a kernel, to enable the guest check)"
 fi
 
 #───────────────────────── 6. next steps ─────────────────────────
