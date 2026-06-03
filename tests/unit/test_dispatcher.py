@@ -590,3 +590,16 @@ async def test_preflight_state_dirs_unwritable_raises(tmp_path: Path) -> None:
             dispatcher._preflight_state_dirs()
 
     os.chmod(locked, 0o755)  # restore so tmp cleanup works
+
+
+def test_sanitize_error_detail_strips_host_paths():
+    from redtusk.dispatcher import _sanitize_error_detail
+
+    s = _sanitize_error_detail(
+        "[Errno 2] No such file: /var/lib/redtusk/scratch/abc-123/out/metadata.json"
+    )
+    assert "/var/lib/redtusk" not in s
+    assert "<path>" in s
+    # Path-free details and 'and/or' are left intact.
+    assert _sanitize_error_detail("worker exited 137") == "worker exited 137"
+    assert _sanitize_error_detail("use this and/or that") == "use this and/or that"

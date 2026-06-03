@@ -79,7 +79,14 @@ cd /app
 # NOTE: no `-jar` here. With -XX:CRaCRestoreFrom the JVM continues the
 # checkpointed execution; passing a main jar makes CRaC try to launch a
 # "new main entry" (fails with ClassNotFoundException, noisy RestoreException).
-setpriv --reuid=10001 --regid=10001 --clear-groups java \
+# --no-new-privs + emptying the capability bounding set here (as root, where the
+# drop actually succeeds) is what CapDropper INTENDED but soft-skips on: after the
+# uid->10001 drop it lacks CAP_SETPCAP, so its in-JVM PR_CAPBSET_DROP EPERMs and
+# CAP_CHECKPOINT_RESTORE would otherwise survive in the bounding set with NNP
+# unset. The warp restore runs cap-less as uid 10001 already, so dropping the
+# bounding set does not affect it (the auto-bake probe re-validates the restore on
+# every rootfs rebuild).
+setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs --bounding-set=-all java \
     -XX:CRaCEngine=warp \
     -XX:CRaCRestoreFrom=/app/checkpoint
 RC=$?

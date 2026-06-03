@@ -23,4 +23,7 @@ export JAVA_HOME=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64
 cd /app
 # No -jar with -XX:CRaCRestoreFrom: the JVM resumes the checkpointed process;
 # a main jar makes CRaC try to launch a fresh entrypoint instead (restore fails).
-exec setpriv --reuid=10001 --regid=10001 --clear-groups java -XX:CRaCEngine=warp -XX:CRaCRestoreFrom=/app/checkpoint
+# --no-new-privs + empty bounding set (dropped here as root, where it succeeds —
+# CapDropper soft-skips it post-uid-drop without CAP_SETPCAP). Restore runs
+# cap-less as uid 10001, so this does not affect it.
+exec setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs --bounding-set=-all java -XX:CRaCEngine=warp -XX:CRaCRestoreFrom=/app/checkpoint

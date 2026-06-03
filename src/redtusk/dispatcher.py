@@ -7,6 +7,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -35,6 +36,16 @@ from redtusk.types import ExtractResult, JobRecord, JobState, Slot
 from redtusk.worker_runtime import WorkerRuntime
 
 _logger = get_logger(__name__)
+
+# Match absolute POSIX paths (two or more segments) so internal host paths in an
+# exception string don't reach the client via error_detail. A lone "/" between
+# words (and/or) is left untouched.
+_INTERNAL_PATH_RE = re.compile(r"/(?:[A-Za-z0-9._+-]+/)+[A-Za-z0-9._+-]*")
+
+
+def _sanitize_error_detail(detail: str) -> str:
+    """Strip absolute host filesystem paths from a client-visible error detail."""
+    return _INTERNAL_PATH_RE.sub("<path>", detail)
 
 
 class Dispatcher:
@@ -476,7 +487,16 @@ class Dispatcher:
         job.state = JobState.FAILED
         job.completed_at = datetime.now(UTC)
         job.error_code = code
-        job.error_detail = detail
+        # error_detail is client-visible (GET /v1/jobs/{id}). Several callers pass
+        # raw str(exc) which can embed internal host paths (e.g. a FileNotFoundError
+        # on /var/lib/redtusk/scratch/<uuid>/out/metadata.json). Strip absolute
+        # paths for the client; the raw detail stays in the server log only.
+        safe_detail = _sanitize_error_detail(detail)
+        if safe_detail != detail:
+            _logger.info(
+                "dispatcher.fail_job_detail", job_id=job.id, code=code, detail=detail
+            )
+        job.error_detail = safe_detail
         try:
             await self._store.update(job)
         except Exception as exc:
