@@ -10,8 +10,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
 from redtusk._version import __version__
-from redtusk.errors import WorkerError
+from redtusk.errors import FcCpuFeatureMismatchError, WorkerError
+from redtusk.fc_cpu_features import parse_cpu_mismatch
 from redtusk.observability.logging import get_logger
+from redtusk.observability.metrics import record_cpu_feature_mismatch
 from redtusk.runtime.docker_runtime import DockerRuntime
 from redtusk.sandbox.container import _vsock_port_for_slot
 from redtusk.sandbox.vsock_server import VsockSlotServer
@@ -559,7 +561,44 @@ class FirecrackerWorkerRuntime:
             )
             return True
         except (TimeoutError, OSError):
+            # The slot never signalled READY. Before surfacing this as an opaque
+            # warmup timeout, check the guest console for the one failure that
+            # never self-resolves: a CRaC restore aborting on incompatible CPU
+            # features. If that's what happened, raise a clear, actionable error
+            # naming the exact -XX:CPUFeatures value to rebuild with.
+            await self._raise_if_cpu_feature_mismatch(slot)
             return False
+
+    async def _raise_if_cpu_feature_mismatch(self, slot: Slot) -> None:
+        """Inspect ``<slot.scratch_dir>/fc.log`` (the captured guest serial
+        console). If it shows a warp CRaC CPU-feature mismatch, record a metric,
+        log the remediation, and raise :class:`FcCpuFeatureMismatchError`. Otherwise
+        return quietly so the caller falls back to the generic timeout path.
+
+        Diagnosis is best-effort: a missing/unreadable log is not itself an
+        error here, so any OSError just yields the generic timeout.
+        """
+        if slot.scratch_dir is None:
+            return
+        log_path = Path(slot.scratch_dir) / "fc.log"
+        try:
+            console = await asyncio.to_thread(log_path.read_text, errors="replace")
+        except OSError:
+            return
+        mismatch = parse_cpu_mismatch(console)
+        if mismatch is None:
+            return
+        record_cpu_feature_mismatch()
+        _logger.error(
+            "fc.cpu_feature_mismatch",
+            slot_id=str(slot.id),
+            needed=mismatch.needed,
+            remediation=(
+                "rebuild the FC rootfs/checkpoint with "
+                f"-XX:CPUFeatures={mismatch.needed} on AOT-create and checkpoint"
+            ),
+        )
+        raise FcCpuFeatureMismatchError(mismatch.needed, detail=mismatch.raw_line)
 
     async def signal_job(self, slot: Slot, job: JobRecord, limits: Limits) -> None:
         if slot.scratch_dir is None:
