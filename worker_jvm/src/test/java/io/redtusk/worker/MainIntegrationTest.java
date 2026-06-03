@@ -64,7 +64,9 @@ class MainIntegrationTest {
             Map.entry("enable_thumbnails", true)
         );
         Path controlDir = scratchDir.resolve("control");
-        controlDir.toFile().mkdirs();
+        // createDirectories is idempotent + throws on real failure (mkdirs()
+        // silently returns false when the dir already exists or on error).
+        java.nio.file.Files.createDirectories(controlDir);
         OM.writeValue(controlDir.resolve("job.json").toFile(), jobMap);
 
         // Create ready file and signal from background thread by creating control.go

@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.crac.Context;
 import org.crac.Core;
 import org.crac.Resource;
-import org.newsclub.net.unix.AFSocket;
-import org.newsclub.net.unix.AFSocketCapability;
 import org.newsclub.net.unix.AFUNIXSocketAddress;
 import org.newsclub.net.unix.AFVSOCKSocketAddress;
 import org.newsclub.net.unix.vsock.AFVSOCKSocket;
@@ -89,9 +87,11 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
      *  ASCII control lines. BufferedReader would consume too aggressively. */
     private DataInputStream din;
     private OutputStream writer;
-    /** Decided by afterRestore() from REDTUSK_VSOCK_DISK_OUTPUT. When true,
-     *  sendResult/sendArtifact are no-ops (output lives on a virtio-blk disk
-     *  the host reads back); when false, they stream over vsock as before. */
+    /** Decided by afterRestore() from {@code /dev/vdb} existence (the per-slot
+     *  virtio-blk output disk). When true, sendResult/sendArtifact are no-ops
+     *  (output lives on that disk the host reads back); when false, they stream
+     *  over vsock as before. (Not an env toggle — see afterRestore() for why
+     *  /proc/self/environ is unreliable across CRaC restore.) */
     private boolean diskOutputMode;
 
     /** Constructed via {@link IpcChannelFactory}; package-private for tests. */
@@ -185,10 +185,13 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
         // (REDTUSK_VSOCK_UNIX_PATH pointing at a build listener) but which
         // is irrelevant in the restore environment (e.g. inside an FC
         // microVM, we want AF_VSOCK to host CID 2 instead). Re-read the env
-        // here so the post-restore peer is decided fresh.
-        // CRITICAL: System.getenv() returns env cached at JVM-start —
-        // unchanged across CRaC restore. We read /proc/self/environ directly
-        // so the restored worker sees the FC init's actual environment.
+        // here so the post-restore peer is recomputed rather than frozen.
+        // NOTE: neither System.getenv() (cached at JVM-start) NOR
+        // /proc/self/environ reflects the restore-time environment — across a
+        // CRaC restore BOTH show the BUILD-time environ (see the diskOutputMode
+        // note below). So these PORT/CID/UNIX_PATH reads are correct only because
+        // the build sets them to the same values the FC init uses; the one signal
+        // that IS restore-time-accurate is /dev/vdb existence.
         String envUnix = getEnvFromProc("REDTUSK_VSOCK_UNIX_PATH");
         this.unixPathOverride = (envUnix != null && !envUnix.isEmpty()) ? envUnix : null;
         String portRaw = getEnvFromProc("REDTUSK_VSOCK_PORT");
@@ -213,8 +216,9 @@ public final class VsockIpcChannel implements IpcChannel, Resource {
         announceReady();
     }
 
-    /** Read a single env var from /proc/self/environ (current process's
-     *  actual environment, NOT the cached System.getenv() snapshot). */
+    /** Read a single env var from /proc/self/environ. NOTE: across a CRaC
+     *  restore this is the BUILD-time environ (same staleness as
+     *  System.getenv()), not the restore-time environment — see afterRestore(). */
     private static String getEnvFromProc(String name) {
         try {
             byte[] data = java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/proc/self/environ"));
