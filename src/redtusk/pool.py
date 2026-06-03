@@ -15,7 +15,7 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from redtusk.errors import PoolExhaustedError, WorkerError
+from redtusk.errors import FcCpuFeatureMismatchError, PoolExhaustedError, WorkerError
 from redtusk.jobs.base import JobStore
 from redtusk.limits import Limits
 from redtusk.observability.logging import get_logger
@@ -58,6 +58,10 @@ class Pool:
         self._started_at: datetime | None = None
         self._burst_active: bool = False
         self._burst_last_claimed_at: datetime | None = None
+        # Set when a spawn hit a deterministic, never-self-resolving condition
+        # (e.g. a CRaC CPU-feature mismatch). FC spawning halts and readiness
+        # surfaces this remediation instead of churning the warm pool to 1.
+        self._fatal_spawn_error: str | None = None
 
     async def start(self) -> None:
         """Begin the spawn and burst management background tasks."""
@@ -106,6 +110,18 @@ class Pool:
                     self._lock.release()
                     try:
                         alive = await self._runtime.is_container_running(candidate)
+                    except asyncio.CancelledError:
+                        # Client disconnect / shutdown cancelled the inspect.
+                        # Re-acquire so the enclosing `async with self._lock`
+                        # releases a HELD lock (otherwise __aexit__ double-releases
+                        # -> RuntimeError that masks the cancellation), and revert
+                        # the tentatively-ASSIGNED candidate to IDLE so it is not
+                        # leaked out of the pool (per-disconnect slot leak -> 503s).
+                        await self._lock.acquire()
+                        candidate.state = SlotState.IDLE
+                        self._idle_event.set()
+                        self._update_metrics()
+                        raise
                     except Exception:
                         alive = False
                     await self._lock.acquire()
@@ -157,8 +173,18 @@ class Pool:
     def warming_count(self) -> int:
         return sum(1 for s in self._slots.values() if s.state == SlotState.WARMING)
 
+    @property
+    def fatal_spawn_error(self) -> str | None:
+        """Set when spawning hit a deterministic, non-self-resolving condition
+        (e.g. a CRaC CPU-feature mismatch); carries the actionable remediation."""
+        return self._fatal_spawn_error
+
     def is_healthy(self) -> bool:
         """True if pool has >=1 IDLE slot, or was idle recently, or is still warming up."""
+        if self._fatal_spawn_error is not None:
+            # Deterministic spawn failure (e.g. CPU-feature mismatch): not ready,
+            # and no amount of waiting fixes it — surface as degraded immediately.
+            return False
         if self.idle_count() > 0:
             return True
         if self._last_idle_at is not None:
@@ -179,6 +205,12 @@ class Pool:
     async def _spawn_loop(self) -> None:
         """Maintain target_size slots. Runs as background task."""
         while True:
+            if self._fatal_spawn_error is not None:
+                # Deterministic, non-self-resolving spawn condition (e.g. CRaC
+                # CPU-feature mismatch). Stop churning spawns; readiness surfaces
+                # the remediation. Recovery is fix-the-rootfs + restart.
+                await asyncio.sleep(5.0)
+                continue
             async with self._lock:
                 current = len(
                     [
@@ -232,14 +264,36 @@ class Pool:
                     slot.state = SlotState.IDLE
                     self._last_idle_at = datetime.now(UTC)
                     self._consecutive_spawn_failures = 0
+                    self._fatal_spawn_error = None
+                    # Half-open recovery: a successful spawn means the root cause
+                    # of any prior breaker shrink has cleared, so ramp the warm
+                    # target back up one slot at a time (it was floored at 1 and
+                    # otherwise never restored until a dispatcher restart).
+                    self._target_size = min(self._target_size + 1, self._limits.pool_warm_size)
                     self._idle_event.set()
                     self._update_metrics()
                 duration = asyncio.get_running_loop().time() - t_start
                 record_spawn_outcome("success")
                 record_spawn_duration(duration)
+            except FcCpuFeatureMismatchError as exc:
+                record_spawn_outcome("failed")
+                await self._handle_fatal_spawn_failure(slot, exc)
             except Exception as exc:
                 record_spawn_outcome("failed")
                 await self._handle_spawn_failure(slot, exc)
+
+    async def _handle_fatal_spawn_failure(self, slot: Slot, exc: Exception) -> None:
+        """A deterministic, never-self-resolving spawn failure (e.g. a CRaC
+        CPU-feature mismatch). Do NOT spend transient backoff budget or shrink the
+        warm target — halt FC spawning and surface the actionable remediation as
+        the dominant signal. Recovery requires fixing the root cause (rebuild the
+        rootfs with the reported -XX:CPUFeatures) and restarting the dispatcher."""
+        _logger.critical("pool.fatal_spawn_failure", slot_id=str(slot.id), error=str(exc))
+        await self._runtime.reap(slot)
+        async with self._lock:
+            self._slots.pop(slot.id, None)
+            self._fatal_spawn_error = str(exc)
+            self._update_metrics()
 
     async def _handle_spawn_failure(self, slot: Slot, exc: Exception) -> None:
         _logger.warning("pool.spawn_failed", slot_id=str(slot.id), error=str(exc))
@@ -285,8 +339,11 @@ class Pool:
             # task a no-op.
             self._slots.pop(slot.id, None)
             self._update_metrics()
+            # Read _burst_active under the lock (it is written under the lock
+            # elsewhere); only burst slots depend on it, warm slots always replace.
+            should_replace = (not slot.is_burst) or self._burst_active
         # Immediately spawn replacement (unless pool target is being met already)
-        if not slot.is_burst or self._burst_active:
+        if should_replace:
             asyncio.create_task(self._spawn_one(is_burst=slot.is_burst))
 
     # ------------------------------------------------------------------
@@ -313,6 +370,12 @@ class Pool:
                             self._limits.pool_concurrent_size - current,
                         )
                         self._burst_active = True
+                        # Anchor the drain timer at trigger time. Otherwise, if no
+                        # burst slot is ever claimed, _burst_last_claimed_at stays
+                        # None and the idle-drain branch never runs -> burst slots
+                        # linger until the next claim+quiet cycle.
+                        if self._burst_last_claimed_at is None:
+                            self._burst_last_claimed_at = now
                     if burst_slots > 0:
                         _logger.info("pool.burst_triggered", extra_slots=burst_slots)
                         for _ in range(burst_slots):
@@ -335,10 +398,18 @@ class Pool:
             ]
             for slot in to_drain:
                 slot.state = SlotState.DRAINING
+            # Only clear _burst_active once NO burst slot remains drainable —
+            # a still-WARMING burst slot is not IDLE yet, so clearing here would
+            # orphan it as a lingering IDLE burst worker. Keep _burst_active True
+            # so a later drain pass reaps it once it finishes warming.
+            remaining_burst = any(
+                s.is_burst and s.state in (SlotState.WARMING, SlotState.IDLE)
+                for s in self._slots.values()
+            )
+            if not remaining_burst:
+                self._burst_active = False
         for slot in to_drain:
             asyncio.create_task(self._reap_without_replace(slot))
-        async with self._lock:
-            self._burst_active = False
 
     async def _reap_without_replace(self, slot: Slot) -> None:
         await self._runtime.reap(slot)

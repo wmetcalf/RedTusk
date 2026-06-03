@@ -167,6 +167,12 @@ class Dispatcher:
     def is_healthy(self) -> bool:
         return self._pool.is_healthy()
 
+    @property
+    def fatal_spawn_error(self) -> str | None:
+        """Actionable remediation when the pool halted on a deterministic spawn
+        failure (e.g. a CRaC CPU-feature mismatch), else None."""
+        return self._pool.fatal_spawn_error
+
     async def _claim_loop(self) -> None:
         """Continuously claim queued jobs and dispatch them.
 

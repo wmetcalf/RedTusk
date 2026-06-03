@@ -794,7 +794,13 @@ def _register_routes(app: FastAPI) -> None:
         dispatcher: Dispatcher = request.app.state.dispatcher
         if dispatcher.is_healthy():
             return JSONResponse({"status": "ok"})
-        return JSONResponse({"status": "degraded"}, status_code=503)
+        body: dict[str, str] = {"status": "degraded"}
+        fatal = dispatcher.fatal_spawn_error
+        if fatal:
+            # Surface the actionable remediation (e.g. the -XX:CPUFeatures value to
+            # rebuild with) as the dominant signal rather than a bare "degraded".
+            body["detail"] = fatal
+        return JSONResponse(body, status_code=503)
 
     @app.get("/metrics")
     async def metrics_endpoint() -> Response:

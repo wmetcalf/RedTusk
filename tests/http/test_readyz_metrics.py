@@ -10,9 +10,21 @@ def test_readyz_healthy(client, mock_dispatcher):
 
 def test_readyz_degraded(client, mock_dispatcher):
     mock_dispatcher.is_healthy.return_value = False
+    mock_dispatcher.fatal_spawn_error = None
     resp = client.get("/v1/readyz")
     assert resp.status_code == 503
     assert resp.json()["status"] == "degraded"
+    assert "detail" not in resp.json()
+
+
+def test_readyz_surfaces_fatal_spawn_remediation(client, mock_dispatcher):
+    mock_dispatcher.is_healthy.return_value = False
+    mock_dispatcher.fatal_spawn_error = (
+        "rebuild the rootfs/checkpoint with -XX:CPUFeatures=0x102100055bbd7,0x1c8"
+    )
+    resp = client.get("/v1/readyz")
+    assert resp.status_code == 503
+    assert "-XX:CPUFeatures=" in resp.json()["detail"]
 
 
 def test_metrics_returns_prometheus_format(client):
