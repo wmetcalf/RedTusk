@@ -150,11 +150,17 @@ class Limits:
     # AF_VSOCK port the worker connects to on the host gateway. Must match
     # the redtusk.vsock_port=<N> kernel cmdline arg in init-vsock.
     fc_vsock_port: int = 10001
-    # Retries when the vsock RESULT/ARTIFACT stream desyncs (a transport-level
-    # corruption the guest virtio-vsock layer can still produce under heavy
-    # host CPU contention even at fc_vcpu_count=1). Each retry re-runs the job
-    # on a fresh microVM. Corruption is detected (frame desync), so this is a
-    # bounded, deterministic retry — not a blind loop.
+    # Retries when a vsock FRAME desyncs (VsockProtocolError) — a transport-level
+    # corruption the guest virtio-vsock layer can still produce under heavy host
+    # CPU contention even at fc_vcpu_count=1. Each retry re-runs the job on a
+    # fresh microVM; corruption is detected (frame desync), so it's a bounded,
+    # deterministic retry, not a blind loop.
+    #
+    # NOTE: on the default FC backend the worker OUTPUT travels on the virtio-blk
+    # disk, not vsock — so this knob covers the vsock CONTROL plane (READY/GO/
+    # JOB/INPUT) and the vsock-output IPC profile, NOT disk corruption. A torn
+    # output-disk read is not a VsockProtocolError and is not retried here; it
+    # fails closed via schema validation (see FirecrackerWorkerRuntime.wait).
     fc_vsock_retries: int = 2
     # Per-slot output disk (virtio-blk ext4) size in MiB. The worker writes
     # metadata.json + artifacts here instead of streaming them over vsock;
@@ -300,6 +306,17 @@ class Limits:
                     f"fc_outdisk_mib ({instance.fc_outdisk_mib} MiB = {outdisk_bytes} B) "
                     f"exceeds max_extracted_bytes + 128 MiB slack ({cap} B); "
                     f"lower fc_outdisk_mib or raise max_extracted_bytes"
+                )
+            # fc_vcpu_count MUST stay 1: >1 vCPU races the guest virtio-vsock
+            # driver against the JVM's socket writes and corrupts large transfers
+            # (~44% failures at 2). It's a hard correctness invariant, not a
+            # tunable — reject it loudly rather than silently shipping a
+            # ~half-failing config (the field doc says the same).
+            if instance.fc_vcpu_count != 1:
+                raise ConfigurationError(
+                    f"fc_vcpu_count must be 1 under the firecracker runtime "
+                    f"(got {instance.fc_vcpu_count}); >1 vCPU corrupts large "
+                    f"vsock transfers — see the field's MUST-stay-1 note"
                 )
         return instance
 

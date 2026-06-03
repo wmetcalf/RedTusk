@@ -228,3 +228,16 @@ def test_worker_runtime_rejects_unknown_via_override() -> None:
     with patch.dict(os.environ, {}, clear=True):
         with pytest.raises(ConfigurationError):
             Limits.from_env(worker_runtime="podman")
+
+
+def test_fc_vcpu_count_must_be_one_under_firecracker():
+    """fc_vcpu_count != 1 is a hard correctness invariant under the FC runtime
+    (>1 vCPU corrupts large vsock transfers ~44% of the time). It must raise for
+    firecracker and be ignored for non-FC runtimes."""
+    from redtusk.errors import ConfigurationError
+
+    Limits.from_env(worker_runtime="firecracker", fc_vcpu_count=1)  # ok
+    with pytest.raises(ConfigurationError, match="fc_vcpu_count must be 1"):
+        Limits.from_env(worker_runtime="firecracker", fc_vcpu_count=2)
+    # Non-FC runtimes don't use fc_vcpu_count, so it isn't enforced.
+    Limits.from_env(worker_runtime="", fc_vcpu_count=2)

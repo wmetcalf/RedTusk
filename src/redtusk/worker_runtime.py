@@ -665,15 +665,22 @@ class FirecrackerWorkerRuntime:
         try:
             rc = await asyncio.wait_for(proc.wait(), timeout=timeout)
         except TimeoutError:
+            # Past job_timeout_s. We run --no-api with no control socket and the
+            # guest may be wedged, so we cannot ask it to flush/poweroff cleanly;
+            # SIGKILL the VMM. The guest's umount+sync (init-vsock) therefore never
+            # runs, so the ext4 read below is best-effort PARTIAL SALVAGE of a
+            # possibly-torn image — never a trusted complete result.
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             await proc.wait()
             rc = TIMEOUT_EXIT_CODE
-        # FC has exited → the guest synced + unmounted the output disk on
-        # poweroff, so the ext4 image is consistent. Read it into /out for
-        # _ingest_result (and partial-salvage on non-zero exit). Best-effort.
+        # Read the output disk into /out for _ingest_result. On a CLEAN exit the
+        # guest powered off after umount+sync so the ext4 is consistent; on a
+        # SIGKILL timeout it may be torn (see above). Either way the read is
+        # best-effort and the result is schema-validated + hashed before it is
+        # trusted, so a torn/partial image fails closed rather than poisoning.
         await self._read_outdisk(slot)
         return rc
 
