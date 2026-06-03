@@ -338,3 +338,23 @@ async def test_spawn_rejects_firecracker_runtime_on_docker_backend(
     with pytest.raises(WorkerError, match="firecracker"):
         await rt.spawn(slot, fc_limits, "default")
     mock_docker.run.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# FC argv seccomp invariant — the VMM's confinement in compose mode is
+# firecracker's *built-in* seccomp filter, which is on unless we disable it.
+# Lock in that we never do. (See _fc_base_argv's docstring + the privsep doc.)
+# ---------------------------------------------------------------------------
+
+
+def test_fc_argv_seccomp() -> None:
+    from redtusk.worker_runtime import _fc_base_argv
+
+    argv = _fc_base_argv("/opt/kata/bin/firecracker", "/scratch/0/fc-config.json")
+
+    assert argv[0] == "/opt/kata/bin/firecracker"
+    assert "--no-api" in argv
+    assert argv[argv.index("--config-file") + 1] == "/scratch/0/fc-config.json"
+    # The built-in BPF filter must never be turned off or swapped out.
+    for forbidden in ("--no-seccomp", "--seccomp-filter", "--seccomp-level"):
+        assert forbidden not in argv, f"{forbidden} disables firecracker's built-in seccomp"

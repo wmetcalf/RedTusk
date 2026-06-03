@@ -88,6 +88,24 @@ _WORKER_UID = 10001
 _WORKER_GID = 10001
 
 
+def _fc_base_argv(fc_bin: str, config_path: str) -> list[str]:
+    """The firecracker argv shared by the bare-spawn and jailer paths.
+
+    SECURITY INVARIANT — we deliberately never pass ``--no-seccomp`` (or a
+    custom ``--seccomp-filter``): firecracker's **built-in** seccomp BPF filter
+    is on by default and is the VMM's syscall confinement. In compose mode that
+    filter — together with the dispatcher container's ``cap_drop ALL`` + non-root
+    uid 10001 + read-only rootfs + no egress — IS the VMM's jail; the firecracker
+    ``jailer`` (chroot/namespaces/uid-drop) is reserved for the **bare-metal**
+    Mode B dispatcher, where there is no outer container to provide that
+    isolation. Adding the jailer to the hardened container would require
+    re-privileging it (root + CAP_SYS_ADMIN/MKNOD/CHROOT/SETUID) for no net gain.
+    See ``docs/design/privsep-split-and-jailer.md``. ``test_fc_argv_seccomp``
+    guards that this argv never disables the built-in filter.
+    """
+    return [fc_bin, "--no-api", "--config-file", config_path]
+
+
 def _secure_scratch_perms(p: Path) -> None:
     """chmod a scratch dir to 0o770 and (best-effort) chown it to the worker
     UID/GID so container UID 10001 can write but the world cannot.
@@ -550,9 +568,7 @@ class FirecrackerWorkerRuntime:
         # is in the kvm group. We document the latter and don't shell out
         # to sudo here (avoids password prompts in the dispatcher).
         proc = await asyncio.create_subprocess_exec(
-            limits.fc_bin,
-            "--no-api",
-            "--config-file", str(config_path),
+            *_fc_base_argv(limits.fc_bin, str(config_path)),
             stdout=await asyncio.to_thread(open, log_path, "w"),
             stderr=asyncio.subprocess.STDOUT,
         )

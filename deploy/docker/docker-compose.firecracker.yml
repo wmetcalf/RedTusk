@@ -15,11 +15,15 @@
 # queue is the api<->dispatcher channel, so a front-end RCE no longer reaches a KVM
 # ioctl primitive. Both keep cap_drop ALL + no-new-privileges + read_only.
 #
-# Remaining defense-in-depth (tracked): the VMM runs under the Firecracker jailer
-# when REDTUSK_FC_USE_JAILER=1 (chroot + cgroups + namespaces + uid-drop), and a
-# dedicated dispatcher seccomp profile (the worker whitelist can't be reused — it
-# blocks the mount-API syscalls runc init needs + the KVM ioctls). The 127.0.0.1
-# default bind is intentionally NOT forced (operator chose 0.0.0.0; see .env.example).
+# The VMM's confinement HERE (containerized) is firecracker's built-in seccomp
+# filter (on by default; guarded by test_fc_argv_seccomp) + this container's
+# cap_drop ALL + non-root uid 10001 + read_only + no egress. The Firecracker
+# jailer is deliberately NOT used in compose mode: it must run as root with
+# CAP_SYS_ADMIN/MKNOD/CHROOT/SETUID, which would un-harden this very container for
+# no net gain over the above. The jailer belongs to the bare-metal Mode B
+# dispatcher (no outer container) — REDTUSK_FC_USE_JAILER applies there; see
+# docs/design/privsep-split-and-jailer.md §2. The 127.0.0.1 default bind is
+# intentionally NOT forced (operator chose 0.0.0.0; see .env.example).
 
 services:
   # Pure-FC never talks to the Docker daemon, so the proxy (raw docker.sock) must

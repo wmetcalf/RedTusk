@@ -71,10 +71,30 @@ internet-reachable. Both keep `DATABASE_URL` (the api inherently needs the DB).
 
 ---
 
-## 2. FC jailer
+## 2. FC jailer — **bare-metal Mode B only** (investigation correction)
 
-Run the per-slot VMM under Firecracker's official **`jailer`** (ships in the same
-release tarball we already download) instead of `firecracker --no-api` bare:
+The original assumption was "run the compose dispatcher's VMM under the jailer."
+Implementing it surfaced that this is the **wrong target**, for two reasons:
+
+1. **The VMM is already confined in compose mode.** `firecracker --no-api` runs
+   with its **built-in seccomp BPF filter on by default** (we never pass
+   `--no-seccomp`; guarded by `test_fc_argv_seccomp`), as **uid 10001**, under the
+   dispatcher container's `cap_drop ALL` + read-only rootfs + no egress.
+2. **The jailer would *un-harden* that container.** `jailer` must start as **root**
+   and needs **CAP_SYS_CHROOT + CAP_MKNOD + CAP_SETUID/SETGID + CAP_SYS_ADMIN**
+   (chroot, `mknod /dev/kvm`, cgroup/namespace setup, priv-drop). Adding it to the
+   compose dispatcher means reverting `cap_drop ALL`+uid 10001 → **root + that cap
+   set** — re-privileging the exact container we hardened to fix the HIGH, to wrap
+   a VMM that's already seccomp+uid+cap+read-only+no-egress confined. Same
+   "don't nest redundant isolation under an already-isolating outer layer" call the
+   project already made for ClippyShot's `ContainerSandbox` and the rejected `nono`
+   layer.
+
+So the jailer's home is **Mode B** (`deploy/firecracker/README.md` §"bare-metal
+`redtusk serve`"), where the dispatcher runs **directly on the host with no outer
+container** — there the jailer *is* the isolation layer, the host process can
+legitimately hold the caps, and it's a clear win (a VMM escape lands in the jail as
+uid 10001, not loose on the host):
 
 ```
 jailer --id <slot> --exec-file <fc-bin> --uid 10001 --gid 10001 \
@@ -82,16 +102,14 @@ jailer --id <slot> --exec-file <fc-bin> --uid 10001 --gid 10001 \
        -- --no-api --config-file <path-relative-to-chroot>
 ```
 
-Gives the VMM a chroot, cgroup, fresh net/mount/pid/ipc namespaces, uid-drop, and
-the jailer's own seccomp. A VMM escape then lands in that jail as uid 10001, not
-loose in the (dispatcher) container. The finicky part is the **chroot path
-remap**: the kernel, rootfs, per-slot output disk, fc-config, and the vsock UDS
-must live inside `<chroot>/firecracker/<slot>/root/` (hardlink/bind), and the
-config paths become chroot-relative.
+The finicky part is the **chroot path remap**: the kernel, rootfs, per-slot output
+disk, fc-config, and the vsock UDS must live inside
+`<chroot>/firecracker/<slot>/root/` (hardlink when same-fs, **copy fallback** when
+cross-fs — so it stays portable), and the config paths become chroot-relative.
 
-**Rollout safety:** gated behind `REDTUSK_FC_USE_JAILER` (default **off**) so the
-proven bare-spawn path stays the default until validated — flip it on after the
-toolz2 pass.
+**Compose stays jailer-free** — the lock-in (§above) is its confinement.
+**Bare-metal** gates the jailer behind `REDTUSK_FC_USE_JAILER` (default **off**)
+so the proven bare-spawn path stays the default until validated on an FC host.
 
 ---
 
