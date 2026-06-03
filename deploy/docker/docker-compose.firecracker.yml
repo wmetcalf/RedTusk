@@ -13,11 +13,30 @@
 # container. The FC code path requires no Docker socket, so this overlay
 # also drops the docker-socket-proxy dependency from the base file.
 #
-# SECURITY FOLLOW-UP (recommended, out of scope here): the Firecracker
-# launcher currently shares the public api container. Ideally the FC launcher
-# runs in a SEPARATE, non-public container that holds /dev/kvm, while the api
-# container stays networked-only. Splitting them removes /dev/kvm from the
-# internet-facing process. Tracked as a follow-up.
+# ── SECURITY HARDENING FOLLOW-UPS (need an FC-host validation pass) ──────────
+# FC mode concentrates the internet-facing api + dispatcher + /dev/kvm + the
+# Postgres DATABASE_URL + microVM-spawn into ONE container under Docker's default
+# seccomp — a real blast-radius regression vs the gVisor docker-socket-proxy
+# split. It is post-RCE only (untrusted documents are parsed in the isolated
+# worker microVM, NOT in this process), and cap_drop ALL + no-new-privileges +
+# read_only are retained. The three mitigations below are each deferred because
+# they change the FC boot/seccomp path and MUST be validated on an FC host (a
+# bad seccomp profile or namespace wrap silently breaks microVM spawn — the
+# known FC-churn failure mode), and one conflicts with the operator's chosen
+# 0.0.0.0 bind:
+#   1. SPLIT the FC launcher into a separate non-public container (no published
+#      ports, no DATABASE_URL) holding /dev/kvm, reached over the internal
+#      backend network; leave the api container networked-only with no /dev/kvm.
+#   2. BIND 127.0.0.1 by default in FC mode (require a reverse proxy). NOT done
+#      here: the operator deliberately set REDTUSK_BIND_ADDR=0.0.0.0; the
+#      recommendation is documented in .env.example + the base compose instead.
+#   3. SECCOMP: author a dedicated dispatcher profile (Docker default minus the
+#      families the dispatcher never needs) to replace the permissive default
+#      below — must keep clone/ioctl(KVM_*) + the mount-API syscalls runc init
+#      needs, so it needs FC-host testing (the worker whitelist cannot be reused).
+#   Also: the FC VMM is exec'd bare — running it under the Firecracker jailer (or
+#   a preexec helper entering fresh net/mount/pid namespaces + a dedicated uid +
+#   a cgroup bound) is defense-in-depth on top of the cap-stripped container.
 
 services:
   # Pure-FC never talks to the Docker daemon, so the proxy (which holds the raw
