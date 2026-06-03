@@ -331,7 +331,7 @@ POSTGRES_PASSWORD=<strong-random-password>
 REDTUSK_WORKER_IMAGE=redtusk-worker:default
 REDTUSK_PROFILE=default
 REDTUSK_ENABLE_OCR=true
-REDTUSK_POOL_SIZE=4
+REDTUSK_POOL_WARM_SIZE=4
 REDTUSK_JOB_TIMEOUT_S=120
 REDTUSK_WORKER_WARMUP_TIMEOUT_S=180
 EOF
@@ -545,11 +545,11 @@ and HTTP API honor the same `REDTUSK_*` env vars.
 
 | Variable | Default | Description |
 |---|---|---|
-| `REDTUSK_POOL_SIZE` | `10` | Steady-state warm slot count |
+| `REDTUSK_POOL_WARM_SIZE` | `½ cores` | Steady-state warm slot count (legacy alias `REDTUSK_POOL_SIZE` works for `redtusk serve` but is NOT injected by compose) |
 | `REDTUSK_POOL_BURST_SIZE` | `5` | Extra slots on sustained queue depth |
 | `REDTUSK_POOL_BURST_TRIGGER_S` | `3` | Queue depth duration (s) before burst |
 | `REDTUSK_POOL_BURST_DRAIN_S` | `60` | Idle time (s) before reaping burst slots |
-| `REDTUSK_POOL_MAX_SIZE` | `32` | Hard pool ceiling |
+| `REDTUSK_POOL_CONCURRENT_SIZE` | `max(8, cores)` | Hard pool ceiling (legacy alias `REDTUSK_POOL_MAX_SIZE` works for `redtusk serve` but is NOT injected by compose) |
 | `REDTUSK_POOL_SPAWN_RATE_LIMIT` | `4.0` | Max container starts per second |
 | `REDTUSK_JOB_TIMEOUT_S` | `60` | Per-job wall-clock limit; SIGKILL on expiry |
 | `REDTUSK_SYNC_QUEUE_TIMEOUT_S` | `30` | Sync request blocks this long for a slot |

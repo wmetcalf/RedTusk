@@ -37,6 +37,14 @@ if [ -S "$DOCKER_SOCK" ]; then
 elif [ -n "${DOCKER_GID:-}" ]; then
     echo "note: $DOCKER_SOCK not found; using DOCKER_GID=$DOCKER_GID from env" >&2
     SOCKET_GID="$DOCKER_GID"
+elif [ "$FC_MODE" -eq 1 ]; then
+    # FC mode does NOT use the Docker socket: the FC dispatcher spawns microVMs
+    # via /dev/kvm, and the docker-socket-proxy is profile-disabled. Don't force
+    # the operator to produce a socket/DOCKER_GID it never consumes (matters on
+    # rootless/remote-daemon hosts). Write a harmless placeholder so the base
+    # compose's ${DOCKER_GID} still substitutes.
+    echo "note: --firecracker mode — Docker socket not required; skipping" >&2
+    SOCKET_GID=0
 else
     echo "error: $DOCKER_SOCK not found and DOCKER_GID env is unset" >&2
     echo "       point DOCKER_SOCK at the real socket or export DOCKER_GID" >&2
