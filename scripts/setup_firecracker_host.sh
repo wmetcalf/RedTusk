@@ -139,13 +139,29 @@ if [ "$WITH_KERNEL" -eq 1 ] && { [ ! -f "$KERNEL" ] || [ "$FORCE" -eq 1 ]; }; th
     # sha256sums.asc and check the line for our tarball. If the checksum file
     # can't be fetched, fall back to a pinned EXPECTED_KERNEL_SHA256 env var.
     # Fails closed — no verified checksum, no extraction.
+    KSUMS_VERIFIED=0
     if curl -fsSL -o /tmp/kernel-sha256sums.asc \
         "https://cdn.kernel.org/pub/linux/kernel/v${KMAJOR}.x/sha256sums.asc" \
         && grep -q "linux-${KERNEL_VERSION}.tar.xz" /tmp/kernel-sha256sums.asc; then
-        grep " linux-${KERNEL_VERSION}.tar.xz\$" /tmp/kernel-sha256sums.asc \
-            | sha256sum -c - \
-            || die "kernel tarball checksum verification FAILED"
-    else
+        # AUTHENTICITY (not just integrity): sha256sums.asc is PGP-clearsigned and
+        # comes from the SAME CDN as the tarball, so a same-channel `sha256sum -c`
+        # alone proves nothing against an origin/CDN compromise. Verify the
+        # signature (auto-importing the signer from the keyserver) and read the
+        # hashes from the VERIFIED clear-signed text. If gpg can't verify, fall
+        # through to the out-of-band pinned EXPECTED_KERNEL_SHA256 (fail-closed).
+        if command -v gpg >/dev/null 2>&1 \
+            && gpg --batch --keyserver hkps://keyserver.ubuntu.com \
+                   --auto-key-locate keyserver \
+                   --verify /tmp/kernel-sha256sums.asc >/dev/null 2>&1; then
+            gpg --batch --decrypt /tmp/kernel-sha256sums.asc 2>/dev/null \
+                | grep " linux-${KERNEL_VERSION}.tar.xz\$" | sha256sum -c - \
+                || die "kernel tarball checksum verification FAILED (signed sums)"
+            KSUMS_VERIFIED=1
+        else
+            warn "could not PGP-verify sha256sums.asc — falling back to the pinned EXPECTED_KERNEL_SHA256"
+        fi
+    fi
+    if [ "$KSUMS_VERIFIED" -eq 0 ]; then
         # TODO: fill in the real sha256 of linux-${KERNEL_VERSION}.tar.xz, or
         # export EXPECTED_KERNEL_SHA256 before running. Empty value fails closed.
         : "${EXPECTED_KERNEL_SHA256:?kernel checksum unavailable and EXPECTED_KERNEL_SHA256 unset — refusing to extract an unverified kernel tarball}"

@@ -20,9 +20,9 @@ FROM ubuntu:jammy AS zxing-build
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         git cmake build-essential ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# Fail closed: NO unpinned fallback — a transient failure of the pinned clone
+# must not silently build default-branch HEAD with no version pin (re-run instead).
 RUN git clone --depth 1 --branch v3.0.2 --recurse-submodules \
-        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp \
-    || git clone --depth 1 --recurse-submodules \
         https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp
 RUN cmake -S /src/zxing-cpp -B /build/zxing \
         -DCMAKE_BUILD_TYPE=Release \

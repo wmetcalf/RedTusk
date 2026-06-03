@@ -9,9 +9,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 
 # v3.0.x adds -json flag required by the wmetcalf Tika fork's ZXingCPPScanner.
 # --recurse-submodules needed for the bundled libzint writer dependency.
+# Fail closed: NO unpinned fallback — a transient failure of the pinned clone
+# must not silently build default-branch HEAD with no version pin (re-run instead).
 RUN git clone --depth 1 --branch v3.0.2 --recurse-submodules \
-        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp \
-    || git clone --depth 1 --recurse-submodules \
         https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp
 
 # v3.x renames BUILD_* → ZXING_*; ZXING_EXAMPLES=ON builds ZXingReader CLI.
@@ -37,6 +37,10 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     # SUPPLY CHAIN: download the Maven binary AND its upstream-published
     # SHA-512 checksum, verify, then extract. Apache publishes a .sha512 next
     # to every artifact. Fails closed — a tampered tarball never gets extracted.
+    # NOTE: the .sha512 comes from the SAME origin as the artifact, so this is
+    # INTEGRITY (anti-corruption / partial-MITM) not AUTHENTICITY; for the latter
+    # verify the Apache PGP .asc against the Apache KEYS file. TLS carries the
+    # authenticity assumption here.
     && MVN_URL="https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
     && curl -fsSL "$MVN_URL" -o /tmp/maven.tar.gz \
     && curl -fsSL "${MVN_URL}.sha512" -o /tmp/maven.tar.gz.sha512 \

@@ -13,9 +13,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # v3.0.x adds -json flag required by the wmetcalf Tika fork's ZXingCPPScanner.
+# Fail closed: NO unpinned fallback — a transient failure of the pinned clone
+# must not silently build default-branch HEAD with no version pin (re-run instead).
 RUN git clone --depth 1 --branch v3.0.2 --recurse-submodules \
-        https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp \
-    || git clone --depth 1 --recurse-submodules \
         https://github.com/zxing-cpp/zxing-cpp.git /src/zxing-cpp
 
 RUN cmake -S /src/zxing-cpp -B /build/zxing \
