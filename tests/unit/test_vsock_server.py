@@ -60,25 +60,37 @@ def _run_worker(unix_path: str, *, send_result: bytes,
         # Read JOB header
         hdr_buf = bytearray()
         while not hdr_buf.endswith(b"\n"):
-            hdr_buf.extend(cli.recv(1))
+            chunk = cli.recv(1)
+            if not chunk:  # peer closed early — fail fast, don't spin forever
+                raise AssertionError("peer closed before JOB header complete")
+            hdr_buf.extend(chunk)
         job_hdr = hdr_buf.decode("utf-8").strip()
         assert job_hdr.startswith("JOB "), f"expected JOB, got {job_hdr!r}"
         job_len = int(job_hdr.split(" ")[1])
         job_buf = b""
         while len(job_buf) < job_len:
-            job_buf += cli.recv(job_len - len(job_buf))
+            chunk = cli.recv(job_len - len(job_buf))
+            if not chunk:
+                raise AssertionError("peer closed before JOB body complete")
+            job_buf += chunk
         received["job"] = json.loads(job_buf)
 
         # Read INPUT header + payload
         hdr_buf.clear()
         while not hdr_buf.endswith(b"\n"):
-            hdr_buf.extend(cli.recv(1))
+            chunk = cli.recv(1)
+            if not chunk:
+                raise AssertionError("peer closed before INPUT header complete")
+            hdr_buf.extend(chunk)
         input_hdr = hdr_buf.decode("utf-8").strip()
         assert input_hdr.startswith("INPUT "), f"expected INPUT, got {input_hdr!r}"
         input_len = int(input_hdr.split(" ")[1])
         input_buf = b""
         while len(input_buf) < input_len:
-            input_buf += cli.recv(input_len - len(input_buf))
+            chunk = cli.recv(input_len - len(input_buf))
+            if not chunk:
+                raise AssertionError("peer closed before INPUT body complete")
+            input_buf += chunk
         received["input"] = input_buf
 
         # Send RESULT
