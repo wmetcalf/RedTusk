@@ -14,6 +14,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from redtusk.errors import (
     DispatchError,
@@ -51,11 +52,17 @@ def _sanitize_error_detail(detail: str) -> str:
 class Dispatcher:
     def __init__(
         self,
-        pool: Pool,
+        pool: Pool | None,
         store: JobStore,
-        worker_runtime: WorkerRuntime,
+        worker_runtime: WorkerRuntime | None,
         limits: Limits,
+        role: str = "both",
     ) -> None:
+        # role: "both" (HTTP + pool + claim-loop, default — unchanged single-process
+        # deployment), "api" (HTTP + enqueue only; no pool/claim-loop, no /dev/kvm —
+        # sync goes through the queue), or "dispatcher" (pool + claim-loop, no HTTP).
+        # The split removes /dev/kvm + microVM-spawn from the internet-facing api.
+        self._role = role
         self._pool = pool
         self._store = store
         self._runtime = worker_runtime
@@ -65,6 +72,13 @@ class Dispatcher:
         self._in_flight: set[str] = set()  # job IDs currently being dispatched
 
     async def start(self) -> None:
+        if self._role == "api":
+            # api role: the pool + claim-loop live in the separate dispatcher
+            # container. Here we only serve HTTP + enqueue, so there is nothing to
+            # spawn and no /dev/kvm. (No orphan recovery either — that's the
+            # dispatcher's job, owning the slots.)
+            return
+
         self._preflight_state_dirs()
 
         sync_dir = Path(self._limits.scratch_root) / "_sync"
@@ -75,6 +89,7 @@ class Dispatcher:
 
         await self._recover_orphaned_running_jobs()
 
+        assert self._pool is not None, "non-api role requires a pool"
         await self._pool.start()
         self._tasks.append(asyncio.create_task(self._claim_loop()))
         self._tasks.append(asyncio.create_task(self._cleanup_loop()))
@@ -173,15 +188,23 @@ class Dispatcher:
         for t in list(self._dispatch_tasks):
             t.cancel()
         await asyncio.gather(*self._dispatch_tasks, return_exceptions=True)
-        await self._pool.stop()
+        if self._pool is not None:
+            await self._pool.stop()
 
     def is_healthy(self) -> bool:
+        if self._role == "api" or self._pool is None:
+            # api role: ready once it can serve + enqueue; pool health lives in the
+            # dispatcher container (a stalled dispatcher shows as queued jobs not
+            # progressing, surfaced via metrics, not this readyz).
+            return True
         return self._pool.is_healthy()
 
     @property
     def fatal_spawn_error(self) -> str | None:
         """Actionable remediation when the pool halted on a deterministic spawn
         failure (e.g. a CRaC CPU-feature mismatch), else None."""
+        if self._pool is None:
+            return None
         return self._pool.fatal_spawn_error
 
     async def _claim_loop(self) -> None:
@@ -235,6 +258,9 @@ class Dispatcher:
 
     async def _dispatch(self, job: JobRecord, attempt: int = 0) -> None:
         """Run one job end-to-end. Does not raise — failures are recorded in the store."""
+        # Only reachable in roles that run the claim-loop (both/dispatcher), which
+        # always have a pool + runtime; api role never starts this loop.
+        assert self._pool is not None and self._runtime is not None
         _logger.info("dispatcher.dispatch_start", job_id=job.id, attempt=attempt)
         record_jobs_in_flight(len(self._in_flight))
         slot: Slot | None = None
@@ -242,7 +268,7 @@ class Dispatcher:
 
         async def release_slot(success: bool) -> None:
             nonlocal slot_released
-            if slot is not None and not slot_released:
+            if slot is not None and not slot_released and self._pool is not None:
                 slot_released = True
                 await self._pool.release(slot, success=success)
 
@@ -508,6 +534,59 @@ class Dispatcher:
         )
         record_extraction_total(outcome="failed", fmt="unknown")
 
+    async def _submit_sync_queued(
+        self, body: bytes, filename: str, limits: Limits
+    ) -> ExtractResult:
+        """api-role sync: enqueue a PERSISTED job (the same staging the async
+        endpoint uses) and poll the store for the separate dispatcher container to
+        complete it within the sync window. Returns the ExtractResult, or raises
+        PoolExhaustedError (-> 503) / WorkerError (-> 502)."""
+        sha256 = hashlib.sha256(body).hexdigest()
+        job_id = str(uuid4())
+        pending_dir = Path(limits.artifact_root) / job_id[:2] / job_id / "pending"
+        await asyncio.to_thread(pending_dir.mkdir, parents=True, exist_ok=True)
+        input_path = pending_dir / filename
+        await asyncio.to_thread(input_path.write_bytes, body)
+
+        record = JobRecord(
+            id=job_id,
+            state=JobState.QUEUED,
+            submitted_at=datetime.now(UTC),
+            started_at=None,
+            completed_at=None,
+            input_sha256=sha256,
+            input_size_bytes=len(body),
+            filename_hint=filename,
+            result=None,
+            error_code=None,
+            error_detail=None,
+            input_path=str(input_path),
+        )
+        await self._store.create(record)
+
+        # Budget = queue wait + one job timeout. The dispatcher container's
+        # claim-loop drains the queue exactly as it does for async jobs.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + float(limits.sync_queue_timeout_s) + float(limits.job_timeout_s)
+        rec: JobRecord | None = None
+        while True:
+            rec = await self._store.get(job_id)
+            if rec is not None and rec.state in (JobState.SUCCEEDED, JobState.FAILED):
+                break
+            if loop.time() >= deadline:
+                raise PoolExhaustedError(float(limits.sync_queue_timeout_s))
+            await asyncio.sleep(0.1)
+
+        if rec.state == JobState.FAILED:
+            raise WorkerError(rec.error_detail or rec.error_code or "extraction failed")
+        result: Any = rec.result
+        if isinstance(result, dict):
+            result = ExtractResult.from_dict(result)
+        if result is None:
+            raise WorkerError("job completed without a result")
+        assert isinstance(result, ExtractResult)
+        return result
+
     async def submit_sync(
         self,
         body: bytes,
@@ -518,6 +597,12 @@ class Dispatcher:
 
         Returns ExtractResult or raises PoolExhaustedError (-> 503) or WorkerError (-> 502).
         """
+        if self._role == "api" or self._pool is None:
+            # api role: no local pool — enqueue + poll the store for the separate
+            # dispatcher container to complete it (same trust boundary as async).
+            return await self._submit_sync_queued(body, filename, limits)
+        assert self._pool is not None and self._runtime is not None
+
         # Write body to a temp file in scratch_root
         tmp_dir = Path(limits.scratch_root) / "_sync"
         _mkdir_p(tmp_dir)
