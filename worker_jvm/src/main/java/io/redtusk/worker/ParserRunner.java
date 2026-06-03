@@ -1032,8 +1032,18 @@ public final class ParserRunner {
         Map<String, Object> result = new LinkedHashMap<>();
         for (String name : m.names()) {
             if (name.startsWith("X-TIKA:") || name.equals("Content-Type")) continue;
-            String value = m.get(name);
-            if (value != null) result.put(name, value);
+            // Preserve ALL values of multi-valued keys (dc:creator, relationship
+            // targets, ...). m.get() kept only the first; m.getValues() keeps them
+            // all. Emit a scalar for a single value, a list for several (the
+            // schema's metadata object is unconstrained and the Python
+            // engine._coerce_metadata_value accepts list[scalar]).
+            String[] values = m.getValues(name);
+            if (values == null || values.length == 0) continue;
+            if (values.length == 1) {
+                if (values[0] != null) result.put(name, values[0]);
+            } else {
+                result.put(name, java.util.Arrays.asList(values));
+            }
         }
         return result;
     }
