@@ -55,6 +55,7 @@ command -v sudo >/dev/null || die "sudo required"
 command -v docker >/dev/null || die "docker required for the rootfs build (Dockerfile.crac)"
 command -v mkfs.ext4 >/dev/null || { log "installing e2fsprogs"; sudo apt-get install -y -q e2fsprogs || sudo dnf install -y e2fsprogs; }
 command -v debugfs >/dev/null || die "debugfs missing from e2fsprogs install — host reads the output disk with it"
+command -v python3 >/dev/null || die "python3 required for the CRaC CPU-feature probe (scripts/fc_cpu_probe.py)"
 
 #───────────────────── 2. kvm group membership ─────────────────────
 if id -nG "$USER" | tr ' ' '\n' | grep -qx kvm; then
@@ -81,17 +82,23 @@ log "firecracker: $FC_BIN ($($FC_BIN --version 2>&1 | head -1))"
 sudo mkdir -p "$STATE_DIR"
 ROOTFS=$STATE_DIR/rootfs-vsock.ext4
 
-if [ -f "$ROOTFS" ] && [ "$FORCE" -eq 0 ]; then
-    log "rootfs already at $ROOTFS — skipping (use --force-rebuild to remake)"
-else
-    log "building worker rootfs (Dockerfile.crac) — this can take ~3 min cold"
+# CRaC CPU-feature pin baked into the warp checkpoint. Defaults to the known-good
+# value so an unparameterized build is unchanged; the auto-bake step (5.5) probes
+# the guest and rebuilds pinned to the value the guest actually needs if they have
+# diverged. Override the STARTING point with REDTUSK_FC_CPU_FEATURES.
+FC_CPU_FEATURES=${REDTUSK_FC_CPU_FEATURES:-0x102100055bbd7,0x1c8}
+
+build_and_stage_rootfs() {  # $1 = -XX:CPUFeatures value to bake into the checkpoint
+    local cpuf=$1
+    log "building worker rootfs (Dockerfile.crac, CPUFeatures=$cpuf) — ~3 min cold"
     cd "$REPO_ROOT"
     sudo docker build -f deploy/docker/Dockerfile.crac \
+        --build-arg "FC_CPU_FEATURES=$cpuf" \
         --no-cache-filter build,runtime \
         -t redtusk-worker:crac-vsock . 2>&1 | tail -8
 
+    local BUILD CID
     BUILD=$(mktemp -d)
-    trap 'sudo rm -rf "$BUILD"' EXIT
     log "exporting image → ext4 rootfs"
     CID=$(sudo docker create redtusk-worker:crac-vsock)
     sudo docker export "$CID" > "$BUILD/rootfs.tar"
@@ -107,7 +114,16 @@ else
         || warn "installed init-vsock doesn't mention the output disk — wrong file?"
     sudo sync; sudo umount "$BUILD/mnt"
     sudo install -m 644 "$BUILD/rootfs-vsock.ext4" "$ROOTFS"
+    sudo rm -rf "$BUILD"
     log "installed rootfs: $ROOTFS ($(du -h "$ROOTFS" | cut -f1))"
+}
+
+BUILT=0
+if [ -f "$ROOTFS" ] && [ "$FORCE" -eq 0 ]; then
+    log "rootfs already at $ROOTFS — skipping (use --force-rebuild to remake)"
+else
+    build_and_stage_rootfs "$FC_CPU_FEATURES"
+    BUILT=1
 fi
 
 #───────────────────── 5. optional kernel build ─────────────────────
@@ -163,6 +179,39 @@ elif [ -f "$KERNEL" ]; then
     log "kernel already at $KERNEL — skipping (use --with-kernel --force-rebuild to remake)"
 else
     warn "no kernel at $KERNEL — re-run with --with-kernel, or supply one yourself"
+fi
+
+#──────────────── 5.5 CRaC CPU-feature auto-bake ────────────────
+# Boot the freshly-built rootfs once and confirm the warp checkpoint actually
+# restores in THIS guest. If the guest's feature set has diverged from the pin,
+# the probe reports the value the guest needs and we rebuild pinned to it — so a
+# host/guest CPU change becomes a self-correcting build instead of a silent
+# "pool never warms". See the blastbox fc-cpu-feature-automation spec.
+probe_guest() {  # prints "STATUS [value]" on stdout (COMPATIBLE|MISMATCH <v>|INCONCLUSIVE)
+    sudo python3 "$REPO_ROOT/scripts/fc_cpu_probe.py" \
+        --fc-bin "$FC_BIN" --kernel "$KERNEL" --rootfs "$ROOTFS"
+}
+
+if [ "$BUILT" -eq 1 ] && [ -f "$KERNEL" ]; then
+    log "auto-bake: probing the guest to confirm the checkpoint restores"
+    set +e; PROBE=$(probe_guest); set -e
+    case "${PROBE%% *}" in
+        COMPATIBLE)
+            log "auto-bake: checkpoint restores in the guest (CPUFeatures=$FC_CPU_FEATURES) ✓" ;;
+        MISMATCH)
+            NEW=${PROBE#MISMATCH }
+            warn "auto-bake: guest needs -XX:CPUFeatures=$NEW (built with $FC_CPU_FEATURES) — rebuilding pinned"
+            build_and_stage_rootfs "$NEW"
+            set +e; PROBE2=$(probe_guest); set -e
+            [ "${PROBE2%% *}" = "COMPATIBLE" ] \
+                || die "auto-bake: rebuilt with $NEW but the probe still reports: $PROBE2"
+            log "auto-bake: CPUFeatures=$NEW baked — checkpoint now restores ✓"
+            log "auto-bake: set REDTUSK_FC_CPU_FEATURES=$NEW to start from this value next time" ;;
+        *)
+            die "auto-bake: probe could not confirm the checkpoint restores in the guest ($PROBE). Boot it manually — 'firecracker --no-api --config-file <cfg with console=ttyS0>' — and read the serial console." ;;
+    esac
+elif [ "$BUILT" -eq 1 ]; then
+    warn "auto-bake: skipped — no kernel at $KERNEL yet (re-run with --with-kernel to enable the guest CPU-feature check)"
 fi
 
 #───────────────────────── 6. next steps ─────────────────────────

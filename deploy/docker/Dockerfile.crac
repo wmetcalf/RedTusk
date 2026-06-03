@@ -116,6 +116,16 @@ COPY --from=build /build/worker_jvm/native/libksm_helper.so    /app/libksm_helpe
 COPY --from=build /build/worker_jvm/native/libcap_dropper.so   /app/libcap_dropper.so
 COPY deploy/docker/appcds-warmup-corpus/ /app/corpus/
 
+# CRaC CPU-feature pin (see deploy/firecracker/README.md + the blastbox
+# fc-cpu-feature-automation spec). The warp checkpoint must record a feature set
+# the Firecracker guest can satisfy; this value is the guest's, NOT the build
+# host's. Defaults to the known-good value so an unparameterized build is
+# unchanged; scripts/setup_firecracker_host.sh probes the guest and overrides it
+# via --build-arg FC_CPU_FEATURES=<value> when the guest's feature set changes.
+# Baked into ENV so build-vsock-checkpoint.sh (the checkpoint step) reuses it.
+ARG FC_CPU_FEATURES=0x102100055bbd7,0x1c8
+ENV REDTUSK_FC_CPU_FEATURES=${FC_CPU_FEATURES}
+
 # Build AOT cache (same tuning bundle as the default profile, plus warp-engine
 # selection so the cache is recorded with the same JVM args used at runtime).
 RUN java \
@@ -130,7 +140,7 @@ RUN java \
     java \
     -XX:CRaCEngine=warp \
     --enable-native-access=ALL-UNNAMED \
-    -XX:CPUFeatures=0x102100055bbd7,0x1c8 \
+    -XX:CPUFeatures=${FC_CPU_FEATURES} \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
