@@ -108,7 +108,21 @@ public final class RmetaWriter {
 
         ObjectNode meta = n.putObject("metadata");
         if (e.metadata() != null) {
-            e.metadata().forEach((k, v) -> meta.put(k, v == null ? null : v.toString()));
+            // Collection-valued metadata (multi-valued Tika keys, multi-valued RTF
+            // IOCs) must serialize as a JSON array, not an ambiguous Java
+            // list-toString "[a, b]" string no consumer can split.
+            e.metadata().forEach((k, v) -> {
+                if (v instanceof java.util.Collection<?> coll) {
+                    ArrayNode arr = meta.putArray(k);
+                    for (Object item : coll) {
+                        if (item == null) arr.addNull(); else arr.add(item.toString());
+                    }
+                } else if (v == null) {
+                    meta.putNull(k);
+                } else {
+                    meta.put(k, v.toString());
+                }
+            });
         }
 
         n.put("text", e.text() != null ? e.text() : "");

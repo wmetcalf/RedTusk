@@ -24,7 +24,7 @@ _TRUNCATION_REASONS = [
     "in_progress",   # worker is mid-parse; metadata.json is a draft snapshot
     "job_timeout",   # dispatcher SIGKILLed worker past job_timeout_s; result is partial
 ]
-_PROFILES = ["default", "high-density"]
+_PROFILES = ["default", "high-density", "microvm"]
 
 _QR_CODE_SCHEMA = {
     "type": "object",
@@ -96,6 +96,9 @@ _ENTRY_SCHEMA = {
         "colorhash": {"type": ["string", "null"]},
         "metadata": {"type": "object"},
         "text": {"type": "string"},
+        # Whitespace-normalised view of `text` (see types.wsnorm). Optional so
+        # pre-existing results without it still validate; new ones always carry it.
+        "text_wsnorm": {"type": "string"},
         "language": {"type": ["string", "null"]},
         "qr": _QR_RESULT_SCHEMA,
         "ocr": _OCR_RESULT_SCHEMA,

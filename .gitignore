@@ -60,3 +60,9 @@ tests/fixtures/**/corpus/
 # Per-host runtime config — set REDTUSK_STATE_DIR, POSTGRES_PASSWORD, etc.
 # locally; never commit. See deploy/docker/.env.example for the template.
 deploy/docker/.env
+
+# corpus-derived bench output — never commit
+deploy/firecracker/bench_*.json
+
+# stray tika NER model artifacts (maven dumps these in the wrong place)
+/src/test/

@@ -61,6 +61,26 @@ class WorkerError(RedTuskError):
     """Raised when a worker container fails to spawn, signal, or produce output."""
 
 
+class FcCpuFeatureMismatchError(WorkerError):
+    """A Firecracker warm slot failed because the CRaC checkpoint requires CPU
+    features the microVM guest does not expose.
+
+    This is the actionable form of an otherwise-opaque warmup timeout: the warp
+    engine prints the compatible value on the guest console, which we parse out
+    (see ``redtusk.fc_cpu_features``). A CPU-feature mismatch never self-resolves
+    — rebuild the FC rootfs/checkpoint with ``-XX:CPUFeatures=<needed>`` on both
+    the AOT-create and the checkpoint command.
+    """
+
+    def __init__(self, needed: str, detail: str = "") -> None:
+        msg = (
+            "Firecracker guest is missing CPU features the CRaC checkpoint "
+            f"requires; rebuild the rootfs/checkpoint with -XX:CPUFeatures={needed}"
+        )
+        super().__init__(f"{msg} ({detail})" if detail else msg)
+        self.needed = needed
+
+
 class ExtractionError(RedTuskError):
     """Raised when extraction itself failed (Tika error, scanner crash, etc.)."""
 

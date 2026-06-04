@@ -1,0 +1,101 @@
+#!/bin/sh
+# Firecracker init for the disk-output redtusk-worker.
+#
+# IPC split:
+#   * Control plane (READY/GO/JOB/INPUT/DONE) — AF_VSOCK to host CID 2.
+#   * Output plane (metadata.json + artifacts)  — virtio-blk /dev/vdb,
+#     mounted at /tmp/redtusk-out. The host reads the ext4 image back
+#     via debugfs rdump after this VM powers off. Output is OFF vsock
+#     because the guest virtio-vsock layer corrupts large transfers
+#     under concurrent host load — see deploy/firecracker/README.md.
+#
+# The dispatcher binds a VsockSlotServer on the host at (CID 2, port=N)
+# and the worker connects after CRaC restore.
+
+exec </dev/console >/dev/console 2>&1
+
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mount -o remount,ro /
+mount -t tmpfs tmpfs /tmp -o size=512m,exec
+mount -t tmpfs tmpfs /var/lib/redtusk -o size=64m
+mount -t tmpfs tmpfs /run -o size=64m
+chown -R 10001:10001 /tmp /var/lib/redtusk 2>/dev/null
+
+# Output disk (vdb): the worker writes metadata.json + artifacts to
+# /tmp/redtusk-out, which we back with a virtio-blk ext4 instead of tmpfs.
+# The host reads this image after we power off — keeping large output OFF the
+# vsock stream (which corrupts large transfers under concurrency). vsock still
+# carries the control handshake + job descriptor + input bytes.
+mkdir -p /tmp/redtusk-out
+if mount -t ext4 /dev/vdb /tmp/redtusk-out 2>/dev/null; then
+    chown 10001:10001 /tmp/redtusk-out
+    echo "init: mounted output disk /dev/vdb at /tmp/redtusk-out"
+else
+    # No usable /dev/vdb: there's no host-side recovery (the host reads the
+    # disk image after poweroff; writes to the underlying tmpfs would be
+    # invisible). Fail loudly rather than silently losing every job's output.
+    echo "init: FATAL /dev/vdb output disk not mounted — refusing to launch worker"
+    sync; poweroff -f 2>/dev/null
+    reboot -f
+fi
+
+# Auto-bind the virtio vsock device (id 0x13). Without udev to do this
+# for us, the kernel sees the device but no driver attaches, so AF_VSOCK
+# socket() returns ENODEV in userspace. Walk the virtio bus and bind any
+# device with class 0x0013 to the vsock driver.
+for dev in /sys/bus/virtio/devices/virtio*; do
+    if [ -f "$dev/device" ]; then
+        id=$(cat "$dev/device")
+        if [ "$id" = "0x0013" ]; then
+            name=$(basename "$dev")
+            if echo "$name" > /sys/bus/virtio/drivers/vmw_vsock_virtio_transport/bind 2>&1; then
+                echo "init: bound vsock device $name"
+            else
+                echo "init: vsock bind FAILED for $name"
+            fi
+            break
+        fi
+    fi
+done
+
+hostname fc-worker
+
+export PATH=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export JAVA_HOME=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64
+export REDTUSK_WORKER_IPC=vsock
+# Tell VsockIpcChannel to skip vsock streaming of outputs — the worker writes
+# them to /tmp/redtusk-out (the virtio-blk disk we just mounted) and the host
+# reads them back via debugfs after poweroff. See deploy/firecracker/README.md.
+export REDTUSK_VSOCK_DISK_OUTPUT=1
+# Host CID 2 = VMADDR_CID_HOST. Port is passed in via kernel cmdline.
+export REDTUSK_VSOCK_HOST_CID=2
+# Allow the dispatcher to inject the port via kernel cmdline: redtusk.vsock_port=<N>
+RVPP=$(cat /proc/cmdline | tr ' ' '\n' | grep '^redtusk.vsock_port=' | cut -d= -f2)
+export REDTUSK_VSOCK_PORT=${RVPP:-10001}
+
+cd /app
+# NOTE: no `-jar` here. With -XX:CRaCRestoreFrom the JVM continues the
+# checkpointed execution; passing a main jar makes CRaC try to launch a
+# "new main entry" (fails with ClassNotFoundException, noisy RestoreException).
+# --no-new-privs + emptying the capability bounding set here (as root, where the
+# drop actually succeeds) is what CapDropper INTENDED but soft-skips on: after the
+# uid->10001 drop it lacks CAP_SETPCAP, so its in-JVM PR_CAPBSET_DROP EPERMs and
+# CAP_CHECKPOINT_RESTORE would otherwise survive in the bounding set with NNP
+# unset. The warp restore runs cap-less as uid 10001 already, so dropping the
+# bounding set does not affect it (the auto-bake probe re-validates the restore on
+# every rootfs rebuild).
+setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs --bounding-set=-all java \
+    -XX:CRaCEngine=warp \
+    -XX:CRaCRestoreFrom=/app/checkpoint
+RC=$?
+
+# Worker exited (after writing its result to the output disk + sending the
+# DONE control frame, or on error). Cleanly unmount the output disk so the
+# host reads a consistent ext4, then sync + poweroff.
+umount /tmp/redtusk-out 2>/dev/null
+sync
+echo "init: WORKER-EXITED-rc=$RC"
+poweroff -f 2>/dev/null
+reboot -f

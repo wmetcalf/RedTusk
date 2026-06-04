@@ -1,0 +1,29 @@
+#!/bin/sh
+exec </dev/console >/dev/console 2>&1
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mount -t tmpfs tmpfs /tmp -o size=512m,exec
+mount -t tmpfs tmpfs /var/lib/redtusk -o size=64m
+mkdir -p /scratch
+mount /dev/vdb /scratch
+# Worker expects /in and /out at top-level (bind-mount semantics)
+mkdir -p /in /out
+mount --bind /scratch/in /in
+mount --bind /scratch/out /out
+chown -R 10001:10001 /scratch /var/lib/redtusk /tmp 2>/dev/null
+# Re-mount the root filesystem read-only (matches init-vsock and the
+# hardened fc-config.json is_read_only:true / boot-arg `ro`). Writable
+# scratch lives on /dev/vdb (/scratch) and the tmpfs mounts above; the
+# rootfs itself must not be mutable by the (hostile-input-parsing) worker.
+mount -o remount,ro / 2>/dev/null
+hostname fc-worker
+export PATH=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export JAVA_HOME=/opt/zulu25.34.17-ca-crac-jdk25.0.3-linux_x64
+cd /app
+# No -jar with -XX:CRaCRestoreFrom: the JVM resumes the checkpointed process;
+# a main jar makes CRaC try to launch a fresh entrypoint instead (restore fails).
+# --no-new-privs + empty bounding set (dropped here as root, where it succeeds —
+# CapDropper soft-skips it post-uid-drop without CAP_SETPCAP). Restore runs
+# cap-less as uid 10001, so this does not affect it.
+exec setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs --bounding-set=-all java -XX:CRaCEngine=warp -XX:CRaCRestoreFrom=/app/checkpoint

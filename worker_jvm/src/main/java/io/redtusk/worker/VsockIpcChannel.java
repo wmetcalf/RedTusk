@@ -1,8 +1,9 @@
 package io.redtusk.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.newsclub.net.unix.AFSocket;
-import org.newsclub.net.unix.AFSocketCapability;
+import org.crac.Context;
+import org.crac.Core;
+import org.crac.Resource;
 import org.newsclub.net.unix.AFUNIXSocketAddress;
 import org.newsclub.net.unix.AFVSOCKSocketAddress;
 import org.newsclub.net.unix.vsock.AFVSOCKSocket;
@@ -49,7 +50,7 @@ import java.util.logging.Logger;
  * because the dispatcher may not have its vsock listener bound when the
  * worker spawns. Once connected, the socket stays open until {@link #close()}.
  */
-public final class VsockIpcChannel implements IpcChannel {
+public final class VsockIpcChannel implements IpcChannel, Resource {
     private static final Logger LOG = Logger.getLogger(VsockIpcChannel.class.getName());
 
     static final int DEFAULT_HOST_CID = 2;
@@ -57,6 +58,14 @@ public final class VsockIpcChannel implements IpcChannel {
     static final long INITIAL_RETRY_MS = 50L;
     static final long MAX_RETRY_MS = 2_000L;
     static final long GO_TIMEOUT_MS = 600_000L;
+    /**
+     * Upper bound on a single in-memory framed payload (the JOB JSON descriptor).
+     * The peer-declared frame length is attacker-influenced; without a cap a
+     * declared length near {@link Integer#MAX_VALUE} would trigger a multi-GB
+     * {@code new byte[len]} allocation and OOM the worker. The streamed
+     * INPUT-bytes path (copyStreamN) does not pre-allocate and is unaffected.
+     */
+    static final int MAX_JSON_FRAME_BYTES = 8 * 1024 * 1024;
 
     private static final ObjectMapper OM = new ObjectMapper();
     /** Where the worker stages input bytes received over vsock. The microvm
@@ -66,21 +75,168 @@ public final class VsockIpcChannel implements IpcChannel {
     /** Where the worker writes its output before streaming it back over vsock. */
     static final String WORKER_OUTPUT_DIR = "/tmp/redtusk-out";
 
-    private final int hostCid;
-    private final int port;
-    private final String unixPathOverride;
+    private int hostCid;
+    private int port;
+    // NOT final: re-read from env on afterRestore so a checkpoint taken with
+    // REDTUSK_VSOCK_UNIX_PATH=/build/sock can be restored in an environment
+    // where the env var is unset (→ fall back to AF_VSOCK at hostCid/port).
+    private String unixPathOverride;
     private Socket socket;
     /** Use a binary input stream — we need to read framed binary payloads
      *  (JobDescriptor JSON, then arbitrary input bytes) intermixed with
      *  ASCII control lines. BufferedReader would consume too aggressively. */
     private DataInputStream din;
     private OutputStream writer;
+    /** Decided by afterRestore() from {@code /dev/vdb} existence (the per-slot
+     *  virtio-blk output disk). When true, sendResult/sendArtifact are no-ops
+     *  (output lives on that disk the host reads back); when false, they stream
+     *  over vsock as before. (Not an env toggle — see afterRestore() for why
+     *  /proc/self/environ is unreliable across CRaC restore.) */
+    private boolean diskOutputMode;
 
     /** Constructed via {@link IpcChannelFactory}; package-private for tests. */
     VsockIpcChannel(int hostCid, int port, String unixPathOverride) {
         this.hostCid = hostCid;
         this.port = port;
         this.unixPathOverride = unixPathOverride;
+        registerForCheckpointRestore();
+    }
+
+    /**
+     * Register this channel for CRaC checkpoint/restore.
+     *
+     * <p>We register with BOTH the org.crac shim AND (reflectively) with
+     * jdk.crac if available. The shim's register() on some CRaC builds does
+     * not forward to jdk.crac, so registering only with the shim leaves
+     * beforeCheckpoint un-called and the open vsock fd trips warp's
+     * CheckpointOpenSocketException check. Registering with jdk.crac directly
+     * is reflection-based so we don't take a hard compile dep on it (the
+     * codebase still has to compile on non-CRaC JDKs in tests).
+     */
+    private void registerForCheckpointRestore() {
+        try {
+            Core.getGlobalContext().register(this);
+        } catch (Throwable t) {
+            LOG.fine("org.crac register failed: " + t);
+        }
+        try {
+            Class<?> jdkCore = Class.forName("jdk.crac.Core");
+            Object ctx = jdkCore.getMethod("getGlobalContext").invoke(null);
+            // Build a jdk.crac.Resource proxy that forwards to our org.crac.Resource methods.
+            Class<?> jdkResourceCls = Class.forName("jdk.crac.Resource");
+            Object proxy = java.lang.reflect.Proxy.newProxyInstance(
+                jdkResourceCls.getClassLoader(),
+                new Class<?>[]{ jdkResourceCls },
+                (p, method, args) -> {
+                    String name = method.getName();
+                    if ("beforeCheckpoint".equals(name)) {
+                        this.beforeCheckpoint(null);
+                        return null;
+                    }
+                    if ("afterRestore".equals(name)) {
+                        this.afterRestore(null);
+                        return null;
+                    }
+                    // Object methods (toString/hashCode/equals)
+                    return method.invoke(this, args);
+                }
+            );
+            ctx.getClass().getMethod("register", jdkResourceCls).invoke(ctx, proxy);
+            LOG.info("VsockIpcChannel: registered with jdk.crac.Core");
+        } catch (ClassNotFoundException e) {
+            LOG.fine("jdk.crac not available (non-CRaC JDK)");
+        } catch (Throwable t) {
+            LOG.warning("Failed to register with jdk.crac directly: " + t);
+        }
+    }
+
+    // ── CRaC Resource hooks ─────────────────────────────────────────────────
+    //
+    // Lifecycle around a checkpoint+restore cycle:
+    //   1. announceReady() opens the socket, sends READY, leaves it connected.
+    //   2. Caller invokes Core.checkpointRestore().
+    //   3. → beforeCheckpoint(): we close the socket. The JVM dumps process
+    //      state with no live fd, so the snapshot is portable across restores.
+    //   4. JVM resumes (possibly hours later, on a different host).
+    //   5. → afterRestore(): we reopen the socket and resend READY so the
+    //      dispatcher knows this slot is ready. The next call to
+    //      awaitGoSignal/receiveJob reads from the new this.din/socket fields.
+    //
+    // The Resource contract requires that we are NOT blocked in a read at
+    // checkpoint time. Main.runCheckpoint puts Core.checkpointRestore()
+    // strictly between announceReady() and processJob(), so we are guaranteed
+    // to be idle (not inside socket.read()) when this fires.
+
+    @Override
+    public void beforeCheckpoint(Context<? extends Resource> context) throws IOException {
+        if (socket != null && !socket.isClosed()) {
+            LOG.info("VsockIpcChannel.beforeCheckpoint: closing socket to " + describePeer());
+            try { socket.close(); } catch (IOException ignored) {}
+        }
+        socket = null;
+        din = null;
+        writer = null;
+    }
+
+    @Override
+    public void afterRestore(Context<? extends Resource> context) throws IOException {
+        // CRaC restores all fields verbatim from the checkpoint snapshot,
+        // including unixPathOverride which we may have set at BUILD time
+        // (REDTUSK_VSOCK_UNIX_PATH pointing at a build listener) but which
+        // is irrelevant in the restore environment (e.g. inside an FC
+        // microVM, we want AF_VSOCK to host CID 2 instead). Re-read the env
+        // here so the post-restore peer is recomputed rather than frozen.
+        // NOTE: neither System.getenv() (cached at JVM-start) NOR
+        // /proc/self/environ reflects the restore-time environment — across a
+        // CRaC restore BOTH show the BUILD-time environ (see the diskOutputMode
+        // note below). So these PORT/CID/UNIX_PATH reads are correct only because
+        // the build sets them to the same values the FC init uses; the one signal
+        // that IS restore-time-accurate is /dev/vdb existence.
+        String envUnix = getEnvFromProc("REDTUSK_VSOCK_UNIX_PATH");
+        this.unixPathOverride = (envUnix != null && !envUnix.isEmpty()) ? envUnix : null;
+        String portRaw = getEnvFromProc("REDTUSK_VSOCK_PORT");
+        if (portRaw != null && !portRaw.isEmpty()) {
+            try { this.port = Integer.parseInt(portRaw.trim()); } catch (NumberFormatException ignore) {}
+        }
+        String cidRaw = getEnvFromProc("REDTUSK_VSOCK_HOST_CID");
+        if (cidRaw != null && !cidRaw.isEmpty()) {
+            try { this.hostCid = Integer.parseInt(cidRaw.trim()); } catch (NumberFormatException ignore) {}
+        }
+        // Disk-output mode: FC attaches a per-slot virtio-blk output disk;
+        // Docker-microvm (kata) does not. Detect by /dev/vdb existence — this
+        // is the actual environmental difference. We tried REDTUSK_VSOCK_DISK_OUTPUT
+        // via /proc/self/environ first, but /proc/self/environ on a CRaC-restored
+        // process reflects the BUILD-time environ, not the restore-time environ
+        // (the existing PORT/CID reads "work" only because the build sets them to
+        // the same values the FC init does). /dev/vdb is a real filesystem check
+        // at restore time, so it reads the actual FC microVM state.
+        this.diskOutputMode = new java.io.File("/dev/vdb").exists();
+        LOG.info("VsockIpcChannel.afterRestore: reconnecting to " + describePeer()
+                + " diskOutputMode=" + this.diskOutputMode);
+        announceReady();
+    }
+
+    /** Read a single env var from /proc/self/environ. NOTE: across a CRaC
+     *  restore this is the BUILD-time environ (same staleness as
+     *  System.getenv()), not the restore-time environment — see afterRestore(). */
+    private static String getEnvFromProc(String name) {
+        try {
+            byte[] data = java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/proc/self/environ"));
+            String prefix = name + "=";
+            int start = 0;
+            for (int i = 0; i <= data.length; i++) {
+                if (i == data.length || data[i] == 0) {
+                    if (i > start) {
+                        String entry = new String(data, start, i - start, StandardCharsets.UTF_8);
+                        if (entry.startsWith(prefix)) {
+                            return entry.substring(prefix.length());
+                        }
+                    }
+                    start = i + 1;
+                }
+            }
+        } catch (IOException ignore) {}
+        return null;
     }
 
     /** Connect to the host (with retry) and send the READY line. */
@@ -132,6 +288,11 @@ public final class VsockIpcChannel implements IpcChannel {
         // Expect: "JOB <N>\n" + N bytes JSON, then "INPUT <M>\n" + M bytes
         String jobHdr = expectFrameHeader("JOB");
         int jsonLen = parseLength(jobHdr);
+        // Bound the in-memory JOB JSON allocation before touching new byte[len].
+        if (jsonLen > MAX_JSON_FRAME_BYTES) {
+            throw new IOException("JOB frame length " + jsonLen
+                    + " exceeds maximum " + MAX_JSON_FRAME_BYTES);
+        }
         byte[] jsonBytes = readFully(jsonLen);
 
         // Parse with the input path REWRITTEN to a local tmpfs location.
@@ -163,13 +324,28 @@ public final class VsockIpcChannel implements IpcChannel {
 
     @Override
     public void sendResult(byte[] metadataJson) throws IOException {
+        if (diskOutputMode) {
+            // FC disk-output mode: WORKER_OUTPUT_DIR (/tmp/redtusk-out) is a
+            // virtio-blk ext4 the host reads back after the VM powers off.
+            // Streaming large payloads over vsock corrupts them under
+            // concurrent host load (guest virtio-vsock race), so output
+            // bypasses vsock entirely; only the control handshake + job +
+            // input + DONE go over vsock.
+            return;
+        }
         sendBlobFrame("RESULT", null, metadataJson);
     }
 
     @Override
     public void sendArtifact(String relPath, byte[] payload) throws IOException {
+        if (diskOutputMode) return;
         sendBlobFrame("ARTIFACT", relPath, payload);
     }
+
+    /** False in disk-output mode — Main can skip Files.readAllBytes that
+     *  would feed a no-op send. True otherwise (legacy streaming path). */
+    @Override
+    public boolean outputsOverIpc() { return !diskOutputMode; }
 
     @Override
     public void signalDone() throws IOException {
@@ -236,6 +412,12 @@ public final class VsockIpcChannel implements IpcChannel {
     }
 
     private byte[] readFully(int len) throws IOException {
+        // Defensive backstop: every in-memory framed read is bounded so an
+        // attacker-declared length can never drive a giant allocation here.
+        if (len > MAX_JSON_FRAME_BYTES) {
+            throw new IOException("Framed payload length " + len
+                    + " exceeds maximum " + MAX_JSON_FRAME_BYTES);
+        }
         byte[] buf = new byte[len];
         int read = 0;
         while (read < len) {
@@ -294,10 +476,12 @@ public final class VsockIpcChannel implements IpcChannel {
             AFUNIXSocketAddress addr = AFUNIXSocketAddress.of(new java.io.File(unixPathOverride));
             return org.newsclub.net.unix.AFUNIXSocket.connectTo(addr);
         }
-        if (!AFSocket.supports(AFSocketCapability.CAPABILITY_VSOCK)) {
-            throw new IOException("AF_VSOCK is not supported on this host "
-                + "(no /dev/vsock kernel module loaded?)");
-        }
+        // NOTE: skip AFSocket.supports(CAPABILITY_VSOCK). The check caches
+        // its result on first call; if first call is during CRaC checkpoint
+        // build (where /dev/vsock doesn't exist), the cached "false" persists
+        // into the restored process even when /dev/vsock IS available in the
+        // FC microVM. We let the actual socket() / connect() syscall surface
+        // the real error if vsock truly isn't there.
         AFVSOCKSocketAddress addr = AFVSOCKSocketAddress.ofPortAndCID(port, hostCid);
         AFVSOCKSocket s = AFVSOCKSocket.newInstance();
         s.connect(addr);

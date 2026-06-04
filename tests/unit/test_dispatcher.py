@@ -590,3 +590,33 @@ async def test_preflight_state_dirs_unwritable_raises(tmp_path: Path) -> None:
             dispatcher._preflight_state_dirs()
 
     os.chmod(locked, 0o755)  # restore so tmp cleanup works
+
+
+def test_sanitize_error_detail_strips_host_paths():
+    from redtusk.dispatcher import _sanitize_error_detail
+
+    s = _sanitize_error_detail(
+        "[Errno 2] No such file: /var/lib/redtusk/scratch/abc-123/out/metadata.json"
+    )
+    assert "/var/lib/redtusk" not in s
+    assert "<path>" in s
+    # Path-free details and 'and/or' are left intact.
+    assert _sanitize_error_detail("worker exited 137") == "worker exited 137"
+    assert _sanitize_error_detail("use this and/or that") == "use this and/or that"
+
+
+@pytest.mark.asyncio
+async def test_api_role_has_no_pool_and_starts_cleanly():
+    """api role: no pool/claim-loop (no /dev/kvm). start() is a no-op, readyz is
+    healthy, and there's no pool fatal-error to surface."""
+    store = AsyncMock()
+    limits = Limits(
+        job_timeout_s=10, sync_queue_timeout_s=5,
+        artifact_root="/tmp/artifacts", scratch_root="/tmp/scratch",
+        max_metadata_bytes=64 * 1024 * 1024, max_artifact_bytes=1024 * 1024,
+    )
+    d = Dispatcher(pool=None, store=store, worker_runtime=None, limits=limits, role="api")
+    await d.start()  # must not spawn / touch a pool
+    assert d.is_healthy() is True
+    assert d.fatal_spawn_error is None
+    await d.stop()  # must not touch a None pool

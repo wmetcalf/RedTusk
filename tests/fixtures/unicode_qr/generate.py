@@ -3,10 +3,11 @@
 in their text body. Each file encodes a distinct URL so we can confirm in
 the results which decode came from which format."""
 import os
-import qrcode
-import qrcode.constants
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+import qrcode
+import qrcode.constants
 
 OUT = "/tmp/qr_fixtures"
 os.makedirs(OUT, exist_ok=True)
@@ -24,10 +25,14 @@ def render_qr_art(payload: str) -> str:
         for x in range(len(m[0])):
             t = m[y][x]
             b = m[y + 1][x] if y + 1 < len(m) else False
-            if t and b:       row.append('█')
-            elif t and not b: row.append('▀')
-            elif not t and b: row.append('▄')
-            else:             row.append(' ')
+            if t and b:
+                row.append('█')
+            elif t and not b:
+                row.append('▀')
+            elif not t and b:
+                row.append('▄')
+            else:
+                row.append(' ')
         lines.append(''.join(row))
     return '\n'.join(lines)
 
@@ -58,7 +63,8 @@ DESCRIPTION:{fold_ics('Scan the QR below:\n' + ics_art)}\r
 END:VEVENT\r
 END:VCALENDAR\r
 """
-with open(f"{OUT}/qr_fixture.ics", "w", encoding="utf-8") as f: f.write(ics)
+with open(f"{OUT}/qr_fixture.ics", "w", encoding="utf-8") as f:
+    f.write(ics)
 
 # ---- TXT ----
 txt_url = "https://test.example/qr-txt"

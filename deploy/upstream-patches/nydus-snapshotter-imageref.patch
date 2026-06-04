@@ -1,0 +1,46 @@
+diff --git a/pkg/filesystem/fs.go b/pkg/filesystem/fs.go
+index 6602e1d..74f8d01 100644
+--- a/pkg/filesystem/fs.go
++++ b/pkg/filesystem/fs.go
+@@ -11,9 +11,9 @@
+ package filesystem
+ 
+ import (
++	"os"
+ 	"context"
+ 	"io"
+-	"os"
+ 	"path"
+ 	"path/filepath"
+ 	"sync"
+@@ -335,17 +335,23 @@ func (fs *Filesystem) Mount(ctx context.Context, snapshotID string, labels map[s
+ 	useSharedDaemon := fsDriver == config.FsDriverFscache || isSharedFusedev
+ 
+ 	var imageID string
+-	imageID, ok := labels[snpkg.TargetRefLabel]
+-	if !ok {
+-		// FIXME: Buildkit does not pass labels defined in containerd's fashion. So
+-		// we have to use stargz snapshotter specific labels until Buildkit generalize it the necessary
+-		// labels for all remote snapshotters.
+-		imageID, ok = labels["containerd.io/snapshot/remote/stargz.reference"]
++	// Env-var override wins when set. Non-CRI clients (ctr/nerdctl) put a
++	// content sha256 in TargetRefLabel; ParseDockerRef normalizes that to
++	// docker.io/library/sha256 — wrong registry URL for blob fetches. The
++	// operator pins the resolvable ref via NYDUS_DEFAULT_IMAGE_REF.
++	if envRef := os.Getenv("NYDUS_DEFAULT_IMAGE_REF"); envRef != "" {
++		imageID = envRef
++	} else {
++		var ok bool
++		imageID, ok = labels[snpkg.TargetRefLabel]
+ 		if !ok {
+-			return errors.Errorf("failed to find image ref of snapshot %s, labels %v", snapshotID, labels)
++			imageID, ok = labels["containerd.io/snapshot/remote/stargz.reference"]
++			if !ok {
++				return errors.Errorf("failed to find image ref of snapshot %s, labels %v (set NYDUS_DEFAULT_IMAGE_REF env var)", snapshotID, labels)
++			}
+ 		}
+ 	}
+ 
+ 	rafs, err = racache.NewRafs(snapshotID, imageID, fsDriver)
+ 	if err != nil {
+ 		return errors.Wrapf(err, "create rafs instance %s", snapshotID)

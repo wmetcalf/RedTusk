@@ -65,6 +65,12 @@ pool_spawn_duration_seconds = Histogram(
     "Time from docker-run to fifo-ready for a worker container",
     registry=REGISTRY,
 )
+fc_cpu_feature_mismatch_total = Counter(
+    "redtusk_fc_cpu_feature_mismatch_total",
+    "Firecracker warm spawns that failed because the CRaC checkpoint needs CPU "
+    "features the microVM guest lacks (rebuild rootfs with -XX:CPUFeatures=<v>)",
+    registry=REGISTRY,
+)
 
 # Jobs
 jobs_in_flight = Gauge(
@@ -149,6 +155,11 @@ def record_spawn_outcome(outcome: str) -> None:
 def record_spawn_duration(seconds: float) -> None:
     """Observe spawn duration in the pool_spawn_duration_seconds histogram."""
     pool_spawn_duration_seconds.observe(seconds)
+
+
+def record_cpu_feature_mismatch() -> None:
+    """Increment the Firecracker CRaC CPU-feature-mismatch counter."""
+    fc_cpu_feature_mismatch_total.inc()
 
 
 def record_extraction_total(outcome: str, fmt: str) -> None:

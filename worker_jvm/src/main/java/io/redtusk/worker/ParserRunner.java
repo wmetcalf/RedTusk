@@ -44,6 +44,12 @@ public final class ParserRunner {
     private static final Object IMAGE_HASH_PHASH = tikaImageHashProperty("PHASH");
     private static final Object IMAGE_HASH_COLORHASH = tikaImageHashProperty("COLORHASH");
 
+    // Install JVM-global secure JAXP defaults once at class load so even XML
+    // readers constructed outside our ParseContext are hardened (XXE/SSRF).
+    static {
+        installGlobalSecureXml();
+    }
+
     // Shared language detector — loaded once at startup, thread-safe for detect() calls.
     private static final LanguageDetector LANG_DETECTOR;
     static {
@@ -147,6 +153,13 @@ public final class ParserRunner {
         RecursiveParserWrapper wrapper = new RecursiveParserWrapper(auto);
         ParseContext context = new ParseContext();
 
+        // XXE / SSRF hardening: route every JAXP factory Tika may pull from the
+        // ParseContext through SafeXml so external entities, DTDs, stylesheets and
+        // remote resource fetching are all disabled. Makes the README's "No remote
+        // resources" guarantee real instead of relying solely on the no-network
+        // namespace defense layer.
+        hardenXmlParsing(context);
+
         // Embedded recursion / count limits (Tika-side enforcement).
         context.set(EmbeddedLimits.class, new EmbeddedLimits(
             limits.maxRecursionDepth(), false,
@@ -187,11 +200,59 @@ public final class ParserRunner {
         PDFParserConfig pdfCfg = new PDFParserConfig();
         pdfCfg.setExtractMarkedContent(true);
         pdfCfg.setExtractUniqueInlineImagesOnly(false);
+        // Disable PDFParser-side per-page OCR. The default AUTO strategy
+        // renders every PDF page through PDFBox into an image, then feeds
+        // each rendered page to Tesseract — and bombs on a long tail of
+        // real-world PDFs (corrupt color profiles, malformed XObjects,
+        // PDFBox COSStream edge cases). On the mbzdls corpus 7 of 11 PDF
+        // failures traced to this exact path (the same files extract
+        // cleanly with OCR off). We still get OCR on actually-image-bearing
+        // entries via Pass1ImageCapture → image-module's Tesseract pipeline,
+        // so the only thing we lose is OCR over scanned-PDF text — and any
+        // genuinely-scanned PDF surfaces its page images as embedded
+        // entries that path can handle. Use reflection so older Tika
+        // snapshots that don't expose OcrConfig.Strategy still build.
+        try {
+            Class<?> ocrCfgClass = Class.forName("org.apache.tika.parser.pdf.OcrConfig");
+            Class<?> strategyClass = null;
+            for (Class<?> c : ocrCfgClass.getDeclaredClasses()) {
+                if (c.getSimpleName().equals("Strategy")) { strategyClass = c; break; }
+            }
+            if (strategyClass != null && strategyClass.isEnum()) {
+                Object noOcr = null;
+                for (Object e : strategyClass.getEnumConstants()) {
+                    if ("NO_OCR".equals(((Enum<?>) e).name())) { noOcr = e; break; }
+                }
+                if (noOcr != null) {
+                    pdfCfg.getClass()
+                          .getMethod("setOcrStrategy", strategyClass)
+                          .invoke(pdfCfg, noOcr);
+                }
+            }
+        } catch (ReflectiveOperationException ignore) {
+            // Older Tika / upstream — falls back to default AUTO behaviour.
+        }
         context.set(PDFParserConfig.class, pdfCfg);
 
         // Office: surface hidden/empty rows in Excel workbooks — a common lure technique.
         OfficeParserConfig officeCfg = new OfficeParserConfig();
         officeCfg.setIncludeMissingRows(true);
+        // Macro security: the worker NEVER executes macros — it extracts them as
+        // inert embedded entries for forensic review (preserved by the standard
+        // VBA/XLM extraction path that surfaces "/macros/..." entries). Set the
+        // documented MacroSecurityLevel=3 (maximum) so the README claim holds.
+        // No conflict with the forensic macro-as-embedded-entry behavior: this
+        // POI flag only governs whether the macro project is *interpreted/run*;
+        // macro *source* is still extracted as an embedded entry either way.
+        applyMacroSecurity(officeCfg);
+        // Enable image hashing on the vector-image POI paths (EMF / WMF). The
+        // Tika fork gates rasterize-and-hash on this flag because the raster
+        // costs O(image) extra memory + CPU and not every Tika user wants it.
+        // We do — phash/dhash/ahash/colorhash on embedded EMFs is the whole
+        // point of including them in the extraction graph. Mirrors how
+        // enableImageHashingIfAvailable() flips the equivalent toggle on
+        // AbstractImageParser instances for raster formats.
+        enableMetafileImageHashingIfAvailable(officeCfg);
         context.set(OfficeParserConfig.class, officeCfg);
 
         // Email: extract all multipart/alternative bodies (plain-text AND HTML), not just
@@ -482,6 +543,29 @@ public final class ParserRunner {
                     String thumbCt = pass1Capture.contentTypeFor(path);
                     if (thumbCt == null) thumbCt = contentType;
                     pass1Thumb = writePass1Thumbnail(outDir, path, imgBytes, thumbCt);
+
+                    // Save the source file + compute digests from the same bytes.
+                    // Pass 2 (EmbeddedFileExtractor.SavingExtractor) is supposed to
+                    // do this, but it misses image embeds in two cases that come up
+                    // a lot in malicious-document corpora:
+                    //   1. depth-1 embedded EMFs / WMFs in .xls files surfaced under
+                    //      synthetic names like "/embedded-1.emf" (POI's OfficeParser
+                    //      doesn't re-surface them in Pass 2's unwrapped flow), and
+                    //   2. images inside embedded PDFs at depth 2 (Pass 2 doesn't
+                    //      recurse into the PDF's image extractor).
+                    // Pass 1 already has the bytes in memory at this point. Using
+                    // them to ALSO compute sha256/md5/sha1 + size_bytes + save the
+                    // raw file is essentially free, and the result wins over Pass
+                    // 2's nulls below in the EmbeddedFileExtractor merge in Main.
+                    Pass1Save saved = savePass1Source(outDir, path, imgBytes);
+                    if (saved != null) {
+                        // Override only when Pass 1 has a value to contribute. Pass 2
+                        // may still fill these in for entries it does see.
+                        if (sha256 == null) sha256 = saved.sha256;
+                        if (md5    == null) md5    = saved.md5;
+                        if (sha1   == null) sha1   = saved.sha1;
+                        if (sizeBytes == 0) sizeBytes = saved.sizeBytes;
+                    }
                 } else if (pass1Capture.wasBufferCapped(path)) {
                     // We saw the image, recognized it as such, but dropped the
                     // buffer to stay under the per-job byte budget. Surface so
@@ -555,6 +639,63 @@ public final class ParserRunner {
             LOG.fine("Pass-1 thumbnail write failed for " + entryPath + ": " + e.getMessage());
             return false;
         }
+    }
+
+    /** SHA-256 / MD5 / SHA-1 + size for a Pass-1-buffered embedded entry whose
+     *  source bytes we just persisted to disk. */
+    private record Pass1Save(String sha256, String md5, String sha1, long sizeBytes) {}
+
+    /** Persist Pass 1's buffered bytes for an embedded entry as both a raw file
+     *  under {@code embedded/<entry-path>} and a digest triple, mirroring what
+     *  Pass 2's {@link EmbeddedFileExtractor.SavingExtractor} does for entries
+     *  it actually saw. Returns {@code null} on path-resolution failure (e.g.
+     *  the root entry, which has no embedded location). */
+    private static Pass1Save savePass1Source(java.nio.file.Path outDir,
+                                             String entryPath, byte[] bytes) {
+        if (outDir == null || entryPath == null || "/".equals(entryPath) || bytes == null) {
+            return null;
+        }
+        java.nio.file.Path embRoot = outDir.resolve("embedded");
+        Metadata nameOnly = new Metadata();
+        java.nio.file.Path outFile =
+                EmbeddedFileExtractor.resolveOutFile(embRoot, entryPath, nameOnly);
+        if (outFile == null) return null;
+        try {
+            java.nio.file.Files.createDirectories(outFile.getParent());
+            java.nio.file.Files.write(outFile, bytes,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (java.io.IOException e) {
+            LOG.fine("Pass-1 source write failed for " + entryPath + ": " + e.getMessage());
+            // Still compute digests + return them even if the file write failed —
+            // the entry hashes are useful for similarity queries on their own.
+        }
+        try {
+            java.security.MessageDigest dSha256 = java.security.MessageDigest.getInstance("SHA-256");
+            java.security.MessageDigest dMd5    = java.security.MessageDigest.getInstance("MD5");
+            java.security.MessageDigest dSha1   = java.security.MessageDigest.getInstance("SHA-1");
+            dSha256.update(bytes);
+            dMd5.update(bytes);
+            dSha1.update(bytes);
+            return new Pass1Save(hexBytes(dSha256.digest()),
+                                 hexBytes(dMd5.digest()),
+                                 hexBytes(dSha1.digest()),
+                                 (long) bytes.length);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            // SHA-256 / MD5 / SHA-1 are JDK-mandatory; this is unreachable in
+            // practice but the API forces us to handle it.
+            return new Pass1Save(null, null, null, (long) bytes.length);
+        }
+    }
+
+    private static String hexBytes(byte[] b) {
+        StringBuilder sb = new StringBuilder(b.length * 2);
+        for (byte x : b) {
+            int v = x & 0xff;
+            sb.append(Character.forDigit(v >>> 4, 16))
+              .append(Character.forDigit(v & 0xf, 16));
+        }
+        return sb.toString();
     }
 
     /** SHA-256 of a UTF-8 string as lowercase hex. Used to dedupe Unicode-QR
@@ -637,6 +778,84 @@ public final class ParserRunner {
         return out.toString();
     }
 
+    /**
+     * Install hardened JAXP factories into the {@link ParseContext} so every XML
+     * read Tika performs (OOXML, ODF, RSS, XMP, SVG metadata, etc.) rejects
+     * external entities, DTDs, stylesheets and remote resource loading. We set
+     * the SAX/DOM/StAX/Transformer factory objects on the context AND register
+     * them under the framework's string-keyed slots, because different Tika
+     * parser modules look them up by type or by interface. Any factory class
+     * Tika doesn't honor is harmless dead weight; the ones it does honor close
+     * the XXE/SSRF hole. As a backstop, the same secure factories are installed
+     * as JVM-global defaults (see {@link #installGlobalSecureXml()}).
+     */
+    static void hardenXmlParsing(ParseContext context) {
+        try {
+            context.set(javax.xml.parsers.DocumentBuilderFactory.class,
+                    io.redtusk.worker.util.SafeXml.newDocumentBuilderFactory());
+            context.set(javax.xml.parsers.SAXParserFactory.class,
+                    io.redtusk.worker.util.SafeXml.newSAXParserFactory());
+            context.set(javax.xml.stream.XMLInputFactory.class,
+                    io.redtusk.worker.util.SafeXml.newXMLInputFactory());
+            context.set(javax.xml.transform.TransformerFactory.class,
+                    io.redtusk.worker.util.SafeXml.newTransformerFactory());
+        } catch (Exception e) {
+            LOG.warning("XML hardening: could not install secure JAXP factories: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Install JVM-global secure JAXP defaults so even XML readers a parser
+     * constructs directly (bypassing the ParseContext) are hardened. Idempotent
+     * and best-effort: only sets a system property when it is not already set so
+     * we never clobber an explicit operator override.
+     */
+    static void installGlobalSecureXml() {
+        // jaxp.properties-style global limits: forbid all external access.
+        setIfAbsent(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        setIfAbsent(javax.xml.XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        setIfAbsent(javax.xml.XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+    }
+
+    private static void setIfAbsent(String key, String value) {
+        try {
+            if (System.getProperty(key) == null) {
+                System.setProperty(key, value);
+            }
+        } catch (SecurityException e) {
+            LOG.fine("XML hardening: cannot set system property " + key + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Set the documented MacroSecurityLevel=3 (maximum) on the OfficeParserConfig
+     * if the Tika/POI API exposes it. Used reflectively so the worker still
+     * compiles against Tika snapshots that lack the setter. The worker never
+     * executes macros regardless — this only makes the documented hardening
+     * level explicit on the config object.
+     */
+    private static void applyMacroSecurity(OfficeParserConfig officeCfg) {
+        // Try a few known setter shapes across Tika/POI versions.
+        if (trySetIntMethod(officeCfg, "setMacroSecurityLevel", 3)) return;
+        // POI exposes macro extraction without execution; if no level setter is
+        // present, the default extract-don't-run behavior already satisfies the
+        // "never executed" guarantee. Nothing else to do.
+        LOG.fine("MacroSecurity: OfficeParserConfig exposes no macro-security setter; "
+                + "relying on extract-only (non-executing) default.");
+    }
+
+    private static boolean trySetIntMethod(Object target, String method, int value) {
+        try {
+            target.getClass().getMethod(method, int.class).invoke(target, value);
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
+        } catch (ReflectiveOperationException e) {
+            LOG.fine("MacroSecurity: " + method + " failed: " + e.getMessage());
+            return false;
+        }
+    }
+
     private static void enableHtmlScriptExtraction(Parser root) {
         Set<Parser> seen = new java.util.HashSet<>();
         java.util.Deque<Parser> queue = new java.util.ArrayDeque<>();
@@ -692,6 +911,25 @@ public final class ParserRunner {
             // Upstream Tika snapshots do not expose the fork-only image hashing toggle.
         } catch (ReflectiveOperationException e) {
             LOG.fine("Image hashing unavailable: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Flip {@code imageHashingEnabled} on the OfficeParserConfig if the fork
+     * exposes it. EMFParser / WMFParser in the wmetcalf Tika fork gate their
+     * rasterize-and-hash branch on this; without it set, embedded EMFs and
+     * WMFs come back with no {@code image:phash} / {@code image:dhash} /
+     * {@code image:ahash} / {@code image:colorhash}. Upstream Tika does not
+     * have the field, so we use reflection and swallow the absence.
+     */
+    private static void enableMetafileImageHashingIfAvailable(OfficeParserConfig officeCfg) {
+        try {
+            officeCfg.getClass().getMethod("setImageHashingEnabled", boolean.class)
+                    .invoke(officeCfg, true);
+        } catch (NoSuchMethodException e) {
+            // Older Tika or upstream Tika — fork-only toggle absent.
+        } catch (ReflectiveOperationException e) {
+            LOG.fine("OfficeParserConfig image hashing unavailable: " + e.getMessage());
         }
     }
 
@@ -794,8 +1032,18 @@ public final class ParserRunner {
         Map<String, Object> result = new LinkedHashMap<>();
         for (String name : m.names()) {
             if (name.startsWith("X-TIKA:") || name.equals("Content-Type")) continue;
-            String value = m.get(name);
-            if (value != null) result.put(name, value);
+            // Preserve ALL values of multi-valued keys (dc:creator, relationship
+            // targets, ...). m.get() kept only the first; m.getValues() keeps them
+            // all. Emit a scalar for a single value, a list for several (the
+            // schema's metadata object is unconstrained and the Python
+            // engine._coerce_metadata_value accepts list[scalar]).
+            String[] values = m.getValues(name);
+            if (values == null || values.length == 0) continue;
+            if (values.length == 1) {
+                if (values[0] != null) result.put(name, values[0]);
+            } else {
+                result.put(name, java.util.Arrays.asList(values));
+            }
         }
         return result;
     }

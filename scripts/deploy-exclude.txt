@@ -1,0 +1,18 @@
+# Per-host config — overwriting these will break the remote deployment.
+deploy/docker/.env
+# Per-host state.
+var/
+# Build/source artifacts.
+.venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# Sensitive fixtures that should never leave the maintainer's machine.
+tests/fixtures/corpus/
+# IDE / OS noise.
+.vscode/
+.idea/
+.DS_Store

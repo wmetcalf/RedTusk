@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
+import re
 import shutil
+import stat
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from redtusk.errors import (
     DispatchError,
@@ -27,21 +31,38 @@ from redtusk.observability.metrics import (
     record_jobs_in_flight,
 )
 from redtusk.pool import Pool
+from redtusk.sandbox.vsock_server import VsockProtocolError
 from redtusk.schema import validate_rmeta
 from redtusk.types import ExtractResult, JobRecord, JobState, Slot
 from redtusk.worker_runtime import WorkerRuntime
 
 _logger = get_logger(__name__)
 
+# Match absolute POSIX paths (two or more segments) so internal host paths in an
+# exception string don't reach the client via error_detail. A lone "/" between
+# words (and/or) is left untouched.
+_INTERNAL_PATH_RE = re.compile(r"/(?:[A-Za-z0-9._+-]+/)+[A-Za-z0-9._+-]*")
+
+
+def _sanitize_error_detail(detail: str) -> str:
+    """Strip absolute host filesystem paths from a client-visible error detail."""
+    return _INTERNAL_PATH_RE.sub("<path>", detail)
+
 
 class Dispatcher:
     def __init__(
         self,
-        pool: Pool,
+        pool: Pool | None,
         store: JobStore,
-        worker_runtime: WorkerRuntime,
+        worker_runtime: WorkerRuntime | None,
         limits: Limits,
+        role: str = "both",
     ) -> None:
+        # role: "both" (HTTP + pool + claim-loop, default — unchanged single-process
+        # deployment), "api" (HTTP + enqueue only; no pool/claim-loop, no /dev/kvm —
+        # sync goes through the queue), or "dispatcher" (pool + claim-loop, no HTTP).
+        # The split removes /dev/kvm + microVM-spawn from the internet-facing api.
+        self._role = role
         self._pool = pool
         self._store = store
         self._runtime = worker_runtime
@@ -51,6 +72,13 @@ class Dispatcher:
         self._in_flight: set[str] = set()  # job IDs currently being dispatched
 
     async def start(self) -> None:
+        if self._role == "api":
+            # api role: the pool + claim-loop live in the separate dispatcher
+            # container. Here we only serve HTTP + enqueue, so there is nothing to
+            # spawn and no /dev/kvm. (No orphan recovery either — that's the
+            # dispatcher's job, owning the slots.)
+            return
+
         self._preflight_state_dirs()
 
         sync_dir = Path(self._limits.scratch_root) / "_sync"
@@ -61,6 +89,7 @@ class Dispatcher:
 
         await self._recover_orphaned_running_jobs()
 
+        assert self._pool is not None, "non-api role requires a pool"
         await self._pool.start()
         self._tasks.append(asyncio.create_task(self._claim_loop()))
         self._tasks.append(asyncio.create_task(self._cleanup_loop()))
@@ -159,10 +188,24 @@ class Dispatcher:
         for t in list(self._dispatch_tasks):
             t.cancel()
         await asyncio.gather(*self._dispatch_tasks, return_exceptions=True)
-        await self._pool.stop()
+        if self._pool is not None:
+            await self._pool.stop()
 
     def is_healthy(self) -> bool:
+        if self._role == "api" or self._pool is None:
+            # api role: ready once it can serve + enqueue; pool health lives in the
+            # dispatcher container (a stalled dispatcher shows as queued jobs not
+            # progressing, surfaced via metrics, not this readyz).
+            return True
         return self._pool.is_healthy()
+
+    @property
+    def fatal_spawn_error(self) -> str | None:
+        """Actionable remediation when the pool halted on a deterministic spawn
+        failure (e.g. a CRaC CPU-feature mismatch), else None."""
+        if self._pool is None:
+            return None
+        return self._pool.fatal_spawn_error
 
     async def _claim_loop(self) -> None:
         """Continuously claim queued jobs and dispatch them.
@@ -173,7 +216,7 @@ class Dispatcher:
         pile up waiting for a slot, and the majority time out before they are
         served.
         """
-        max_in_flight = self._limits.pool_size + self._limits.pool_burst_size
+        max_in_flight = self._limits.pool_warm_size + self._limits.pool_burst_size
         while True:
             try:
                 if len(self._in_flight) >= max_in_flight:
@@ -213,16 +256,19 @@ class Dispatcher:
             except Exception as exc:
                 _logger.warning("dispatcher.cleanup_error", error=str(exc))
 
-    async def _dispatch(self, job: JobRecord) -> None:
+    async def _dispatch(self, job: JobRecord, attempt: int = 0) -> None:
         """Run one job end-to-end. Does not raise — failures are recorded in the store."""
-        _logger.info("dispatcher.dispatch_start", job_id=job.id)
+        # Only reachable in roles that run the claim-loop (both/dispatcher), which
+        # always have a pool + runtime; api role never starts this loop.
+        assert self._pool is not None and self._runtime is not None
+        _logger.info("dispatcher.dispatch_start", job_id=job.id, attempt=attempt)
         record_jobs_in_flight(len(self._in_flight))
         slot: Slot | None = None
         slot_released = False
 
         async def release_slot(success: bool) -> None:
             nonlocal slot_released
-            if slot is not None and not slot_released:
+            if slot is not None and not slot_released and self._pool is not None:
                 slot_released = True
                 await self._pool.release(slot, success=success)
 
@@ -260,6 +306,19 @@ class Dispatcher:
                     self._runtime.receive_result(slot),
                     timeout=float(self._limits.job_timeout_s),
                 )
+            except VsockProtocolError as exc:
+                # The vsock RESULT/ARTIFACT stream desynced — a transport-level
+                # corruption the guest virtio-vsock layer can produce under
+                # heavy host CPU contention (see fc_vcpu_count note in limits).
+                # The worker's bytes were fine; the wire mangled them. Retry on
+                # a fresh microVM rather than failing a perfectly good job.
+                if attempt < self._limits.fc_vsock_retries:
+                    _logger.warning("dispatcher.vsock_corruption_retry",
+                                    job_id=job.id, attempt=attempt, error=str(exc))
+                    await release_slot(success=False)
+                    return await self._dispatch(job, attempt + 1)
+                _logger.warning("dispatcher.vsock_corruption_exhausted",
+                                job_id=job.id, attempt=attempt, error=str(exc))
             except (TimeoutError, Exception) as exc:
                 # Don't fail the whole dispatch yet — the wait() below will
                 # surface the worker exit code. Log so the cause is visible.
@@ -454,7 +513,16 @@ class Dispatcher:
         job.state = JobState.FAILED
         job.completed_at = datetime.now(UTC)
         job.error_code = code
-        job.error_detail = detail
+        # error_detail is client-visible (GET /v1/jobs/{id}). Several callers pass
+        # raw str(exc) which can embed internal host paths (e.g. a FileNotFoundError
+        # on /var/lib/redtusk/scratch/<uuid>/out/metadata.json). Strip absolute
+        # paths for the client; the raw detail stays in the server log only.
+        safe_detail = _sanitize_error_detail(detail)
+        if safe_detail != detail:
+            _logger.info(
+                "dispatcher.fail_job_detail", job_id=job.id, code=code, detail=detail
+            )
+        job.error_detail = safe_detail
         try:
             await self._store.update(job)
         except Exception as exc:
@@ -466,6 +534,59 @@ class Dispatcher:
         )
         record_extraction_total(outcome="failed", fmt="unknown")
 
+    async def _submit_sync_queued(
+        self, body: bytes, filename: str, limits: Limits
+    ) -> ExtractResult:
+        """api-role sync: enqueue a PERSISTED job (the same staging the async
+        endpoint uses) and poll the store for the separate dispatcher container to
+        complete it within the sync window. Returns the ExtractResult, or raises
+        PoolExhaustedError (-> 503) / WorkerError (-> 502)."""
+        sha256 = hashlib.sha256(body).hexdigest()
+        job_id = str(uuid4())
+        pending_dir = Path(limits.artifact_root) / job_id[:2] / job_id / "pending"
+        await asyncio.to_thread(pending_dir.mkdir, parents=True, exist_ok=True)
+        input_path = pending_dir / filename
+        await asyncio.to_thread(input_path.write_bytes, body)
+
+        record = JobRecord(
+            id=job_id,
+            state=JobState.QUEUED,
+            submitted_at=datetime.now(UTC),
+            started_at=None,
+            completed_at=None,
+            input_sha256=sha256,
+            input_size_bytes=len(body),
+            filename_hint=filename,
+            result=None,
+            error_code=None,
+            error_detail=None,
+            input_path=str(input_path),
+        )
+        await self._store.create(record)
+
+        # Budget = queue wait + one job timeout. The dispatcher container's
+        # claim-loop drains the queue exactly as it does for async jobs.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + float(limits.sync_queue_timeout_s) + float(limits.job_timeout_s)
+        rec: JobRecord | None = None
+        while True:
+            rec = await self._store.get(job_id)
+            if rec is not None and rec.state in (JobState.SUCCEEDED, JobState.FAILED):
+                break
+            if loop.time() >= deadline:
+                raise PoolExhaustedError(float(limits.sync_queue_timeout_s))
+            await asyncio.sleep(0.1)
+
+        if rec.state == JobState.FAILED:
+            raise WorkerError(rec.error_detail or rec.error_code or "extraction failed")
+        result: Any = rec.result
+        if isinstance(result, dict):
+            result = ExtractResult.from_dict(result)
+        if result is None:
+            raise WorkerError("job completed without a result")
+        assert isinstance(result, ExtractResult)
+        return result
+
     async def submit_sync(
         self,
         body: bytes,
@@ -476,6 +597,12 @@ class Dispatcher:
 
         Returns ExtractResult or raises PoolExhaustedError (-> 503) or WorkerError (-> 502).
         """
+        if self._role == "api" or self._pool is None:
+            # api role: no local pool — enqueue + poll the store for the separate
+            # dispatcher container to complete it (same trust boundary as async).
+            return await self._submit_sync_queued(body, filename, limits)
+        assert self._pool is not None and self._runtime is not None
+
         # Write body to a temp file in scratch_root
         tmp_dir = Path(limits.scratch_root) / "_sync"
         _mkdir_p(tmp_dir)
@@ -521,18 +648,51 @@ class Dispatcher:
             _hardlink_or_copy(tmp_path, str(dest))
 
             job.worker_started_at = datetime.now(UTC)
-            await self._runtime.signal_job(slot, job, limits)
-            # Drain vsock result BEFORE the container exits (microvm only;
-            # no-op for file-IPC). Mirrors the async dispatch path so both
-            # the queued and the sync submission flows handle microvm.
-            try:
-                await asyncio.wait_for(
-                    self._runtime.receive_result(slot),
-                    timeout=float(limits.job_timeout_s),
-                )
-            except (TimeoutError, Exception) as exc:
-                _logger.warning("dispatcher.sync_receive_result_error",
-                                job_id=job.id, error=str(exc))
+            # signal + receive with VsockProtocolError retry, mirroring the
+            # async dispatch path so sync callers don't fail on transient
+            # vsock frame corruption that queued callers would retry over
+            # (GPT-5.5 review G4). Each retry reaps the corrupted slot and
+            # claims a fresh one. The first attempt's slot was claimed above;
+            # subsequent attempts re-claim inside the loop.
+            attempt = 0
+            while True:
+                await self._runtime.signal_job(slot, job, limits)
+                try:
+                    await asyncio.wait_for(
+                        self._runtime.receive_result(slot),
+                        timeout=float(limits.job_timeout_s),
+                    )
+                except VsockProtocolError as exc:
+                    if attempt < limits.fc_vsock_retries:
+                        _logger.warning(
+                            "dispatcher.sync_vsock_corruption_retry",
+                            job_id=job.id, attempt=attempt, error=str(exc),
+                        )
+                        # Reap this slot, claim a fresh one, re-stage input.
+                        # CRITICAL: clear `slot` AFTER release but BEFORE the
+                        # re-claim — if claim() raises, the `finally` below
+                        # would otherwise release the already-released slot
+                        # and trigger pool._reap_and_replace twice (GPT-5.5
+                        # review G4').
+                        await self._pool.release(slot, success=False)
+                        slot = None
+                        slot = await self._pool.claim(
+                            timeout=float(limits.sync_queue_timeout_s)
+                        )
+                        dest = Path(slot.scratch_dir) / "in" / filename  # type: ignore[arg-type]
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        _hardlink_or_copy(tmp_path, str(dest))
+                        job.worker_started_at = datetime.now(UTC)
+                        attempt += 1
+                        continue
+                    _logger.warning(
+                        "dispatcher.sync_vsock_corruption_exhausted",
+                        job_id=job.id, attempt=attempt, error=str(exc),
+                    )
+                except (TimeoutError, Exception) as exc:
+                    _logger.warning("dispatcher.sync_receive_result_error",
+                                    job_id=job.id, error=str(exc))
+                break
             exit_code = await self._runtime.wait(
                 slot, timeout=float(limits.job_timeout_s)
             )
@@ -575,32 +735,86 @@ def _hardlink_or_copy(src: str, dst: str) -> None:
 
 
 def _read_capped(path: Path, max_bytes: int) -> bytes:
-    size = path.stat().st_size
-    if size > max_bytes:
-        raise ValueError(f"metadata.json too large: {size} > {max_bytes}")
-    return path.read_bytes()
+    # lstat (not stat) so a symlink doesn't pass through as the file it
+    # points to. The FC worker writes its outputs to a virtio-blk disk we
+    # rdump on the host; a compromised worker could plant a symlink named
+    # metadata.json -> /etc/passwd (or a FIFO that would block read_bytes
+    # forever). Reject anything that isn't a regular file.
+    # Open with O_NOFOLLOW, then fstat the resulting fd — TOCTOU-safe: a
+    # compromised worker cannot swap metadata.json for a symlink (-> /etc/passwd)
+    # or a FIFO between the type check and the read, because we check and read
+    # the SAME descriptor. O_NOFOLLOW makes open() itself fail (ELOOP) if the
+    # final path component is a symlink.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(
+                errno.EINVAL,
+                f"metadata.json is not a regular file (mode={stat.filemode(st.st_mode)})",
+                str(path),
+            )
+        if st.st_size > max_bytes:
+            raise ValueError(f"metadata.json too large: {st.st_size} > {max_bytes}")
+        f = os.fdopen(fd, "rb")  # takes ownership of fd on success
+    except BaseException:
+        # Nothing took ownership of fd yet (fdopen wasn't reached, or itself
+        # raised), so we still own it — close to avoid leaking the descriptor.
+        os.close(fd)
+        raise
+    # fd is now owned by f; its context manager closes it exactly once, even if
+    # read() raises. (Previously the `with` lived inside the try, so a failing
+    # read() closed fd via the CM and AGAIN in the except — a double close.)
+    with f:
+        return f.read()
 
 
 def _copy_artifacts(src_dir: Path, dst_dir: Path, *, max_bytes: int) -> None:
     dst_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
-    for src_path in src_dir.rglob("*"):
-        if not src_path.is_file() or src_path.is_symlink():
-            continue
-        # Skip worker draft-snapshot scratch files. DraftSnapshotWriter writes
-        # to .metadata.json.draft.tmp and atomically renames onto metadata.json;
-        # if SIGKILL hits mid-write, the orphan .tmp shouldn't surface in the
-        # artifact tree where the UI would list it.
-        if src_path.name == ".metadata.json.draft.tmp":
-            continue
-        size = src_path.stat().st_size
-        if copied + size > max_bytes:
-            raise ValueError(f"artifacts too large: {copied + size} > {max_bytes}")
-        rel = src_path.relative_to(src_dir)
-        dst_path = dst_dir / rel
-        dst_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_path, dst_path)
-        copied += size
+    # Walk with followlinks=False so a directory symlink planted by a
+    # compromised worker (e.g. /out/escape -> /etc) is NOT descended into.
+    # Path.rglob() follows directory symlinks and would let such a symlink
+    # pull files from outside the slot's /out into the persistent artifact
+    # tree. We additionally confine every resolved source path under src_dir
+    # (realpath startswith check) as defense-in-depth.
+    src_root_real = os.path.realpath(src_dir)
+    prefix = src_root_real + os.sep
+    for dirpath, dirnames, filenames in os.walk(src_dir, followlinks=False):
+        # Drop any directory entries that are themselves symlinks so os.walk
+        # never recurses through them (followlinks=False already avoids
+        # descending, but pruning keeps dirnames consistent and explicit).
+        dirnames[:] = [
+            d for d in dirnames
+            if not os.path.islink(os.path.join(dirpath, d))
+        ]
+        for name in filenames:
+            src_path = Path(dirpath) / name
+            # Per-file symlink skip (unchanged behavior).
+            if src_path.is_symlink() or not src_path.is_file():
+                continue
+            # Skip worker draft-snapshot scratch files. DraftSnapshotWriter
+            # writes to .metadata.json.draft.tmp and atomically renames onto
+            # metadata.json; if SIGKILL hits mid-write, the orphan .tmp
+            # shouldn't surface in the artifact tree where the UI lists it.
+            if src_path.name == ".metadata.json.draft.tmp":
+                continue
+            # Confine the resolved source under src_dir. Catches any residual
+            # way a path could resolve outside the slot (e.g. an intermediate
+            # symlink os.walk didn't prune).
+            real = os.path.realpath(src_path)
+            if real != src_root_real and not real.startswith(prefix):
+                continue
+            size = src_path.stat().st_size
+            if copied + size > max_bytes:
+                raise ValueError(
+                    f"artifacts too large: {copied + size} > {max_bytes}"
+                )
+            rel = src_path.relative_to(src_dir)
+            dst_path = dst_dir / rel
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dst_path)
+            copied += size
 
 
 def _mkdir_p(p: Path) -> None:

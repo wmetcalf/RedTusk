@@ -9,11 +9,11 @@ all but the address-family-specific bytes.
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import socket
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,16 @@ def _send_blob(sock: socket.socket, payload: bytes) -> None:
     sock.sendall(payload)
 
 
+def _read_line(sock: socket.socket) -> bytes:
+    buf = bytearray()
+    while not buf.endswith(b"\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return bytes(buf)
+
+
 def _run_worker(unix_path: str, *, send_result: bytes,
                 send_artifacts: list[tuple[str, bytes]] | None = None) -> dict:
     """Tiny in-test worker simulator. Connects to the server, runs the
@@ -37,38 +47,50 @@ def _run_worker(unix_path: str, *, send_result: bytes,
     for _ in range(50):
         if os.path.exists(unix_path):
             break
-        import time; time.sleep(0.01)
+        time.sleep(0.01)
     cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     cli.connect(unix_path)
     received: dict = {}
     try:
         _send_line(cli, "READY")
         # Read GO
-        go = cli.recv(8)
-        assert go.startswith(b"GO\n"), f"expected GO, got {go!r}"
+        go = _read_line(cli)
+        assert go == b"GO\n", f"expected GO, got {go!r}"
 
         # Read JOB header
         hdr_buf = bytearray()
         while not hdr_buf.endswith(b"\n"):
-            hdr_buf.extend(cli.recv(1))
+            chunk = cli.recv(1)
+            if not chunk:  # peer closed early — fail fast, don't spin forever
+                raise AssertionError("peer closed before JOB header complete")
+            hdr_buf.extend(chunk)
         job_hdr = hdr_buf.decode("utf-8").strip()
         assert job_hdr.startswith("JOB "), f"expected JOB, got {job_hdr!r}"
         job_len = int(job_hdr.split(" ")[1])
         job_buf = b""
         while len(job_buf) < job_len:
-            job_buf += cli.recv(job_len - len(job_buf))
+            chunk = cli.recv(job_len - len(job_buf))
+            if not chunk:
+                raise AssertionError("peer closed before JOB body complete")
+            job_buf += chunk
         received["job"] = json.loads(job_buf)
 
         # Read INPUT header + payload
         hdr_buf.clear()
         while not hdr_buf.endswith(b"\n"):
-            hdr_buf.extend(cli.recv(1))
+            chunk = cli.recv(1)
+            if not chunk:
+                raise AssertionError("peer closed before INPUT header complete")
+            hdr_buf.extend(chunk)
         input_hdr = hdr_buf.decode("utf-8").strip()
         assert input_hdr.startswith("INPUT "), f"expected INPUT, got {input_hdr!r}"
         input_len = int(input_hdr.split(" ")[1])
         input_buf = b""
         while len(input_buf) < input_len:
-            input_buf += cli.recv(input_len - len(input_buf))
+            chunk = cli.recv(input_len - len(input_buf))
+            if not chunk:
+                raise AssertionError("peer closed before INPUT body complete")
+            input_buf += chunk
         received["input"] = input_buf
 
         # Send RESULT
@@ -134,26 +156,32 @@ def test_rejects_path_traversal_artifact(tmp_path: Path) -> None:
         for _ in range(50):
             if os.path.exists(sock_path):
                 break
-            import time; time.sleep(0.01)
+            time.sleep(0.01)
         cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         cli.connect(sock_path)
         try:
             _send_line(cli, "READY")
-            cli.recv(8)  # consume GO
+            _read_line(cli)  # consume GO
             # Read+discard JOB
             buf = bytearray()
             while not buf.endswith(b"\n"):
                 buf.extend(cli.recv(1))
             jl = int(buf.decode("utf-8").strip().split(" ")[1])
             while jl > 0:
-                jl -= len(cli.recv(jl))
+                chunk = cli.recv(jl)
+                if not chunk:  # peer closed early — fail fast, don't spin forever
+                    break
+                jl -= len(chunk)
             # Read+discard INPUT
             buf.clear()
             while not buf.endswith(b"\n"):
                 buf.extend(cli.recv(1))
             il = int(buf.decode("utf-8").strip().split(" ")[1])
             while il > 0:
-                il -= len(cli.recv(il))
+                chunk = cli.recv(il)
+                if not chunk:
+                    break
+                il -= len(chunk)
             # Send RESULT then a malicious ARTIFACT path
             _send_line(cli, "RESULT 2")
             _send_blob(cli, b"{}")
@@ -193,12 +221,12 @@ def test_oversized_blob_rejected(tmp_path: Path) -> None:
         for _ in range(50):
             if os.path.exists(sock_path):
                 break
-            import time; time.sleep(0.01)
+            time.sleep(0.01)
         cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         cli.connect(sock_path)
         try:
             _send_line(cli, "READY")
-            cli.recv(8)
+            _read_line(cli)
             buf = bytearray()
             while not buf.endswith(b"\n"):
                 buf.extend(cli.recv(1))
@@ -227,3 +255,77 @@ def test_oversized_blob_rejected(tmp_path: Path) -> None:
     finally:
         t.join(timeout=5)
         server.close()
+
+
+def test_cumulative_max_extracted_bytes_exceeded(tmp_path: Path) -> None:
+    sock_path = str(tmp_path / "ipc.sock")
+    server = VsockSlotServer(unix_path=sock_path, ready_timeout_s=5, recv_timeout_s=5)
+    server.bind()
+
+    def greedy_worker():
+        for _ in range(50):
+            if os.path.exists(sock_path):
+                break
+            time.sleep(0.01)
+        cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        cli.connect(sock_path)
+        try:
+            _send_line(cli, "READY")
+            _read_line(cli)
+            # Read+discard JOB
+            buf = bytearray()
+            while not buf.endswith(b"\n"):
+                buf.extend(cli.recv(1))
+            jl = int(buf.decode("utf-8").strip().split(" ")[1])
+            while jl > 0:
+                chunk = cli.recv(jl)
+                if not chunk:  # peer closed early — fail fast, don't spin forever
+                    break
+                jl -= len(chunk)
+            # Read+discard INPUT
+            buf.clear()
+            while not buf.endswith(b"\n"):
+                buf.extend(cli.recv(1))
+            il = int(buf.decode("utf-8").strip().split(" ")[1])
+            while il > 0:
+                chunk = cli.recv(il)
+                if not chunk:
+                    break
+                il -= len(chunk)
+
+            # Send RESULT (10 bytes)
+            _send_line(cli, "RESULT 10")
+            _send_blob(cli, b"0123456789")
+
+            # Send ARTIFACT (10 bytes) -> total is now 20, exceeding cap 15!
+            _send_line(cli, "ARTIFACT extra.bin 10")
+            _send_blob(cli, b"abcdefghij")
+        finally:
+            cli.close()
+
+    t = threading.Thread(target=greedy_worker)
+    t.start()
+    try:
+        server.accept_ready()
+        server.send_go()
+        server.send_job({"x": 1}, b"in")
+        with pytest.raises(VsockProtocolError, match="exceeds cap"):
+            server.receive_result(tmp_path / "out", max_extracted_bytes=15)
+    finally:
+        t.join(timeout=5)
+        server.close()
+
+
+def test_parse_frame_length_rejects_lenient_and_nonnumeric():
+    """Frame lengths must be strict non-negative base-10 ints; int()'s leniency
+    (underscores, signs, whitespace) and non-numeric tokens become a
+    VsockProtocolError (handled by the dispatcher's retry), not a raw ValueError."""
+    import pytest
+
+    from redtusk.sandbox.vsock_server import VsockProtocolError, _parse_frame_length
+
+    assert _parse_frame_length("123", "RESULT") == 123
+    assert _parse_frame_length("0", "ARTIFACT") == 0
+    for bad in ("abc", "1_000", "+5", "-5", " 5", "5 ", "0x5", ""):
+        with pytest.raises(VsockProtocolError):
+            _parse_frame_length(bad, "RESULT")

@@ -6,12 +6,48 @@ canonical JSON shape that workers produce and the API serves.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+# Horizontal whitespace = ASCII space/tab + the Unicode Zs "space separator"
+# category (NBSP, ogham, en/em/thin/hair spaces, narrow + medium-math space,
+# ideographic space). Kept in exact sync with the UI's collapseWs().
+_WS_HCLASS = " \t\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000"
+_WS_ZEROWIDTH = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
+_WS_LINESEP = re.compile("\r\n|\r|\u2028|\u2029")
+_WS_HRUN = re.compile(f"[{_WS_HCLASS}]+")
+_WS_TRAIL = re.compile(f"[{_WS_HCLASS}]+\n")
+_WS_BLANKS = re.compile(r"\n{3,}")
+
+
+def wsnorm(text: str) -> str:
+    """Whitespace-normalised copy of extracted text, for readable display.
+
+    Handles Unicode whitespace (common in obfuscated/malicious docs), kept in
+    exact sync with the UI's ``collapseWs()``:
+
+      * zero-width / invisible chars (U+200B-D, U+2060, BOM U+FEFF) are removed;
+      * CRLF/CR and the Unicode line/paragraph separators (U+2028/9) become LF;
+      * a run of horizontal whitespace (ASCII space/tab + the Unicode Zs
+        category) collapses to one char — a tab if the run held any tab
+        ("whatever is longest"), else a space;
+      * trailing horizontal whitespace per line is stripped;
+      * 3+ consecutive newlines collapse to a single blank line.
+
+    The raw ``text`` is left untouched as the forensic source of truth — this
+    is only the readable view.
+    """
+    s = _WS_ZEROWIDTH.sub("", text)
+    s = _WS_LINESEP.sub("\n", s)
+    s = _WS_HRUN.sub(lambda m: "\t" if "\t" in m.group(0) else " ", s)
+    s = _WS_TRAIL.sub("\n", s)
+    s = _WS_BLANKS.sub("\n\n", s)
+    return s
 
 
 class SlotState(StrEnum):
@@ -211,6 +247,11 @@ class EmbeddedEntry:
             "colorhash": self.colorhash,
             "metadata": dict(self.metadata),
             "text": self.text,
+            # Whitespace-normalised view of `text`, computed once at
+            # serialization so the UI + any API consumer reference one canonical
+            # collapsed form instead of each reimplementing it. `text` stays the
+            # untouched source of truth.
+            "text_wsnorm": wsnorm(self.text),
             "language": self.language,
             "qr": self.qr.to_dict(),
             "ocr": self.ocr.to_dict(),

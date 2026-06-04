@@ -26,8 +26,8 @@ from redtusk.types import Slot, SlotState
 @pytest.fixture
 def limits() -> Limits:
     return Limits.from_env(
-        pool_size=2,
-        pool_max_size=8,
+        pool_warm_size=2,
+        pool_concurrent_size=8,
         pool_burst_size=3,
         pool_burst_trigger_s=3,
         pool_burst_drain_s=60,
@@ -315,7 +315,7 @@ async def test_consecutive_failures_shrink_target(
     """After pool_spawn_retry_max+1 consecutive failures, target_size decrements."""
     mock_runtime.spawn.side_effect = WorkerError("always fails")
     # Use low retry_max so the test is quick
-    lim = Limits.from_env(pool_size=3, pool_spawn_retry_max=2)
+    lim = Limits.from_env(pool_warm_size=3, pool_spawn_retry_max=2)
     pool = _make_pool(lim, mock_runtime, mock_store)
     initial_target = pool._target_size  # 3
 
@@ -377,3 +377,73 @@ async def test_reap_and_replace_removes_slot_and_spawns(
     mock_runtime.reap.assert_called_once_with(slot)
     # The draining slot was removed; a replacement warming slot was added
     assert slot.id not in pool._slots
+
+
+# ---------------------------------------------------------------------------
+# Regression: review-confirmed correctness fixes
+# ---------------------------------------------------------------------------
+
+
+def _idle_slot(is_burst: bool = False) -> Slot:
+    return Slot(
+        id=uuid4(),
+        state=SlotState.IDLE,
+        container_id="c",
+        scratch_dir=Path("/tmp/scratch/x"),
+        assigned_job_id=None,
+        assigned_at=None,
+        spawn_attempts=0,
+        is_burst=is_burst,
+    )
+
+
+@pytest.mark.asyncio
+async def test_claim_cancellation_reverts_assigned_slot(limits, mock_runtime, mock_store):
+    """An HTTP client disconnect cancelling claim() mid-inspect must revert the
+    tentatively-ASSIGNED slot to IDLE (no per-disconnect slot leak) and leave the
+    internal lock usable (no double-release RuntimeError)."""
+    pool = _make_pool(limits, mock_runtime, mock_store)
+    slot = _idle_slot()
+    pool._slots[slot.id] = slot
+
+    gate = asyncio.Event()
+
+    async def blocking_inspect(_s):
+        await gate.wait()
+        return True
+
+    mock_runtime.is_container_running = blocking_inspect
+    task = asyncio.create_task(pool.claim(timeout=5))
+    await asyncio.sleep(0.05)  # let claim reach the inspect await
+    assert slot.state == SlotState.ASSIGNED  # tentatively assigned
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert slot.state == SlotState.IDLE  # reverted, not leaked
+    async with pool._lock:  # lock not corrupted
+        pass
+
+
+@pytest.mark.asyncio
+async def test_fatal_cpu_mismatch_halts_pool_without_charging_breaker(
+    limits, mock_runtime, mock_store
+):
+    from redtusk.errors import FcCpuFeatureMismatchError
+
+    pool = _make_pool(limits, mock_runtime, mock_store)
+    mock_runtime.poll_fifo.side_effect = FcCpuFeatureMismatchError("0x102100055bbd7,0x1c8")
+    await pool._spawn_one(is_burst=False)
+
+    assert pool.fatal_spawn_error is not None
+    assert "-XX:CPUFeatures=0x102100055bbd7,0x1c8" in pool.fatal_spawn_error
+    assert pool.is_healthy() is False
+    assert pool._consecutive_spawn_failures == 0  # deterministic: breaker NOT charged
+    assert pool._target_size == limits.pool_warm_size  # NOT shrunk
+
+
+@pytest.mark.asyncio
+async def test_breaker_recovers_target_on_success(limits, mock_runtime, mock_store):
+    pool = _make_pool(limits, mock_runtime, mock_store)
+    pool._target_size = 1  # simulate a prior breaker shrink
+    await pool._spawn_one(is_burst=False)  # mock_runtime defaults -> success
+    assert pool._target_size == 2  # ramped one step back toward pool_warm_size
