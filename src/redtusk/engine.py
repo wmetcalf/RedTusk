@@ -19,7 +19,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -35,8 +34,8 @@ from blastbox.contract import (
     Record,
     Warning,
 )
-from blastbox.worker.engine import DetonationResult
 from blastbox.limits import Limits
+from blastbox.worker.engine import DetonationResult
 
 logger = logging.getLogger(__name__)
 
