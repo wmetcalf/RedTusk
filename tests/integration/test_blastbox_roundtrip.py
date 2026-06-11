@@ -215,7 +215,7 @@ _SAMPLE_RMETA: dict = {
         "submitted_at": "2026-01-01T00:00:00+00:00",
     },
     "extraction": {
-        "root_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "root_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # noqa: E501
         "root_language": "en",
         "duration_ms": 420,
         "entries": [
@@ -223,7 +223,7 @@ _SAMPLE_RMETA: dict = {
                 "path": "/",
                 "parent_path": None,
                 "depth": 0,
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # noqa: E501
                 "size_bytes": 9500,
                 "sha256": "b" * 64,
                 "md5": None,
@@ -263,7 +263,7 @@ _SAMPLE_RMETA: dict = {
                 "path": "/embedded/doc.docx",
                 "parent_path": "/",
                 "depth": 1,
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # noqa: E501
                 "size_bytes": 3200,
                 "sha256": "d" * 64,
                 "md5": None,

@@ -1,24 +1,29 @@
-# RedTusk compose stack
+# RedTusk compose stack — runs ON blastbox.host.
 # Usage: ./deploy/docker/redtusk-compose up --build -d
 # Web UI + API at http://localhost:8000/
 #
-# The api service runs redtusk serve (api + dispatcher in one process).
-# The dispatcher spawns worker containers via the Docker socket — but it
-# does NOT get the real socket. Instead it talks to a docker-socket-proxy
-# (least-privilege Docker API filter) over the internal `backend` network.
-# The proxy is the ONLY container with the real /var/run/docker.sock (ro).
+# The ingress is `blastbox serve` with RedTusk's rmeta route + web UI mounted via
+# the ingress extension (BLASTBOX_INGRESS_EXTENSION). The dispatcher is
+# `blastbox dispatch`: it claims queued jobs and launches one hardened, disposable
+# redtusk-cold-worker container per job (runsc by default). Only the dispatcher
+# touches the Docker socket; the api never does.
+#
+# This replaced the bespoke `redtusk serve` + dispatcher + docker-socket-proxy
+# stack — blastbox.host now provides ingress/dispatch/jobs/similar/result.
 
 services:
-
   postgres:
-    image: postgres:16
+    # postgres:16-alpine + evirma/pg_bktree, so blastbox's SqlJobStore can build
+    # SP-GiST Hamming-distance indexes on perceptual hashes (powers /v1/similar).
+    build:
+      context: postgres
+    image: redtusk-postgres:dev
     restart: unless-stopped
     environment:
-      POSTGRES_DB:       ${POSTGRES_DB:-redtusk}
-      POSTGRES_USER:     ${POSTGRES_USER:-redtusk}
-      # SECURITY: no default — a weak/shared default password is a real
-      # credential-exposure risk. Operators MUST set a strong random value
-      # in deploy/docker/.env. Startup fails fast if unset.
+      POSTGRES_DB: ${POSTGRES_DB:-redtusk}
+      POSTGRES_USER: ${POSTGRES_USER:-redtusk}
+      # SECURITY: no default — startup fails fast if unset. Use a strong random
+      # value (openssl rand -base64 32) in deploy/docker/.env.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env — use a strong random value}
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -30,164 +35,118 @@ services:
     networks:
       - backend
 
-  # Least-privilege Docker API proxy. The api/dispatcher talks to this over
-  # the internal `backend` network (DOCKER_HOST=tcp://docker-socket-proxy:2375)
-  # instead of being handed the raw, root-equivalent /var/run/docker.sock.
-  # An API RCE can now only reach the Docker verbs explicitly enabled below,
-  # not the full daemon. This proxy is the SOLE holder of the real socket.
-  #
-  # Image is pinned by tag; pin by digest in production (see comment below).
-  # Enabled verbs are the minimum the dispatcher needs to run/manage worker
-  # containers: containers create/start/wait/logs/stop/delete, images pull,
-  # POST (mutating calls), and INFO (RedTusk's runtime-detect calls
-  # `docker info`). Everything else stays at the image default of DENY (0).
-  docker-socket-proxy:
-    image: ghcr.io/tecnativa/docker-socket-proxy:0.3.0
-    restart: unless-stopped
-    environment:
-      # --- coarse object groups ---
-      - CONTAINERS=1          # /containers/* (create, start, wait, logs, stop, delete, inspect)
-      - IMAGES=1              # /images/*     (pull/inspect the worker image)
-      - INFO=1                # /info         (RedTusk runtime detect calls `docker info`)
-      - POST=1                # allow mutating (POST) calls — required for create/start/stop
-      # --- everything else explicitly denied (defence in depth; these are
-      #     already 0 by default, listed to make intent auditable) ---
-      - NETWORKS=0
-      - VOLUMES=0
-      - EXEC=0
-      - SWARM=0
-      - SERVICES=0
-      - TASKS=0
-      - NODES=0
-      - SECRETS=0
-      - CONFIGS=0
-      - PLUGINS=0
-      - SYSTEM=0
-      - AUTH=0
-      - BUILD=0
-      - COMMIT=0
-      - DISTRIBUTION=0
-      - SESSION=0
-      - VERSION=1             # docker SDK negotiates the API version on connect
-    volumes:
-      # The ONLY container that touches the real socket. Read-only bind: the
-      # proxy still issues full socket I/O, but the verb filter above is what
-      # actually constrains it.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      # The tecnativa entrypoint renders haproxy.cfg.template -> haproxy.cfg
-      # *in this dir* at every boot, which fails under `read_only: true`. A
-      # named volume is writable even when the rootfs is read-only, and Docker
-      # seeds it from the image on first creation so the baked template and
-      # errors/ pages survive. (Footgun: if the proxy image is ever bumped and
-      # its template changes, `docker volume rm redtusk_proxy-haproxy-cfg` to
-      # re-seed — irrelevant while the image is pinned to 0.3.0.)
-      - proxy-haproxy-cfg:/usr/local/etc/haproxy
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /run
-    networks:
-      # Internal only — never exposed to `frontend`. No `ports:` mapping.
-      - backend
-
   api:
-    image: ${REDTUSK_API_IMAGE:-redtusk-api:dev}
+    image: ${REDTUSK_IMAGE:-redtusk:dev}
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile.api
+      dockerfile: deploy/docker/Dockerfile.host
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-      docker-socket-proxy:
-        condition: service_started
     environment:
-      - REDTUSK_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env — use a strong random value}@postgres:5432/${POSTGRES_DB:-redtusk}
-      # Point the docker SDK / docker CLI at the least-privilege proxy instead
-      # of a bind-mounted socket. The docker Python SDK and CLI both honour
-      # DOCKER_HOST by default. NOTE for Python owners: confirm the dispatcher
-      # constructs its docker client from the environment (the SDK's
-      # docker.from_env() / DockerClient honour DOCKER_HOST automatically); if
-      # it hardcodes base_url="unix:///var/run/docker.sock" it must be changed
-      # to read DOCKER_HOST.
-      - DOCKER_HOST=tcp://docker-socket-proxy:2375
-      # Pin to a versioned tag, not :latest, so a re-pull can't silently swap
-      # the worker image out from under a running deploy. Pin by digest in
-      # production (REDTUSK_WORKER_IMAGE=redtusk@sha256:...).
-      - REDTUSK_WORKER_IMAGE=${REDTUSK_WORKER_IMAGE:-redtusk:0.1.0}
-      - REDTUSK_PROFILE=${REDTUSK_PROFILE:-default}
-      - REDTUSK_ENABLE_OCR=true
-      # Expose Swagger /docs + /redoc + /openapi.json. Off by default; set
-      # REDTUSK_EXPOSE_DOCS=true in .env to publish the API surface.
-      - REDTUSK_EXPOSE_DOCS=${REDTUSK_EXPOSE_DOCS:-false}
-      - REDTUSK_WORKER_RUNTIME=${REDTUSK_WORKER_RUNTIME:-}
-      # Default to the seccomp profile baked into the API image (runc path).
-      # gVisor/runsc ignores this and applies its own filter, so it stays safe
-      # to default. Override with an absolute host path to use a custom profile.
-      - REDTUSK_WORKER_SECCOMP_PROFILE=${REDTUSK_WORKER_SECCOMP_PROFILE:-/opt/redtusk/seccomp/redtusk.seccomp.json}
-      # Default AppArmor profile name (runc + AppArmor-enabled hosts). Empty =
-      # docker's built-in docker-default. Load `redtusk-worker` on the host to
-      # use a tighter profile, or leave default below.
-      - REDTUSK_WORKER_APPARMOR_PROFILE=${REDTUSK_WORKER_APPARMOR_PROFILE:-}
-      - REDTUSK_POOL_WARM_SIZE=${REDTUSK_POOL_WARM_SIZE:-8}
-      # Hard ceiling on total in-flight slots (idle+assigned+warming); empty =
-      # code default max(8, cores). Passed through so the cap is configurable in
-      # Compose (Copilot review: it was previously non-overridable here). Uses
-      # the canonical names to match .env.example (legacy REDTUSK_POOL_SIZE /
-      # _MAX_SIZE still work as aliases — just don't set both old and new).
-      - REDTUSK_POOL_CONCURRENT_SIZE=${REDTUSK_POOL_CONCURRENT_SIZE:-}
-      - REDTUSK_POOL_BURST_SIZE=${REDTUSK_POOL_BURST_SIZE:-5}
-      - REDTUSK_JOB_TIMEOUT_S=${REDTUSK_JOB_TIMEOUT_S:-90}
-      - REDTUSK_WORKER_WARMUP_TIMEOUT_S=${REDTUSK_WORKER_WARMUP_TIMEOUT_S:-120}
-      # Persistent state outside /tmp. The path must be identical on host and in
-      # the API container so the dispatcher's docker-run bind mounts resolve on
-      # the host. Override REDTUSK_STATE_DIR in .env to relocate.
-      - REDTUSK_ARTIFACT_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}/artifacts
-      - REDTUSK_SCRATCH_ROOT=${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}/scratch
+      - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
+      - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
+      - BLASTBOX_JOB_RETENTION_SECONDS=${BLASTBOX_JOB_RETENTION_SECONDS:-0}
+      - BLASTBOX_ALLOWED_ENGINES=redtusk
+      - BLASTBOX_INGRESS_EXTENSION=redtusk.blastbox_ingress:make_extension
     ports:
-      # Listens on all addresses (0.0.0.0) by default. Front with a reverse
-      # proxy (TLS termination, auth, rate limiting) for any exposed deploy —
-      # the app does not authenticate. Set REDTUSK_BIND_ADDR=127.0.0.1 in .env
-      # to restrict to localhost, or REDTUSK_PORT to change the host port.
+      # The app does not authenticate — front with a reverse proxy for any exposed
+      # deploy. REDTUSK_BIND_ADDR=127.0.0.1 restricts to localhost.
       - "${REDTUSK_BIND_ADDR:-0.0.0.0}:${REDTUSK_PORT:-8000}:8000"
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    # The api no longer needs the docker group — it reaches Docker over TCP via
-    # the proxy, not the host socket. group_add removed (was for socket access).
     tmpfs:
-      - /tmp:rw,exec,nosuid,size=128m
+      - /tmp:rw,exec,nosuid,size=2g
     volumes:
-      # Bind-mount host state dir at the SAME path inside the API container so the
-      # dispatcher's docker-run bind mounts (which docker resolves on the host)
-      # see the directories the API creates. Override REDTUSK_STATE_DIR in .env.
-      - ${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}:${REDTUSK_STATE_DIR:?REDTUSK_STATE_DIR must be set in .env — points at a host dir for persistent scratch+artifacts}
-      # SECURITY: the raw docker.sock bind mount has been REMOVED. The api now
-      # talks to docker-socket-proxy (DOCKER_HOST above). Do not re-add it.
-    command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
+      # Host-CONSISTENT path, NOT a named volume: the dispatcher launches workers
+      # whose job-dir bind-mounts are resolved by the host docker daemon, so
+      # job_root must exist at the SAME path on host + container.
+      - ${REDTUSK_DATA_DIR:-/var/lib/redtusk}:${REDTUSK_DATA_DIR:-/var/lib/redtusk}
+    command: ["blastbox", "serve", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
-      test: ["CMD", "redtusk", "selftest"]
+      test:
+        - "CMD"
+        - "/opt/redtusk/bin/python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/v1/healthz', timeout=5).status==200 else 1)"
       interval: 30s
       timeout: 15s
-      start_period: 30s
+      start_period: 20s
       retries: 3
     networks:
-      # backend only. The api was previously dual-homed on `frontend` too, but
-      # nothing else used that network — being multi-homed broke external access
-      # to the published port: the inbound DNAT lands on the backend IP while the
-      # reply egressed the frontend gateway (asymmetric routing), so SYNs arrived
-      # but replies never came back. Single-homing fixes that. (Re-introduce a
-      # frontend network only if a reverse proxy is added there too.)
       - backend
+      - frontend
 
-volumes:
-  postgres-data:
-  proxy-haproxy-cfg:
+  # Claims queued jobs and launches one hardened disposable worker per job via
+  # `docker run --runtime=runsc …` (runc is REFUSED unless BLASTBOX_ALLOW_RUNC=1).
+  # The worker image is redtusk-cold-worker:dev (Dockerfile.cold-worker →
+  # `python -m blastbox.worker.cold` with BLASTBOX_ENGINE=redtusk.engine:RedTuskEngine
+  # + the JVM/Tika baked in). Only this service has the Docker socket.
+  dispatcher:
+    image: ${REDTUSK_IMAGE:-redtusk:dev}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.host
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
+      - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
+      - BLASTBOX_JOB_RETENTION_SECONDS=${BLASTBOX_JOB_RETENTION_SECONDS:-0}
+      # EngineSpec registry: NAME=image:tag. Worker image built from
+      # Dockerfile.cold-worker (which is FROM redtusk-worker:default).
+      - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
+      # Per-engine forwardable-param allowlist (default-deny). RedTusk per-request
+      # overrides (enable_qr/ocr/thumbnails, max_recursion_depth, …) are a follow-on
+      # (the engine still uses its built-in job defaults); empty = forward nothing.
+      - BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS=${BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS:-}
+      - BLASTBOX_DISPATCH_CONCURRENCY=${BLASTBOX_DISPATCH_CONCURRENCY:-}
+      - BLASTBOX_WORKER_TIMEOUT_S=${BLASTBOX_WORKER_TIMEOUT_S:-300}
+      # Worker runtime: empty = auto-detect (prefer runsc). Plain runc is
+      # fail-closed REFUSED unless BLASTBOX_ALLOW_RUNC=1.
+      - BLASTBOX_WORKER_RUNTIME=${BLASTBOX_WORKER_RUNTIME:-}
+      - BLASTBOX_ALLOW_RUNC=${BLASTBOX_ALLOW_RUNC:-0}
+      - BLASTBOX_REQUIRE_SECURE_RUNTIME=${BLASTBOX_REQUIRE_SECURE_RUNTIME:-0}
+      - BLASTBOX_WORKER_MEMORY=${BLASTBOX_WORKER_MEMORY:-}
+      - BLASTBOX_WORKER_PIDS_LIMIT=${BLASTBOX_WORKER_PIDS_LIMIT:-}
+      - BLASTBOX_WORKER_CPUS=${BLASTBOX_WORKER_CPUS:-}
+      - BLASTBOX_WORKER_NOFILE=${BLASTBOX_WORKER_NOFILE:-4096}
+      - BLASTBOX_SECCOMP_JSON_HOST=${BLASTBOX_SECCOMP_JSON_HOST:-}
+      - BLASTBOX_APPARMOR_PROFILES=${BLASTBOX_APPARMOR_PROFILES:-}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_GID:-984}"
+    tmpfs:
+      - /tmp:rw,nosuid,size=64m
+    volumes:
+      - ${REDTUSK_DATA_DIR:-/var/lib/redtusk}:${REDTUSK_DATA_DIR:-/var/lib/redtusk}
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["blastbox", "dispatch"]
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 30s
+      timeout: 15s
+      start_period: 20s
+      retries: 3
+    networks:
+      - backend
 
 networks:
   backend:
+    internal: true
+  frontend:
+
+volumes:
+  postgres-data:
+  # No redtusk-data volume: job_root is a host bind-mount (see api/dispatcher),
+  # required so dispatcher-launched workers can bind-mount job dirs by host path.

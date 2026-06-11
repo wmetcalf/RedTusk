@@ -1,0 +1,63 @@
+# api / dispatcher image for RedTusk on blastbox.host (`redtusk:dev`).
+#
+# Runs `blastbox serve` (HTTP ingress + RedTusk's rmeta route via the ingress
+# extension) or `blastbox dispatch` (claims queued jobs, launches one
+# redtusk-cold-worker container per job). NO JVM/Tika here — the WORKER image
+# (Dockerfile.cold-worker) carries those; this tier is the pure-Python host.
+#
+# Analogue of clippyshot's deploy/docker/Dockerfile. Build context = repo root:
+#   docker build -f deploy/docker/Dockerfile.host -t redtusk:dev .
+FROM python:3.12-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Docker CLI (the dispatcher launches worker containers via the socket) + tini.
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg tini \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && gpg --show-keys --with-colons /etc/apt/keyrings/docker.gpg | grep -q '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' \
+        || { echo 'FATAL: docker apt signing key fingerprint mismatch' >&2; exit 1; } \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update -qq \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 redtusk \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin redtusk
+
+# `redtusk[host]` pulls blastbox[host] (the `blastbox` console script + the
+# fastapi/psycopg ingress + dispatch stack) AND the redtusk package (so the
+# ingress extension module imports). The WORKER image installs only blastbox
+# core + redtusk --no-deps; this tier needs the full host extra.
+WORKDIR /tmp/build
+COPY pyproject.toml /tmp/build/pyproject.toml
+COPY src /tmp/build/src
+RUN python3 -m venv /opt/redtusk \
+    && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/redtusk/bin/pip install --no-cache-dir '/tmp/build[host]' \
+    && rm -rf /tmp/build \
+    && /opt/redtusk/bin/python -c "import blastbox.host.ingress.app, redtusk.blastbox_ingress; print('host + ingress import OK')"
+
+ENV PATH=/opt/redtusk/bin:$PATH \
+    BLASTBOX_ALLOWED_ENGINES=redtusk \
+    BLASTBOX_INGRESS_EXTENSION=redtusk.blastbox_ingress:make_extension
+
+USER 10001:10001
+WORKDIR /var/lib/redtusk
+
+# Image-default healthcheck = the engine self-test; the compose `api` service
+# overrides this with an HTTP probe of /v1/healthz.
+HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
+    CMD ["redtusk", "selftest"]
+
+# Default to the ingress; compose overrides `command` per service
+# (api -> blastbox serve, dispatcher -> blastbox dispatch). The `redtusk` CLI
+# (selftest/version) stays on PATH for one-shot in-process use.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["blastbox", "serve", "--host", "0.0.0.0", "--port", "8000"]
+
+LABEL org.opencontainers.image.title="redtusk" \
+      org.opencontainers.image.description="RedTusk api/dispatcher on blastbox.host" \
+      org.opencontainers.image.version="0.1.0"
