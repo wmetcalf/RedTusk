@@ -35,6 +35,56 @@ services:
     networks:
       - backend
 
+  # Least-privilege Docker API proxy — the SOLE holder of the real socket. The
+  # dispatcher reaches it over the internal backend network (DOCKER_HOST=
+  # tcp://docker-socket-proxy:2375) instead of being handed the raw, root-equivalent
+  # /var/run/docker.sock. A dispatcher RCE can then reach only the Docker verbs
+  # enabled below — the minimum `blastbox dispatch` uses: `docker run`
+  # (create/start/attach/wait/rm = CONTAINERS, pull = IMAGES, POST), `docker kill`
+  # (CONTAINERS), `docker info` (INFO). Everything else stays at the image DENY default.
+  docker-socket-proxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - INFO=1
+      - POST=1
+      - VERSION=1           # docker CLI/SDK negotiates the API version on connect
+      # Everything else explicitly denied (defence in depth; 0 is already default).
+      - NETWORKS=0
+      - VOLUMES=0
+      - EXEC=0
+      - SWARM=0
+      - SERVICES=0
+      - TASKS=0
+      - NODES=0
+      - SECRETS=0
+      - CONFIGS=0
+      - PLUGINS=0
+      - SYSTEM=0
+      - AUTH=0
+      - BUILD=0
+      - COMMIT=0
+      - DISTRIBUTION=0
+      - SESSION=0
+    volumes:
+      # The ONLY container that touches the real socket (read-only bind).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # tecnativa renders haproxy.cfg into this dir at boot, which fails under
+      # read_only; a named volume is writable and seeded from the image.
+      - proxy-haproxy-cfg:/usr/local/etc/haproxy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run
+    networks:
+      # Internal only — never exposed to frontend, no ports mapping.
+      - backend
+
   api:
     image: ${REDTUSK_IMAGE:-redtusk:dev}
     build:
@@ -85,7 +135,8 @@ services:
   # `docker run --runtime=runsc …` (runc is REFUSED unless BLASTBOX_ALLOW_RUNC=1).
   # The worker image is redtusk-cold-worker:dev (Dockerfile.cold-worker →
   # `python -m blastbox.worker.cold` with BLASTBOX_ENGINE=redtusk.engine:RedTuskEngine
-  # + the JVM/Tika baked in). Only this service has the Docker socket.
+  # + the JVM/Tika baked in). Reaches Docker ONLY through the least-privilege
+  # docker-socket-proxy (DOCKER_HOST below) — never the raw socket.
   dispatcher:
     image: ${REDTUSK_IMAGE:-redtusk:dev}
     build:
@@ -95,10 +146,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     environment:
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
       - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
       - BLASTBOX_JOB_RETENTION_SECONDS=${BLASTBOX_JOB_RETENTION_SECONDS:-0}
+      # Reach the Docker daemon ONLY via the least-privilege proxy over TCP — the
+      # docker CLI (which blastbox shells out to) honours DOCKER_HOST. No raw socket.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
       # EngineSpec registry: NAME=image:tag. Worker image built from
       # Dockerfile.cold-worker (which is FROM redtusk-worker:default).
       - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
@@ -124,13 +180,14 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    group_add:
-      - "${DOCKER_GID:-984}"
+    # No group_add: the dispatcher reaches Docker over TCP via the proxy, not a
+    # bind-mounted socket, so it no longer needs the host docker group.
     tmpfs:
       - /tmp:rw,nosuid,size=64m
     volumes:
       - ${REDTUSK_DATA_DIR:-/var/lib/redtusk}:${REDTUSK_DATA_DIR:-/var/lib/redtusk}
-      - /var/run/docker.sock:/var/run/docker.sock
+      # SECURITY: the raw docker.sock bind mount is intentionally ABSENT — the
+      # dispatcher talks to docker-socket-proxy (DOCKER_HOST). Do not re-add it.
     command: ["blastbox", "dispatch"]
     healthcheck:
       test: ["CMD", "docker", "info"]
@@ -148,5 +205,6 @@ networks:
 
 volumes:
   postgres-data:
+  proxy-haproxy-cfg:
   # No redtusk-data volume: job_root is a host bind-mount (see api/dispatcher),
   # required so dispatcher-launched workers can bind-mount job dirs by host path.

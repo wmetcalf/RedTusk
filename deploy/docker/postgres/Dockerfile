@@ -7,8 +7,11 @@ RUN apk add --no-cache git make gcc musl-dev libc-dev postgresql16-dev
 # with_llvm=no skips the optional JIT bitcode build, which wants a specific
 # clang version the alpine base doesn't ship. The .so is what Postgres
 # actually loads at CREATE EXTENSION time.
-RUN git clone --depth=1 https://github.com/evirma/pg_bktree.git /src \
+# Pin to a specific commit (not HEAD) for a reproducible, tamper-evident build.
+ARG PG_BKTREE_SHA=59db54ff5cd0b9f1b60c95be6f04414282699237
+RUN git clone https://github.com/evirma/pg_bktree.git /src \
  && cd /src \
+ && git -c advice.detachedHead=false checkout "${PG_BKTREE_SHA}" \
  && make USE_PGXS=1 with_llvm=no \
  && make USE_PGXS=1 with_llvm=no install \
  && ls /usr/local/lib/postgresql/*.so /usr/local/share/postgresql/extension/bktree*

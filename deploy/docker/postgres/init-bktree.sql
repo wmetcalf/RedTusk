@@ -25,7 +25,10 @@ CREATE OR REPLACE FUNCTION colorhash_bin_distance(
     a text, b text, first_bin int DEFAULT 0, last_bin int DEFAULT 14
 ) RETURNS int AS $$
     SELECT CASE
-        WHEN length(a) <> 14 OR length(b) <> 14 THEN 2147483647
+        -- Guard the inputs: malformed hashes, or bin bounds outside [0,14] / inverted,
+        -- would make substring() return '' and the hex->bit(4) cast raise at query time.
+        WHEN length(a) <> 14 OR length(b) <> 14
+             OR first_bin < 0 OR last_bin > 14 OR first_bin > last_bin THEN 2147483647
         ELSE coalesce((
             SELECT sum(abs(
                 ('x' || substring(a FROM i+1 FOR 1))::bit(4)::int
