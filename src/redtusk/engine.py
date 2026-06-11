@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -426,6 +427,7 @@ class RedTuskEngine:
         # referenced with paths relative to outdir (not rmeta_dir) so the
         # blastbox envelope path confinement passes with outdir as root.
         artifacts: list[DeclaredArtifact] = []
+        used_ids: set[str] = set()
         for f in sorted(rmeta_dir.rglob("*")):
             if not f.is_file():
                 continue
@@ -433,11 +435,7 @@ class RedTuskEngine:
                 continue
             rel_to_outdir = f.relative_to(outdir)
             rel_str = str(rel_to_outdir)
-            # id: replace path separators to keep the id safe [A-Za-z0-9._-]
-            artifact_id = rel_str.replace("/", "_").replace("\\", "_")
-            # Truncate to 128 chars if needed
-            if len(artifact_id) > 128:
-                artifact_id = artifact_id[-128:]
+            artifact_id = _safe_artifact_id(rel_str, used_ids)
             kind = _infer_artifact_kind(rel_str)
             artifacts.append(DeclaredArtifact(id=artifact_id, path=rel_str, kind=kind))
 
@@ -462,6 +460,34 @@ class RedTuskEngine:
             warnings=warnings,
             status="ok",
         )
+
+
+_ARTIFACT_ID_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_artifact_id(rel_str: str, used: set[str]) -> str:
+    """Build a contract-valid, unique ``DeclaredArtifact.id`` from a rel path.
+
+    The blastbox contract requires ``^[A-Za-z0-9._-]{1,128}$``.  Embedded-file
+    names from the JVM worker can contain spaces, unicode, or arbitrary bytes
+    (e.g. an email attachment's real filename), so every disallowed char is
+    mapped to ``_``.  On overflow the readable tail is kept plus a hash of the
+    full path for uniqueness, and any residual collision is disambiguated — the
+    envelope must never carry a duplicate artifact id (blastbox rejects those).
+    The full original path is preserved verbatim in ``DeclaredArtifact.path``.
+    """
+    safe = _ARTIFACT_ID_DISALLOWED.sub("_", rel_str) or "artifact"
+    if len(safe) > 128:
+        digest = hashlib.sha256(rel_str.encode("utf-8", "replace")).hexdigest()[:16]
+        safe = safe[-(128 - 17):] + "_" + digest
+    candidate = safe
+    n = 1
+    while candidate in used:
+        suffix = f"_{n}"
+        candidate = safe[: 128 - len(suffix)] + suffix
+        n += 1
+    used.add(candidate)
+    return candidate
 
 
 def _infer_artifact_kind(rel_path: str) -> str:
