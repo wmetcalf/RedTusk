@@ -24,12 +24,12 @@ USER root
 # Python 3.12 — redtusk requires >=3.12; the temurin/jammy base ships 3.10, so
 # pull 3.12 from deadsnakes, then strip the PPA tooling to keep the layer lean.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common \
+        software-properties-common gnupg dirmngr ca-certificates \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
         python3.12 \
         python3.12-venv \
-    && apt-get purge -y software-properties-common \
+    && apt-get purge -y software-properties-common gnupg dirmngr \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
