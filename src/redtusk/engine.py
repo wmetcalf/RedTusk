@@ -1,24 +1,33 @@
 """RedTusk blastbox Engine implementation.
 
-Wraps the RedTusk JVM worker (``redtusk-worker:default`` Docker image) as a
-blastbox ``Engine``.  The engine:
+Wraps the RedTusk JVM/Tika worker (``redtusk-worker.jar``) as a blastbox
+``Engine``.  Under blastbox.host the cold worker is itself the disposable,
+socket-less sandbox container, so the engine launches the JVM **in-process**
+(``java -jar /app/redtusk-worker.jar --run <scratch>``) rather than shelling
+out to a nested ``docker run`` (which the socket-less worker cannot do).  The
+engine:
 
 1. Writes the input file into a scratch directory, sets up the file-IPC
    handshake (``control/job.json`` + ``control/control.go``), and runs the
-   worker container via ``docker run``.
-2. Parses the rmeta ``metadata.json`` the JVM worker writes to ``out/``.
+   JVM worker as a subprocess.
+2. Parses the rmeta ``metadata.json`` the JVM worker writes to the output dir.
 3. Reconstructs a recursive ``EmbeddedResource`` tree from the flat,
    depth-ordered ``extraction.entries[]`` list using a depth-stack.
 4. Returns a ``DetonationResult`` with the tree as payload plus any declared
    artifacts (thumbnails, embedded files) the worker wrote.
 
-Running the worker requires Docker and the ``redtusk-worker:default`` image.
+Running the worker requires a JRE (``java``) and ``redtusk-worker.jar`` on disk
+— both baked into the ``redtusk-cold-worker`` image at ``/app``.  The jar, AOT
+cache, java binary and JVM flags are env-overridable (``REDTUSK_WORKER_JAR``,
+``REDTUSK_AOT_CACHE``, ``REDTUSK_JAVA_BIN``, ``REDTUSK_JAVA_OPTS``) for dev/test.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -39,7 +48,24 @@ from blastbox.worker.engine import DetonationResult
 
 logger = logging.getLogger(__name__)
 
-IMAGE = "redtusk-worker:default"
+# Default locations of the JVM worker artifacts inside the cold-worker image.
+# All are env-overridable so a dev box / CI can point at a locally-built jar.
+_DEFAULT_JAVA_BIN = "java"
+_DEFAULT_WORKER_JAR = "/app/redtusk-worker.jar"
+_DEFAULT_AOT_CACHE = "/app/redtusk.aot"
+_DEFAULT_JAVA_LIBRARY_PATH = "/app"
+
+# JVM flags mirror the redtusk-worker image ENTRYPOINT.  They MUST match the
+# flags the AOT cache was built with (UseSerialGC / TieredStopAtLevel=1 / 800m
+# heap / native-access) or JDK 25 rejects the cache at load time.
+_DEFAULT_JVM_FLAGS: tuple[str, ...] = (
+    "-XX:+UseSerialGC",
+    "-XX:TieredStopAtLevel=1",
+    "-Xms800m",
+    "-Xmx800m",
+    "-XX:+AlwaysPreTouch",
+    "--enable-native-access=ALL-UNNAMED",
+)
 
 # Job descriptor defaults matching the existing test harness.
 _DEFAULT_JOB: dict[str, Any] = {
@@ -196,6 +222,37 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _java_worker_argv(scratch: Path) -> list[str]:
+    """Build the in-process JVM worker argv (``java ... -jar ... --run <scratch>``).
+
+    Mirrors the redtusk-worker image ENTRYPOINT so the AOT cache — which is
+    flag-sensitive — loads cleanly.  Everything is env-overridable:
+
+    - ``REDTUSK_JAVA_BIN``          java executable (default ``java``)
+    - ``REDTUSK_WORKER_JAR``        worker jar (default ``/app/redtusk-worker.jar``)
+    - ``REDTUSK_AOT_CACHE``         AOT cache; only added when the file exists
+    - ``REDTUSK_JAVA_LIBRARY_PATH`` native lib dir (default ``/app``)
+    - ``REDTUSK_JAVA_OPTS``         full JVM-flag override (shlex-split), replacing
+                                    the default flag bundle entirely
+    """
+    java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
+    jar = os.environ.get("REDTUSK_WORKER_JAR", _DEFAULT_WORKER_JAR)
+    lib_path = os.environ.get("REDTUSK_JAVA_LIBRARY_PATH", _DEFAULT_JAVA_LIBRARY_PATH)
+    aot_cache = os.environ.get("REDTUSK_AOT_CACHE", _DEFAULT_AOT_CACHE)
+
+    opts_override = os.environ.get("REDTUSK_JAVA_OPTS")
+    if opts_override is not None:
+        jvm_flags = shlex.split(opts_override)
+    else:
+        jvm_flags = [f"-Djava.library.path={lib_path}", *_DEFAULT_JVM_FLAGS]
+        # The AOT cache is flag-sensitive and baked into the cold-worker image;
+        # only load it when present so a bare dev box still runs (slower).
+        if aot_cache and Path(aot_cache).is_file():
+            jvm_flags.insert(0, f"-XX:AOTCache={aot_cache}")
+
+    return [java_bin, *jvm_flags, "-jar", jar, "--run", str(scratch)]
+
+
 def _run_worker(
     input_path: Path,
     rmeta_outdir: Path,
@@ -234,21 +291,18 @@ def _run_worker(
         rmeta_outdir.mkdir(parents=True, exist_ok=True)
         control_dir.mkdir()
 
-        # World-writable so container UID 10001 can write control files and
-        # output files.  The harness writes the blastbox envelope to the
-        # *parent* outdir — not into rmeta_outdir — so permissions here only
-        # need to satisfy the container + our own reads.
-        for d in (scratch, in_dir, rmeta_outdir, control_dir):
-            d.chmod(0o777)
-
         # Write input
         (in_dir / filename_hint).write_bytes(input_bytes)
 
-        # Build job descriptor
+        # Build job descriptor.  The JVM worker (FileIpcChannel.receiveJob)
+        # consumes input_path/output_dir *literally*, so in-process these are the
+        # real host paths — not the container-relative /scratch/in, /scratch/out
+        # the old docker-run path used.  output_dir is rmeta_outdir so the
+        # worker's metadata.json + artifacts land under the harness outdir.
         job: dict[str, Any] = {
             **_DEFAULT_JOB,
-            "input_path": f"/scratch/in/{filename_hint}",
-            "output_dir": "/scratch/out",
+            "input_path": str(in_dir / filename_hint),
+            "output_dir": str(rmeta_outdir),
             "sha256": sha256,
             "filename_hint": filename_hint,
         }
@@ -271,34 +325,29 @@ def _run_worker(
         t = threading.Thread(target=_signal_worker, daemon=True)
         t.start()
 
-        cmd = [
-            "docker", "run", "--rm",
-            "--network=none",
-            "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
-            "--memory=2g",
-            "--pids-limit=512",
-            "--tmpfs", "/tmp:rw,exec,nosuid,size=512m",
-            "--tmpfs", "/var/lib/redtusk:rw,nosuid,size=64m,uid=10001,gid=10001",
-            f"--volume={scratch}:/scratch",
-            f"--volume={rmeta_outdir}:/scratch/out",
-            "--env=REDTUSK_LOG_LEVEL=WARNING",
-            IMAGE,
-            "--run", "/scratch",
-        ]
+        # Launch the JVM worker in-process.  Isolation (network=none, cap-drop,
+        # tmpfs, memory/pids caps) is provided by the *outer* blastbox cold-worker
+        # container — this used to be a nested ``docker run``, which the
+        # socket-less cold worker cannot do.
+        cmd = _java_worker_argv(scratch)
+        env = {
+            **os.environ,
+            "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+        }
 
-        logger.debug("RedTusk worker cmd: %s", " ".join(cmd))
+        logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
         result = subprocess.run(
             cmd,
             capture_output=True,
             timeout=timeout,
+            env=env,
         )
         t.join(timeout=5)
 
         if result.returncode != 0:
             stderr_tail = result.stderr.decode(errors="replace")[-2000:]
             raise RuntimeError(
-                f"redtusk-worker exited {result.returncode}: {stderr_tail}"
+                f"redtusk-worker (jvm) exited {result.returncode}: {stderr_tail}"
             )
 
 
