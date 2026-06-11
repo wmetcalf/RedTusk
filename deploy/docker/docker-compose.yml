@@ -169,9 +169,19 @@ services:
       - BLASTBOX_WORKER_RUNTIME=${BLASTBOX_WORKER_RUNTIME:-}
       - BLASTBOX_ALLOW_RUNC=${BLASTBOX_ALLOW_RUNC:-0}
       - BLASTBOX_REQUIRE_SECURE_RUNTIME=${BLASTBOX_REQUIRE_SECURE_RUNTIME:-0}
-      - BLASTBOX_WORKER_MEMORY=${BLASTBOX_WORKER_MEMORY:-}
-      - BLASTBOX_WORKER_PIDS_LIMIT=${BLASTBOX_WORKER_PIDS_LIMIT:-}
-      - BLASTBOX_WORKER_CPUS=${BLASTBOX_WORKER_CPUS:-}
+      # The RedTusk JVM worker pre-touches an 800m heap (-Xms800m
+      # -XX:+AlwaysPreTouch) + the ~50m AOT cache + python; under a smaller cap the
+      # JVM is OOM-killed at startup (exit 137, no metadata.json). Default to 2g —
+      # the value the pre-cutover bespoke `docker run` used. Do not lower below ~1.5g.
+      - BLASTBOX_WORKER_MEMORY=${BLASTBOX_WORKER_MEMORY:-2g}
+      # NOTE: these MUST be non-empty. blastbox reads them with
+      # os.environ.get(key, default), which returns "" when the key is set-but-empty
+      # (NOT the default), so an empty value emits a bare `--pids-limit`/`--cpus`
+      # flag → docker eats the next token as the value → arg-parse failure → the
+      # worker exits in ~30ms with no metadata.json. pids=512 (the JVM/Tika spawns
+      # many threads; matches the pre-cutover bespoke `--pids-limit=512`); cpus=2.
+      - BLASTBOX_WORKER_PIDS_LIMIT=${BLASTBOX_WORKER_PIDS_LIMIT:-512}
+      - BLASTBOX_WORKER_CPUS=${BLASTBOX_WORKER_CPUS:-2}
       - BLASTBOX_WORKER_NOFILE=${BLASTBOX_WORKER_NOFILE:-4096}
       - BLASTBOX_SECCOMP_JSON_HOST=${BLASTBOX_SECCOMP_JSON_HOST:-}
       - BLASTBOX_APPARMOR_PROFILES=${BLASTBOX_APPARMOR_PROFILES:-}
