@@ -38,11 +38,14 @@ COPY --from=artifacts /app/libcap_dropper.so  /app/libcap_dropper.so
 COPY --from=artifacts /usr/local/bin/ZXingReader      /usr/local/bin/ZXingReader
 COPY --from=artifacts /usr/local/bin/ZXingReader.real /usr/local/bin/ZXingReader.real
 
-# /scratch + the checkpoint dir must exist + be writable by the uid that
-# checkpoints AND restores (CRaC pins the uid into the image). /scratch holds the
-# file-IPC control dir (the worker creates control.ready before Core.checkpointRestore).
-RUN mkdir -p /scratch/control /scratch/in /out /app/checkpoint \
-    && chown -R 10001:10001 /scratch /out /app/checkpoint
+# The CRaC checkpoint PINS its file-IPC scratch path into the image. It MUST be
+# writable at restore — the blastbox cold worker mounts the rootfs --read-only with
+# only a --tmpfs /tmp writable, so the scratch lives UNDER /tmp (recreated per
+# restore). The engine's CRaC path reads the same REDTUSK_CRAC_SCRATCH.
+ARG REDTUSK_CRAC_SCRATCH=/tmp/redtusk-crac
+ENV REDTUSK_CRAC_SCRATCH=${REDTUSK_CRAC_SCRATCH}
+RUN mkdir -p ${REDTUSK_CRAC_SCRATCH}/control ${REDTUSK_CRAC_SCRATCH}/in /out /app/checkpoint \
+    && chown -R 10001:10001 ${REDTUSK_CRAC_SCRATCH} /out /app/checkpoint
 
 USER 10001:10001
 WORKDIR /app
@@ -53,9 +56,9 @@ WORKDIR /app
 # `test` confirms the image was actually written, which is the real success gate.)
 RUN java -XX:CRaCEngine=warp -XX:CRaCCheckpointTo=/app/checkpoint \
         --enable-native-access=ALL-UNNAMED -Djava.library.path=/app \
-        -jar /app/redtusk-worker.jar --checkpoint /scratch \
+        -jar /app/redtusk-worker.jar --checkpoint ${REDTUSK_CRAC_SCRATCH} \
     ; test -s /app/checkpoint/core.img \
-    && echo "warp checkpoint baked: $(du -sh /app/checkpoint | cut -f1)"
+    && echo "warp checkpoint baked at ${REDTUSK_CRAC_SCRATCH}: $(du -sh /app/checkpoint | cut -f1)"
 
 # Runtime: warp restore. The JVM resumes at the point Core.checkpointRestore()
 # returned at build time — runJob continues: drop the cap, re-announce ready on the

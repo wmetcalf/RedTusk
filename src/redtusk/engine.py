@@ -259,6 +259,11 @@ def _java_worker_argv(scratch: Path) -> list[str]:
 # and falling back to the cold path.
 _WARMUP_READY_TIMEOUT = 60.0
 
+# The file-IPC scratch the CRaC checkpoint is pinned to (must be writable at
+# restore — the cold worker's rootfs is read-only, only /tmp tmpfs is writable, so
+# this lives under /tmp and the Dockerfile bakes the checkpoint with the same path).
+_DEFAULT_CRAC_SCRATCH = "/tmp/redtusk-crac"
+
 
 @dataclass
 class _WarmWorker:
@@ -375,6 +380,64 @@ def _run_worker(
             )
 
 
+def _crac_restore_worker(
+    input_path: Path,
+    rmeta_outdir: Path,
+    *,
+    checkpoint_dir: str,
+    scratch_dir: str,
+    timeout: float = 120.0,
+) -> None:
+    """Restore a baked CRaC checkpoint and feed it one job (file-IPC).
+
+    A warm-JVM tier for PLAIN containers: the JVM is checkpointed at image-build
+    time with Azul's warp engine, so each job ``java -XX:CRaCRestoreFrom=<dir>``
+    skips the JVM cold boot (no Firecracker / gVisor C/R needed; warp needs no
+    privileged caps).  *scratch_dir* MUST match the path the checkpoint was pinned
+    to.  Pre-stage input + job.json + control.go, then restore: the warm JVM
+    re-announces ready, sees the go signal, processes one job, writes
+    metadata.json, exits.
+    """
+    input_bytes = input_path.read_bytes()
+    filename_hint = input_path.name or "input"
+    scratch = Path(scratch_dir)
+    in_dir = scratch / "in"
+    control_dir = scratch / "control"
+    for d in (in_dir, control_dir):
+        d.mkdir(parents=True, exist_ok=True)
+    rmeta_outdir.mkdir(parents=True, exist_ok=True)
+    # Clear stale control state from any prior restore reusing this scratch.
+    for name in ("control.ready", "control.go", "job.json"):
+        (control_dir / name).unlink(missing_ok=True)
+
+    (in_dir / filename_hint).write_bytes(input_bytes)
+    job: dict[str, Any] = {
+        **_DEFAULT_JOB,
+        "input_path": str(in_dir / filename_hint),
+        "output_dir": str(rmeta_outdir),
+        "sha256": _sha256_bytes(input_bytes),
+        "filename_hint": filename_hint,
+    }
+    (control_dir / "job.json").write_text(
+        json.dumps(job, ensure_ascii=False), encoding="utf-8"
+    )
+    (control_dir / "control.go").touch()
+
+    java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
+    cmd = [java_bin, f"-XX:CRaCRestoreFrom={checkpoint_dir}"]
+    env = {
+        **os.environ,
+        "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+    }
+    logger.debug("RedTusk CRaC restore cmd: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
+    if result.returncode != 0:
+        stderr_tail = result.stderr.decode(errors="replace")[-2000:]
+        raise RuntimeError(
+            f"redtusk-worker (crac restore) exited {result.returncode}: {stderr_tail}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -459,9 +522,29 @@ class RedTuskEngine:
             warm.tmp.cleanup()
 
     def _produce_rmeta(self, input: Path, rmeta_dir: Path, timeout: float) -> None:
-        """Produce the rmeta document into *rmeta_dir* — warm if a JVM is booted,
-        else cold (a fresh per-job JVM).  Warm failures fall back to cold so the
-        warm tier is fail-closed."""
+        """Produce the rmeta document into *rmeta_dir*.
+
+        Three tiers, all fail-closed to cold:
+        - **CRaC** (``REDTUSK_CRAC_CHECKPOINT`` set) — restore a baked warp
+          checkpoint per job (warm JVM in a plain container).
+        - **warm** (``warmup()`` pre-booted a JVM) — feed the already-warm JVM
+          (the FC warm-snapshot tier).
+        - **cold** — a fresh per-job JVM.
+        """
+        checkpoint = os.environ.get("REDTUSK_CRAC_CHECKPOINT")
+        if checkpoint:
+            scratch = os.environ.get("REDTUSK_CRAC_SCRATCH", _DEFAULT_CRAC_SCRATCH)
+            try:
+                _crac_restore_worker(
+                    input, rmeta_dir,
+                    checkpoint_dir=checkpoint, scratch_dir=scratch, timeout=timeout,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("redtusk CRaC restore failed (%s); cold fallback", exc)
+                _run_worker(input, rmeta_dir, timeout=timeout)
+                return
+
         warm = self._warm
         self._warm = None  # one job per warm JVM; consume it
         if warm is None or warm.proc.poll() is not None:
