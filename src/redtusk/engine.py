@@ -411,9 +411,12 @@ class RedTuskEngine:
         # Build payload tree
         payload = _build_tree(entries)
 
-        # Detection from root content-type
+        # Detection from root content-type.  ``label`` is capped at 64 chars by
+        # the contract; long MIME types (e.g. the 71-char OOXML wordprocessingml
+        # type) are truncated for the label while the full value is preserved in
+        # ``mime``.
         detected = Detection(
-            label=root_ct.split(";")[0].strip() or "unknown",
+            label=(root_ct.split(";")[0].strip() or "unknown")[:64],
             mime=root_ct,
             confidence=1.0,
             source="redtusk",
