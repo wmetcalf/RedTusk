@@ -33,6 +33,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -254,6 +255,28 @@ def _java_worker_argv(scratch: Path) -> list[str]:
     return [java_bin, *jvm_flags, "-jar", jar, "--run", str(scratch)]
 
 
+# Seconds to wait for a warmup JVM to announce ``control.ready`` before giving up
+# and falling back to the cold path.
+_WARMUP_READY_TIMEOUT = 60.0
+
+
+@dataclass
+class _WarmWorker:
+    """A pre-booted JVM worker blocked at READY, ready to be fed one job.
+
+    The JVM is started by ``warmup()`` (paying the ~JVM-boot cost once, BEFORE the
+    FC warm snapshot is taken) in ``--run`` mode: it announces ``control.ready``
+    then blocks on ``control.go``.  ``detonate()`` writes the input + ``job.json``
+    + touches ``control.go``; the already-warm JVM processes the one job and exits.
+    """
+
+    proc: subprocess.Popen[bytes]
+    scratch: Path
+    in_dir: Path
+    control_dir: Path
+    tmp: tempfile.TemporaryDirectory[str]
+
+
 def _run_worker(
     input_path: Path,
     rmeta_outdir: Path,
@@ -366,6 +389,128 @@ class RedTuskEngine:
     name: str = "redtusk"
     formats: frozenset[str] = frozenset({"*"})
 
+    # Holds a pre-booted JVM after warmup(); None on the cold path.
+    _warm: _WarmWorker | None = None
+
+    def warmup(self) -> None:
+        """Pre-boot a JVM worker so a warm tier (FC snapshot) captures it at READY.
+
+        Optional + fail-soft: the blastbox warm lifecycle calls this before the
+        snapshot is taken, so the ~JVM-boot cost is paid once and ``detonate()``
+        feeds the already-warm JVM (saving boot per job).  Any failure leaves the
+        engine on the cold path — warmup MUST NOT raise (a raise fails the slot).
+        Inert on the cold path (warmup is simply never called there).
+        """
+        try:
+            tmp = tempfile.TemporaryDirectory(prefix="redtusk-warm-")
+            scratch = Path(tmp.name) / "slot"
+            in_dir = scratch / "in"
+            control_dir = scratch / "control"
+            for d in (scratch, in_dir, control_dir):
+                d.mkdir(parents=True)
+
+            cmd = _java_worker_argv(scratch)
+            env = {
+                **os.environ,
+                "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+            }
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+            )
+
+            # The JVM announces control.ready (loading Tika classes from the AOT
+            # cache along the way), then blocks on control.go.
+            ready = control_dir / "control.ready"
+            deadline = time.monotonic() + _WARMUP_READY_TIMEOUT
+            while time.monotonic() < deadline:
+                if ready.exists():
+                    self._warm = _WarmWorker(
+                        proc=proc, scratch=scratch, in_dir=in_dir,
+                        control_dir=control_dir, tmp=tmp,
+                    )
+                    logger.info("redtusk warm JVM ready (blocked at READY)")
+                    return
+                if proc.poll() is not None:
+                    break  # JVM exited before signalling ready
+                time.sleep(0.05)
+
+            logger.warning("redtusk warmup: JVM did not signal ready; cold path")
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            tmp.cleanup()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("redtusk warmup failed (cold path): %s", exc)
+            self._warm = None
+
+    def close(self) -> None:
+        """Tear down an unused warm JVM (e.g. a warm slot reaped without a job)."""
+        warm = self._warm
+        self._warm = None
+        if warm is None:
+            return
+        try:
+            if warm.proc.poll() is None:
+                warm.proc.kill()
+            warm.proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            warm.tmp.cleanup()
+
+    def _produce_rmeta(self, input: Path, rmeta_dir: Path, timeout: float) -> None:
+        """Produce the rmeta document into *rmeta_dir* — warm if a JVM is booted,
+        else cold (a fresh per-job JVM).  Warm failures fall back to cold so the
+        warm tier is fail-closed."""
+        warm = self._warm
+        self._warm = None  # one job per warm JVM; consume it
+        if warm is None or warm.proc.poll() is not None:
+            _run_worker(input, rmeta_dir, timeout=timeout)
+            return
+        try:
+            input_bytes = input.read_bytes()
+            filename_hint = input.name or "input"
+            rmeta_dir.mkdir(parents=True, exist_ok=True)
+            (warm.in_dir / filename_hint).write_bytes(input_bytes)
+            job: dict[str, Any] = {
+                **_DEFAULT_JOB,
+                "input_path": str(warm.in_dir / filename_hint),
+                "output_dir": str(rmeta_dir),
+                "sha256": _sha256_bytes(input_bytes),
+                "filename_hint": filename_hint,
+            }
+            (warm.control_dir / "job.json").write_text(
+                json.dumps(job, ensure_ascii=False), encoding="utf-8"
+            )
+            (warm.control_dir / "control.go").touch()
+            try:
+                _, stderr = warm.proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                warm.proc.kill()
+                warm.proc.communicate()
+                raise RuntimeError(
+                    f"redtusk warm worker timed out after {timeout}s"
+                ) from None
+            if warm.proc.returncode != 0:
+                tail = (stderr or b"").decode(errors="replace")[-2000:]
+                raise RuntimeError(
+                    f"redtusk-worker (warm jvm) exited {warm.proc.returncode}: {tail}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            # Fail-closed to cold: a fresh JVM produces the rmeta into the same dir.
+            logger.warning("redtusk warm detonation failed (%s); cold fallback", exc)
+            try:
+                warm.tmp.cleanup()
+            except Exception:  # noqa: BLE001
+                pass
+            _run_worker(input, rmeta_dir, timeout=timeout)
+            return
+        finally:
+            try:
+                warm.tmp.cleanup()
+            except Exception:  # noqa: BLE001
+                pass
+
     def detonate(
         self,
         input: Path,
@@ -397,7 +542,7 @@ class RedTuskEngine:
         # ``metadata.json`` (rmeta format) never clobbers the blastbox
         # harness's ``metadata.json`` (envelope format) in outdir.
         rmeta_dir = outdir / "rmeta"
-        _run_worker(input, rmeta_dir, timeout=float(limits.timeout_s))
+        self._produce_rmeta(input, rmeta_dir, timeout=float(limits.timeout_s))
 
         meta_path = rmeta_dir / "metadata.json"
         if not meta_path.is_file():
