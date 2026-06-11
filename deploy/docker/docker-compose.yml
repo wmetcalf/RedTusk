@@ -98,6 +98,11 @@ services:
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
       - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
       - BLASTBOX_JOB_RETENTION_SECONDS=${BLASTBOX_JOB_RETENTION_SECONDS:-0}
+      # RedTusk's rmeta inlines per-entry extracted text, so the envelope is larger
+      # than the blastbox 4 MiB default (observed up to ~16 MiB on the corpus, ~2.6%
+      # of docs exceed 4 MiB). 100 MiB covers it with wide headroom, still DoS-bounded.
+      # MUST match the dispatcher (the trust gate there enforces it).
+      - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
       - BLASTBOX_ALLOWED_ENGINES=redtusk
       - BLASTBOX_INGRESS_EXTENSION=redtusk.blastbox_ingress:make_extension
     ports:
@@ -152,6 +157,10 @@ services:
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
       - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
       - BLASTBOX_JOB_RETENTION_SECONDS=${BLASTBOX_JOB_RETENTION_SECONDS:-0}
+      # Trust-gate cap on the worker's metadata.json. RedTusk's rmeta inlines
+      # per-entry extracted text → larger than the 4 MiB default (up to ~16 MiB on
+      # the corpus); 100 MiB covers it with headroom, still bounded. MUST match the api.
+      - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
       # Reach the Docker daemon ONLY via the least-privilege proxy over TCP — the
       # docker CLI (which blastbox shells out to) honours DOCKER_HOST. No raw socket.
       - DOCKER_HOST=tcp://docker-socket-proxy:2375
