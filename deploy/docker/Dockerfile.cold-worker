@@ -1,0 +1,68 @@
+# Cold-path (runc / runsc) RedTusk worker for blastbox.host.
+#
+# FROM redtusk-worker:default — already provides JRE 25 + the Tika worker jar
+# (/app/redtusk-worker.jar) + the flag-sensitive JDK 25 AOT cache
+# (/app/redtusk.aot) + the native libs + ZXingReader + tesseract + the non-root
+# `redtusk` user (uid 10001), all under WORKDIR /app.
+#
+# This overlay is the analogue of blastbox's Dockerfile.clippyshot-cold-worker.
+# It adds a Python 3.12 venv holding the redtusk *engine adapter*
+# (redtusk.engine:RedTuskEngine) + blastbox CORE, and sets the generic blastbox
+# cold entrypoint (`python -m blastbox.worker.cold`). The engine launches the JVM
+# worker IN-PROCESS (`java -jar /app/redtusk-worker.jar --run <scratch>`) — no
+# nested `docker run`. Isolation comes from the OUTER runsc/runc runtime that the
+# blastbox dispatcher launches this container under, not from this image.
+#
+# Build context = redtusk repo root:
+#   docker build -f deploy/docker/Dockerfile.default      -t redtusk-worker:default .
+#   docker build -f deploy/docker/Dockerfile.cold-worker  -t redtusk-cold-worker:dev .
+ARG BASE_IMAGE=redtusk-worker:default
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Python 3.12 — redtusk requires >=3.12; the temurin/jammy base ships 3.10, so
+# pull 3.12 from deadsnakes, then strip the PPA tooling to keep the layer lean.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common gnupg dirmngr ca-certificates \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-venv \
+    && apt-get purge -y software-properties-common gnupg dirmngr \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# The cold worker imports ONLY blastbox core (it never needs the [host] ingress
+# extras). Pin blastbox for a reproducible image — the cold dispatch/worker path
+# is byte-identical across 0.1.6–0.1.7, and 0.1.7 is the first release that ships
+# `blastbox.worker.cold` (0.1.2, the pyproject floor, does NOT).
+ARG BLASTBOX_VERSION=0.1.7
+
+RUN python3.12 -m venv /opt/redtusk \
+    && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/redtusk/bin/pip install --no-cache-dir "blastbox==${BLASTBOX_VERSION}"
+
+# Install the redtusk package WITHOUT its host deps (fastapi/uvicorn/psycopg/…):
+# the cold worker only imports `redtusk.engine`, which needs nothing but blastbox
+# + stdlib. `redtusk/__init__` is import-light (just _version) so this stays lean.
+COPY pyproject.toml /src/redtusk/
+COPY src /src/redtusk/src
+RUN /opt/redtusk/bin/pip install --no-cache-dir --no-deps /src/redtusk \
+    && rm -rf /src \
+    && /opt/redtusk/bin/python -c "import blastbox.worker.cold; import redtusk.engine; print('cold entrypoint + engine import OK')"
+
+# Engine is fixed per image (operator-configured, never job-derived). REDTUSK_*
+# point the in-process launcher at the artifacts baked into the base at /app;
+# the engine defaults already match these, set explicitly for clarity/override.
+ENV BLASTBOX_ENGINE=redtusk.engine:RedTuskEngine \
+    REDTUSK_WORKER_JAR=/app/redtusk-worker.jar \
+    REDTUSK_AOT_CACHE=/app/redtusk.aot \
+    REDTUSK_JAVA_LIBRARY_PATH=/app
+
+USER 10001:10001
+ENTRYPOINT ["/opt/redtusk/bin/python", "-m", "blastbox.worker.cold"]
+
+LABEL org.opencontainers.image.title="redtusk-cold-worker" \
+      org.opencontainers.image.description="RedTusk engine on blastbox.host cold worker (in-process JVM/Tika)" \
+      org.opencontainers.image.version="0.1.0"

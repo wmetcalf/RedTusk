@@ -1,0 +1,124 @@
+# gVisor C/R warm-pool SIDECAR for RedTusk on blastbox.host — a dedicated,
+# socket-less warm dispatcher that runs RedTusk's JVM/Tika worker inside disposable
+# runsc sandboxes that are CHECKPOINTED at READY and RESTORED per job.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d dispatcher-gvisor
+#
+# WHY this tier (vs the FC sidecar): Firecracker needs /dev/kvm. Many cloud hosts —
+# nested-virt-disabled VMs, some AWS instance types, CI runners — don't expose it.
+# This tier pins gVisor's `systrap` platform (seccomp + signals; NEVER opens /dev/kvm),
+# so it is the KVM-LESS warm path. Ground-truthed on toolz2 (2026-06-11, runsc
+# release-20260511, forced -platform=systrap): warm restore 0.25s vs cold boot+warmup
+# 2.65s — the JVM warm state survives C/R; warm ~1.5x faster than cold gVisor per job.
+# (The Tika parse still pays gVisor's ~2x Sentry syscall tax warm OR cold — the snapshot
+# eliminates STARTUP, not the per-syscall interception. FC still wins where KVM exists.)
+#
+# Runs `runsc` checkpoint/restore directly, so it needs root-in-container + a scoped
+# cap set + seccomp=unconfined (proven minimal: runsc fails the gofer fork otherwise).
+# That privilege is CONFINED here: this box holds NO docker socket, NO ports — only the
+# Postgres queue + the warm rootfs. The hardened cold dispatcher (docker-compose.yml)
+# keeps cap_drop=ALL + read_only. BLASTBOX_DISPATCH_WARM_ONLY makes it claim-gate on free
+# warm slots and never cold-fall-back, so overflow stays queued for the cold dispatcher.
+#
+# Prerequisite — the warm OCI rootfs on the host at ${REDTUSK_GVISOR_DIR}/rootfs (default
+# /var/lib/redtusk-gvisor/rootfs), a `docker export` of redtusk-warm:gvisor (built from
+# blastbox deploy/gvisor/Dockerfile.redtusk FROM redtusk-cold-worker:dev). Unlike
+# clippyshot's gVisor rootfs there is NO accept-retry LD_PRELOAD shim — RedTusk's warm
+# worker is FILE-IPC (the JVM polls control.go), not soffice's osl_acceptPipe socket
+# accept(), so there is no restore-EINTR accept() to retry.
+services:
+  dispatcher-gvisor:
+    image: ${REDTUSK_IMAGE:-redtusk:dev}
+    # Clear stale runsc state + checkpoint on startup, THEN run the dispatch loop. The C/R
+    # snapshot is rebuilt fresh each boot; a leftover checkpoint image makes `runsc
+    # checkpoint` fail "file exists" (it won't overwrite), so the sidecar couldn't survive a
+    # restart without this. (Image default command is the API server.)
+    command: ["sh", "-c", "rm -rf /var/lib/blastbox/gvisor-snapshot /var/lib/blastbox/gvisor-base-* /var/lib/blastbox/gvisor-root 2>/dev/null; mkdir -p /var/lib/blastbox/gvisor-root; exec blastbox dispatch"]
+    restart: unless-stopped
+    # Liveness is covered by restart: unless-stopped; the image default healthcheck is the
+    # wrong probe for a warm-only, root-running dispatcher.
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    user: "0:0"                       # runsc must be root inside the container to build the sandbox
+    # runsc-in-docker needs docker's DEFAULT caps PLUS these three (proven minimal: dropping
+    # ALL + re-adding only a subset leaves the gofer fork EPERM on a missing default cap).
+    # NOT --privileged; still confined to this single-purpose, socket-less sidecar.
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+      - NET_ADMIN
+    security_opt:
+      - seccomp=unconfined            # runsc uses syscalls the default profile blocks
+      - apparmor=unconfined
+    environment:
+      - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
+      - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
+      - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
+      # Trust-gate cap — MUST match the cold dispatcher (RedTusk's rmeta inlines text).
+      - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
+      # --- sidecar primitive ---
+      # On a warm-pool MISS, requeue the job for the cold dispatcher instead of cold-
+      # falling-back (this socket-less box can't launch a cold worker → would fail closed
+      # "runsc unavailable"). REQUIRES blastbox>=0.1.8: in <=0.1.7 this flag is a no-op and a
+      # warm-pool miss fails the job (confirmed on toolz2). Until redtusk:dev is rebuilt
+      # against blastbox>=0.1.8, expect rare miss-failures under sustained gVisor saturation.
+      - BLASTBOX_DISPATCH_WARM_ONLY=1
+      # Concurrency MUST match warm_size — the warm dispatch path blocks until the job
+      # finishes, so N threads are needed to keep N slots busy (default 1 starves the pool).
+      - BLASTBOX_DISPATCH_CONCURRENCY=${REDTUSK_GVISOR_WARM_SIZE:-4}
+      - BLASTBOX_POOL_RUNTIME=gvisor
+      - BLASTBOX_POOL_WARM_SIZE=${REDTUSK_GVISOR_WARM_SIZE:-4}
+      # Default = warm_size: with BURST_SIZE=0 the pool never grows past warm_size, so a
+      # higher ceiling is unreachable (matches the FC sidecar). Raise it only alongside burst.
+      - BLASTBOX_POOL_CEILING=${REDTUSK_GVISOR_CEILING:-4}
+      # Burst MUST be 0 on this socket-less warm-only sidecar (mirrors the FC sidecar).
+      # Burst overflow launches EXTRA *cold* docker workers — which this box cannot do
+      # (no docker socket), and its in-container runtime selection then fails closed
+      # ("runtime 'runc' is insecure: runsc unavailable"), failing the job instead of
+      # leaving it queued for the cold dispatcher. With burst=0 a warm-pool miss simply
+      # doesn't claim, so overflow stays queued for the cold/FC tiers. (Caught by the
+      # 50-doc toolz2 validation: 1/50 failed this way when the 4 warm slots saturated.)
+      - BLASTBOX_POOL_BURST_SIZE=0
+      # --- gVisor C/R config ---
+      - BLASTBOX_GVISOR_RUNSC=/usr/bin/runsc
+      - BLASTBOX_GVISOR_ROOT=/var/lib/blastbox/gvisor-root
+      - BLASTBOX_GVISOR_ROOTFS=/opt/gvisor-rootfs
+      - BLASTBOX_GVISOR_NETWORK=none
+      # systrap: gVisor's seccomp+signals platform — NO /dev/kvm. This is what makes the
+      # tier KVM-less (the whole point). Do NOT switch to the kvm platform here, or the
+      # sidecar silently regains a /dev/kvm dependency and fails on KVM-less hosts. C/R
+      # confirmed working under systrap on runsc release-20260511.
+      - BLASTBOX_GVISOR_PLATFORM=systrap
+      # The warm worker is the venv python running the blastbox gVisor warm agent
+      # (run_warm.py), invoked by its LITERAL venv path so blastbox + redtusk import
+      # cleanly. NO LD_PRELOAD (file-IPC, no socket accept to retry across restore).
+      - BLASTBOX_GVISOR_WARM_ARGV=["/opt/redtusk/bin/python3","/opt/blastbox/run_warm.py"]
+      # Cap the warm JVM's perceived CPU count. The host has many cores, so the JVM
+      # otherwise sizes its thread pools (ForkJoinPool, etc.) host-wide and the resulting
+      # futex traffic is ALL taxed under the gVisor Sentry. ActiveProcessorCount=2 cut the
+      # warm parse ~14% across a 15-doc corpus sweep with ZERO per-doc regressions (the
+      # work-bound parse never benefited from the wide pools; FC/native are unaffected — no
+      # tax to remove — so this is gVisor-tier-only). JAVA_TOOL_OPTIONS appends the one flag,
+      # keeping the AOT-cache-matched default flags intact. Requires blastbox>=0.1.8 (the
+      # EXTRA_ENV channel was a no-op in <=0.1.7 — same phantom-var class as WARM_ONLY).
+      - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2"]
+    volumes:
+      # job_root (host-consistent, same path as the cold dispatcher) — read the staged input.
+      - "${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs:${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs"
+      # runsc binary from the host.
+      - "/usr/bin/runsc:/usr/bin/runsc:ro"
+      # the gVisor warm OCI rootfs (docker export of redtusk-warm:gvisor). NON-nested path
+      # (not under the state mount) so runsc's gofer sees it populated. Operator-configurable.
+      - "${REDTUSK_GVISOR_DIR:-/var/lib/redtusk-gvisor}/rootfs:/opt/gvisor-rootfs:ro"
+      # writable state: runsc --root + the warm-base checkpoint/snapshot + per-slot dirs.
+      - "${REDTUSK_GVISOR_DIR:-/var/lib/redtusk-gvisor}/state:/var/lib/blastbox"
+    tmpfs:
+      # Dispatcher-local scratch (snapshot manager temp + warm worker /tmp inside the
+      # sandbox is a separate tmpfs). RedTusk's JVM/Tika can spill nested-archive
+      # extraction to temp, so give ample room.
+      - /tmp:rw,exec,nosuid,size=4g
+    networks:
+      - backend

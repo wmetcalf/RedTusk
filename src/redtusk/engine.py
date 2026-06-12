@@ -1,28 +1,39 @@
 """RedTusk blastbox Engine implementation.
 
-Wraps the RedTusk JVM worker (``redtusk-worker:default`` Docker image) as a
-blastbox ``Engine``.  The engine:
+Wraps the RedTusk JVM/Tika worker (``redtusk-worker.jar``) as a blastbox
+``Engine``.  Under blastbox.host the cold worker is itself the disposable,
+socket-less sandbox container, so the engine launches the JVM **in-process**
+(``java -jar /app/redtusk-worker.jar --run <scratch>``) rather than shelling
+out to a nested ``docker run`` (which the socket-less worker cannot do).  The
+engine:
 
 1. Writes the input file into a scratch directory, sets up the file-IPC
    handshake (``control/job.json`` + ``control/control.go``), and runs the
-   worker container via ``docker run``.
-2. Parses the rmeta ``metadata.json`` the JVM worker writes to ``out/``.
+   JVM worker as a subprocess.
+2. Parses the rmeta ``metadata.json`` the JVM worker writes to the output dir.
 3. Reconstructs a recursive ``EmbeddedResource`` tree from the flat,
    depth-ordered ``extraction.entries[]`` list using a depth-stack.
 4. Returns a ``DetonationResult`` with the tree as payload plus any declared
    artifacts (thumbnails, embedded files) the worker wrote.
 
-Running the worker requires Docker and the ``redtusk-worker:default`` image.
+Running the worker requires a JRE (``java``) and ``redtusk-worker.jar`` on disk
+— both baked into the ``redtusk-cold-worker`` image at ``/app``.  The jar, AOT
+cache, java binary and JVM flags are env-overridable (``REDTUSK_WORKER_JAR``,
+``REDTUSK_AOT_CACHE``, ``REDTUSK_JAVA_BIN``, ``REDTUSK_JAVA_OPTS``) for dev/test.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
+import re
+import shlex
 import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +50,24 @@ from blastbox.worker.engine import DetonationResult
 
 logger = logging.getLogger(__name__)
 
-IMAGE = "redtusk-worker:default"
+# Default locations of the JVM worker artifacts inside the cold-worker image.
+# All are env-overridable so a dev box / CI can point at a locally-built jar.
+_DEFAULT_JAVA_BIN = "java"
+_DEFAULT_WORKER_JAR = "/app/redtusk-worker.jar"
+_DEFAULT_AOT_CACHE = "/app/redtusk.aot"
+_DEFAULT_JAVA_LIBRARY_PATH = "/app"
+
+# JVM flags mirror the redtusk-worker image ENTRYPOINT.  They MUST match the
+# flags the AOT cache was built with (UseSerialGC / TieredStopAtLevel=1 / 800m
+# heap / native-access) or JDK 25 rejects the cache at load time.
+_DEFAULT_JVM_FLAGS: tuple[str, ...] = (
+    "-XX:+UseSerialGC",
+    "-XX:TieredStopAtLevel=1",
+    "-Xms800m",
+    "-Xmx800m",
+    "-XX:+AlwaysPreTouch",
+    "--enable-native-access=ALL-UNNAMED",
+)
 
 # Job descriptor defaults matching the existing test harness.
 _DEFAULT_JOB: dict[str, Any] = {
@@ -196,6 +224,64 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _java_worker_argv(scratch: Path) -> list[str]:
+    """Build the in-process JVM worker argv (``java ... -jar ... --run <scratch>``).
+
+    Mirrors the redtusk-worker image ENTRYPOINT so the AOT cache — which is
+    flag-sensitive — loads cleanly.  Everything is env-overridable:
+
+    - ``REDTUSK_JAVA_BIN``          java executable (default ``java``)
+    - ``REDTUSK_WORKER_JAR``        worker jar (default ``/app/redtusk-worker.jar``)
+    - ``REDTUSK_AOT_CACHE``         AOT cache; only added when the file exists
+    - ``REDTUSK_JAVA_LIBRARY_PATH`` native lib dir (default ``/app``)
+    - ``REDTUSK_JAVA_OPTS``         full JVM-flag override (shlex-split), replacing
+                                    the default flag bundle entirely
+    """
+    java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
+    jar = os.environ.get("REDTUSK_WORKER_JAR", _DEFAULT_WORKER_JAR)
+    lib_path = os.environ.get("REDTUSK_JAVA_LIBRARY_PATH", _DEFAULT_JAVA_LIBRARY_PATH)
+    aot_cache = os.environ.get("REDTUSK_AOT_CACHE", _DEFAULT_AOT_CACHE)
+
+    opts_override = os.environ.get("REDTUSK_JAVA_OPTS")
+    if opts_override is not None:
+        jvm_flags = shlex.split(opts_override)
+    else:
+        jvm_flags = [f"-Djava.library.path={lib_path}", *_DEFAULT_JVM_FLAGS]
+        # The AOT cache is flag-sensitive and baked into the cold-worker image;
+        # only load it when present so a bare dev box still runs (slower).
+        if aot_cache and Path(aot_cache).is_file():
+            jvm_flags.insert(0, f"-XX:AOTCache={aot_cache}")
+
+    return [java_bin, *jvm_flags, "-jar", jar, "--run", str(scratch)]
+
+
+# Seconds to wait for a warmup JVM to announce ``control.ready`` before giving up
+# and falling back to the cold path.
+_WARMUP_READY_TIMEOUT = 60.0
+
+# The file-IPC scratch the CRaC checkpoint is pinned to (must be writable at
+# restore — the cold worker's rootfs is read-only, only /tmp tmpfs is writable, so
+# this lives under /tmp and the Dockerfile bakes the checkpoint with the same path).
+_DEFAULT_CRAC_SCRATCH = "/tmp/redtusk-crac"
+
+
+@dataclass
+class _WarmWorker:
+    """A pre-booted JVM worker blocked at READY, ready to be fed one job.
+
+    The JVM is started by ``warmup()`` (paying the ~JVM-boot cost once, BEFORE the
+    FC warm snapshot is taken) in ``--run`` mode: it announces ``control.ready``
+    then blocks on ``control.go``.  ``detonate()`` writes the input + ``job.json``
+    + touches ``control.go``; the already-warm JVM processes the one job and exits.
+    """
+
+    proc: subprocess.Popen[bytes]
+    scratch: Path
+    in_dir: Path
+    control_dir: Path
+    tmp: tempfile.TemporaryDirectory[str]
+
+
 def _run_worker(
     input_path: Path,
     rmeta_outdir: Path,
@@ -234,21 +320,18 @@ def _run_worker(
         rmeta_outdir.mkdir(parents=True, exist_ok=True)
         control_dir.mkdir()
 
-        # World-writable so container UID 10001 can write control files and
-        # output files.  The harness writes the blastbox envelope to the
-        # *parent* outdir — not into rmeta_outdir — so permissions here only
-        # need to satisfy the container + our own reads.
-        for d in (scratch, in_dir, rmeta_outdir, control_dir):
-            d.chmod(0o777)
-
         # Write input
         (in_dir / filename_hint).write_bytes(input_bytes)
 
-        # Build job descriptor
+        # Build job descriptor.  The JVM worker (FileIpcChannel.receiveJob)
+        # consumes input_path/output_dir *literally*, so in-process these are the
+        # real host paths — not the container-relative /scratch/in, /scratch/out
+        # the old docker-run path used.  output_dir is rmeta_outdir so the
+        # worker's metadata.json + artifacts land under the harness outdir.
         job: dict[str, Any] = {
             **_DEFAULT_JOB,
-            "input_path": f"/scratch/in/{filename_hint}",
-            "output_dir": "/scratch/out",
+            "input_path": str(in_dir / filename_hint),
+            "output_dir": str(rmeta_outdir),
             "sha256": sha256,
             "filename_hint": filename_hint,
         }
@@ -271,35 +354,88 @@ def _run_worker(
         t = threading.Thread(target=_signal_worker, daemon=True)
         t.start()
 
-        cmd = [
-            "docker", "run", "--rm",
-            "--network=none",
-            "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
-            "--memory=2g",
-            "--pids-limit=512",
-            "--tmpfs", "/tmp:rw,exec,nosuid,size=512m",
-            "--tmpfs", "/var/lib/redtusk:rw,nosuid,size=64m,uid=10001,gid=10001",
-            f"--volume={scratch}:/scratch",
-            f"--volume={rmeta_outdir}:/scratch/out",
-            "--env=REDTUSK_LOG_LEVEL=WARNING",
-            IMAGE,
-            "--run", "/scratch",
-        ]
+        # Launch the JVM worker in-process.  Isolation (network=none, cap-drop,
+        # tmpfs, memory/pids caps) is provided by the *outer* blastbox cold-worker
+        # container — this used to be a nested ``docker run``, which the
+        # socket-less cold worker cannot do.
+        cmd = _java_worker_argv(scratch)
+        env = {
+            **os.environ,
+            "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+        }
 
-        logger.debug("RedTusk worker cmd: %s", " ".join(cmd))
+        logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
         result = subprocess.run(
             cmd,
             capture_output=True,
             timeout=timeout,
+            env=env,
         )
         t.join(timeout=5)
 
         if result.returncode != 0:
             stderr_tail = result.stderr.decode(errors="replace")[-2000:]
             raise RuntimeError(
-                f"redtusk-worker exited {result.returncode}: {stderr_tail}"
+                f"redtusk-worker (jvm) exited {result.returncode}: {stderr_tail}"
             )
+
+
+def _crac_restore_worker(
+    input_path: Path,
+    rmeta_outdir: Path,
+    *,
+    checkpoint_dir: str,
+    scratch_dir: str,
+    timeout: float = 120.0,
+) -> None:
+    """Restore a baked CRaC checkpoint and feed it one job (file-IPC).
+
+    A warm-JVM tier for PLAIN containers: the JVM is checkpointed at image-build
+    time with Azul's warp engine, so each job ``java -XX:CRaCRestoreFrom=<dir>``
+    skips the JVM cold boot (no Firecracker / gVisor C/R needed; warp needs no
+    privileged caps).  *scratch_dir* MUST match the path the checkpoint was pinned
+    to.  Pre-stage input + job.json + control.go, then restore: the warm JVM
+    re-announces ready, sees the go signal, processes one job, writes
+    metadata.json, exits.
+    """
+    input_bytes = input_path.read_bytes()
+    filename_hint = input_path.name or "input"
+    scratch = Path(scratch_dir)
+    in_dir = scratch / "in"
+    control_dir = scratch / "control"
+    for d in (in_dir, control_dir):
+        d.mkdir(parents=True, exist_ok=True)
+    rmeta_outdir.mkdir(parents=True, exist_ok=True)
+    # Clear stale control state from any prior restore reusing this scratch.
+    for name in ("control.ready", "control.go", "job.json"):
+        (control_dir / name).unlink(missing_ok=True)
+
+    (in_dir / filename_hint).write_bytes(input_bytes)
+    job: dict[str, Any] = {
+        **_DEFAULT_JOB,
+        "input_path": str(in_dir / filename_hint),
+        "output_dir": str(rmeta_outdir),
+        "sha256": _sha256_bytes(input_bytes),
+        "filename_hint": filename_hint,
+    }
+    (control_dir / "job.json").write_text(
+        json.dumps(job, ensure_ascii=False), encoding="utf-8"
+    )
+    (control_dir / "control.go").touch()
+
+    java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
+    cmd = [java_bin, f"-XX:CRaCRestoreFrom={checkpoint_dir}"]
+    env = {
+        **os.environ,
+        "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+    }
+    logger.debug("RedTusk CRaC restore cmd: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
+    if result.returncode != 0:
+        stderr_tail = result.stderr.decode(errors="replace")[-2000:]
+        raise RuntimeError(
+            f"redtusk-worker (crac restore) exited {result.returncode}: {stderr_tail}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +451,172 @@ class RedTuskEngine:
 
     name: str = "redtusk"
     formats: frozenset[str] = frozenset({"*"})
+
+    # Holds a pre-booted JVM after warmup(); None on the cold path.
+    _warm: _WarmWorker | None = None
+
+    def warmup(self) -> None:
+        """Pre-boot a JVM worker so a warm tier (FC snapshot) captures it at READY.
+
+        Optional + fail-soft: the blastbox warm lifecycle calls this before the
+        snapshot is taken, so the ~JVM-boot cost is paid once and ``detonate()``
+        feeds the already-warm JVM (saving boot per job).  Any failure leaves the
+        engine on the cold path — warmup MUST NOT raise (a raise fails the slot).
+        Inert on the cold path (warmup is simply never called there).
+        """
+        proc: subprocess.Popen[bytes] | None = None
+        tmp: tempfile.TemporaryDirectory[str] | None = None
+        try:
+            tmp = tempfile.TemporaryDirectory(prefix="redtusk-warm-")
+            scratch = Path(tmp.name) / "slot"
+            in_dir = scratch / "in"
+            control_dir = scratch / "control"
+            for d in (scratch, in_dir, control_dir):
+                d.mkdir(parents=True)
+
+            cmd = _java_worker_argv(scratch)
+            env = {
+                **os.environ,
+                "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+            }
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+            )
+
+            # The JVM announces control.ready (loading Tika classes from the AOT
+            # cache along the way), then blocks on control.go.
+            ready = control_dir / "control.ready"
+            deadline = time.monotonic() + _WARMUP_READY_TIMEOUT
+            while time.monotonic() < deadline:
+                if ready.exists():
+                    self._warm = _WarmWorker(
+                        proc=proc, scratch=scratch, in_dir=in_dir,
+                        control_dir=control_dir, tmp=tmp,
+                    )
+                    logger.info("redtusk warm JVM ready (blocked at READY)")
+                    return
+                if proc.poll() is not None:
+                    break  # JVM exited before signalling ready
+                time.sleep(0.05)
+
+            logger.warning("redtusk warmup: JVM did not signal ready; cold path")
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            tmp.cleanup()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("redtusk warmup failed (cold path): %s", exc)
+            self._warm = None
+            # Don't leak the JVM process / temp dir if we raised after Popen (e.g. an
+            # OSError from ready.exists() or an interrupted sleep). On the success path
+            # the proc+tmp are owned by self._warm (cleaned by close()/_produce_rmeta);
+            # this branch only runs on failure, where nothing else will reap them.
+            if proc is not None:
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+            if tmp is not None:
+                try:
+                    tmp.cleanup()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def close(self) -> None:
+        """Tear down an unused warm JVM (e.g. a warm slot reaped without a job)."""
+        warm = self._warm
+        self._warm = None
+        if warm is None:
+            return
+        try:
+            if warm.proc.poll() is None:
+                warm.proc.kill()
+            warm.proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            warm.tmp.cleanup()
+
+    def _produce_rmeta(self, input: Path, rmeta_dir: Path, timeout: float) -> None:
+        """Produce the rmeta document into *rmeta_dir*.
+
+        Three tiers, all fail-closed to cold:
+        - **CRaC** (``REDTUSK_CRAC_CHECKPOINT`` set) — restore a baked warp
+          checkpoint per job (warm JVM in a plain container).
+        - **warm** (``warmup()`` pre-booted a JVM) — feed the already-warm JVM
+          (the FC warm-snapshot tier).
+        - **cold** — a fresh per-job JVM.
+        """
+        checkpoint = os.environ.get("REDTUSK_CRAC_CHECKPOINT")
+        if checkpoint:
+            scratch = os.environ.get("REDTUSK_CRAC_SCRATCH", _DEFAULT_CRAC_SCRATCH)
+            try:
+                _crac_restore_worker(
+                    input, rmeta_dir,
+                    checkpoint_dir=checkpoint, scratch_dir=scratch, timeout=timeout,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("redtusk CRaC restore failed (%s); cold fallback", exc)
+                _run_worker(input, rmeta_dir, timeout=timeout)
+                return
+
+        warm = self._warm
+        self._warm = None  # one job per warm JVM; consume it
+        if warm is None or warm.proc.poll() is not None:
+            _run_worker(input, rmeta_dir, timeout=timeout)
+            return
+        try:
+            input_bytes = input.read_bytes()
+            filename_hint = input.name or "input"
+            rmeta_dir.mkdir(parents=True, exist_ok=True)
+            (warm.in_dir / filename_hint).write_bytes(input_bytes)
+            job: dict[str, Any] = {
+                **_DEFAULT_JOB,
+                "input_path": str(warm.in_dir / filename_hint),
+                "output_dir": str(rmeta_dir),
+                "sha256": _sha256_bytes(input_bytes),
+                "filename_hint": filename_hint,
+            }
+            (warm.control_dir / "job.json").write_text(
+                json.dumps(job, ensure_ascii=False), encoding="utf-8"
+            )
+            (warm.control_dir / "control.go").touch()
+            try:
+                _, stderr = warm.proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                warm.proc.kill()
+                warm.proc.communicate()
+                raise RuntimeError(
+                    f"redtusk warm worker timed out after {timeout}s"
+                ) from None
+            if warm.proc.returncode != 0:
+                tail = (stderr or b"").decode(errors="replace")[-2000:]
+                raise RuntimeError(
+                    f"redtusk-worker (warm jvm) exited {warm.proc.returncode}: {tail}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            # Fail-closed to cold: a fresh JVM produces the rmeta into the same dir.
+            logger.warning("redtusk warm detonation failed (%s); cold fallback", exc)
+            _run_worker(input, rmeta_dir, timeout=timeout)
+            return
+        finally:
+            # Always reap the warm JVM + temp dir. On success communicate() already reaped
+            # proc (poll() != None → no-op). On an exception BEFORE communicate() (e.g.
+            # read_bytes/write_bytes raised), the JVM is still blocked on control.go — kill it
+            # so it isn't leaked (it would otherwise hold its heap forever), then drop the dir.
+            try:
+                if warm.proc.poll() is None:
+                    warm.proc.kill()
+                    warm.proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                warm.tmp.cleanup()
+            except Exception:  # noqa: BLE001
+                pass
 
     def detonate(
         self,
@@ -347,7 +649,7 @@ class RedTuskEngine:
         # ``metadata.json`` (rmeta format) never clobbers the blastbox
         # harness's ``metadata.json`` (envelope format) in outdir.
         rmeta_dir = outdir / "rmeta"
-        _run_worker(input, rmeta_dir, timeout=float(limits.timeout_s))
+        self._produce_rmeta(input, rmeta_dir, timeout=float(limits.timeout_s))
 
         meta_path = rmeta_dir / "metadata.json"
         if not meta_path.is_file():
@@ -362,9 +664,12 @@ class RedTuskEngine:
         # Build payload tree
         payload = _build_tree(entries)
 
-        # Detection from root content-type
+        # Detection from root content-type.  ``label`` is capped at 64 chars by
+        # the contract; long MIME types (e.g. the 71-char OOXML wordprocessingml
+        # type) are truncated for the label while the full value is preserved in
+        # ``mime``.
         detected = Detection(
-            label=root_ct.split(";")[0].strip() or "unknown",
+            label=(root_ct.split(";")[0].strip() or "unknown")[:64],
             mime=root_ct,
             confidence=1.0,
             source="redtusk",
@@ -374,18 +679,21 @@ class RedTuskEngine:
         # referenced with paths relative to outdir (not rmeta_dir) so the
         # blastbox envelope path confinement passes with outdir as root.
         artifacts: list[DeclaredArtifact] = []
+        used_ids: set[str] = set()
         for f in sorted(rmeta_dir.rglob("*")):
             if not f.is_file():
                 continue
-            if f == meta_path:
-                continue
+            # Declare rmeta/metadata.json (the recursive extraction tree) as an artifact
+            # like every other rmeta file — do NOT skip it. It is served verbatim by the
+            # /v1/jobs/{id}/rmeta route, so it MUST go through the trust gate: declaring it
+            # makes seal_envelope re-hash it, the warm path copy+re-verify it, and the
+            # manifest-enforced serve route accept it (audit M-4 — previously this file was
+            # served as worker-controlled bytes the host never validated). It is distinct
+            # from the blastbox ENVELOPE metadata.json at the output-dir ROOT (this one is
+            # under the rmeta/ subdir → declared path "rmeta/metadata.json").
             rel_to_outdir = f.relative_to(outdir)
             rel_str = str(rel_to_outdir)
-            # id: replace path separators to keep the id safe [A-Za-z0-9._-]
-            artifact_id = rel_str.replace("/", "_").replace("\\", "_")
-            # Truncate to 128 chars if needed
-            if len(artifact_id) > 128:
-                artifact_id = artifact_id[-128:]
+            artifact_id = _safe_artifact_id(rel_str, used_ids)
             kind = _infer_artifact_kind(rel_str)
             artifacts.append(DeclaredArtifact(id=artifact_id, path=rel_str, kind=kind))
 
@@ -410,6 +718,34 @@ class RedTuskEngine:
             warnings=warnings,
             status="ok",
         )
+
+
+_ARTIFACT_ID_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_artifact_id(rel_str: str, used: set[str]) -> str:
+    """Build a contract-valid, unique ``DeclaredArtifact.id`` from a rel path.
+
+    The blastbox contract requires ``^[A-Za-z0-9._-]{1,128}$``.  Embedded-file
+    names from the JVM worker can contain spaces, unicode, or arbitrary bytes
+    (e.g. an email attachment's real filename), so every disallowed char is
+    mapped to ``_``.  On overflow the readable tail is kept plus a hash of the
+    full path for uniqueness, and any residual collision is disambiguated — the
+    envelope must never carry a duplicate artifact id (blastbox rejects those).
+    The full original path is preserved verbatim in ``DeclaredArtifact.path``.
+    """
+    safe = _ARTIFACT_ID_DISALLOWED.sub("_", rel_str) or "artifact"
+    if len(safe) > 128:
+        digest = hashlib.sha256(rel_str.encode("utf-8", "replace")).hexdigest()[:16]
+        safe = safe[-(128 - 17):] + "_" + digest
+    candidate = safe
+    n = 1
+    while candidate in used:
+        suffix = f"_{n}"
+        candidate = safe[: 128 - len(suffix)] + suffix
+        n += 1
+    used.add(candidate)
+    return candidate
 
 
 def _infer_artifact_kind(rel_path: str) -> str:

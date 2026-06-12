@@ -1,0 +1,58 @@
+# CRaC cold-worker: the blastbox cold worker, but the engine RESTORES a baked warp
+# checkpoint per job (warm JVM in a plain container) instead of cold-booting java.
+#
+# FROM redtusk-worker:crac (Azul Zulu CRaC JDK + the Tika jar + the baked warp
+# checkpoint at /app/checkpoint + ZXing/tesseract + uid 10001 + REDTUSK_CRAC_SCRATCH).
+# Adds a Python 3.12 venv with blastbox core + the redtusk engine, and the generic
+# blastbox cold entrypoint. The cold dispatcher launches this like any cold-worker
+# (BLASTBOX_ENGINES=redtusk=redtusk-cold-worker:crac); REDTUSK_CRAC_CHECKPOINT flips
+# the engine to its CRaC restore path (per-job `java -XX:CRaCRestoreFrom`).
+#
+# Build context = redtusk repo root:
+#   docker build -f deploy/docker/Dockerfile.crac-worker      -t redtusk-worker:crac .
+#   docker build -f deploy/docker/Dockerfile.cold-worker-crac -t redtusk-cold-worker:crac .
+ARG BASE_IMAGE=redtusk-worker:crac
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Python 3.12 — redtusk requires >=3.12; the azul/ubuntu base ships 3.10, so pull
+# 3.12 from deadsnakes (gnupg+dirmngr for the PPA key on the minimal base).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common gnupg dirmngr ca-certificates \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-venv \
+    && apt-get purge -y software-properties-common gnupg dirmngr \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cold worker needs blastbox CORE only; pin it (0.1.7 = first release with
+# blastbox.worker.cold). redtusk installed --no-deps (engine needs only blastbox).
+ARG BLASTBOX_VERSION=0.1.7
+RUN python3.12 -m venv /opt/redtusk \
+    && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/redtusk/bin/pip install --no-cache-dir "blastbox==${BLASTBOX_VERSION}"
+
+COPY pyproject.toml /src/redtusk/
+COPY src /src/redtusk/src
+RUN /opt/redtusk/bin/pip install --no-cache-dir --no-deps /src/redtusk \
+    && rm -rf /src \
+    && /opt/redtusk/bin/python -c "import blastbox.worker.cold; import redtusk.engine; print('cold+crac entrypoint OK')"
+
+# REDTUSK_CRAC_CHECKPOINT flips the engine to the CRaC restore path: per job it
+# does `java -XX:CRaCRestoreFrom=/app/checkpoint` (warm JVM) instead of a cold
+# `java --run`, fail-closed to cold. REDTUSK_CRAC_SCRATCH is inherited from the base
+# (= the checkpoint-pinned, /tmp-resident file-IPC scratch).
+ENV BLASTBOX_ENGINE=redtusk.engine:RedTuskEngine \
+    REDTUSK_WORKER_JAR=/app/redtusk-worker.jar \
+    REDTUSK_JAVA_LIBRARY_PATH=/app \
+    REDTUSK_CRAC_CHECKPOINT=/app/checkpoint
+
+USER 10001:10001
+ENTRYPOINT ["/opt/redtusk/bin/python", "-m", "blastbox.worker.cold"]
+
+LABEL org.opencontainers.image.title="redtusk-cold-worker-crac" \
+      org.opencontainers.image.description="RedTusk CRaC warm-JVM cold worker on blastbox.host" \
+      org.opencontainers.image.version="0.1.0"

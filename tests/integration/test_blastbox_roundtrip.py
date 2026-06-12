@@ -8,27 +8,28 @@ Validates the full cross-language seam:
         → Envelope with status="ok"
 
 Requires:
-  - Docker daemon running
-  - ``redtusk-worker:default`` image present
+  - a JRE on ``PATH`` (``java``)
+  - the worker jar at ``REDTUSK_WORKER_JAR`` (default ``/app/redtusk-worker.jar``)
 
-Mark: ``integration`` (skip in CI unless the worker image is available).
+The engine launches the JVM worker in-process (no Docker), so this exercises the
+same path the blastbox cold worker uses.
+
+Mark: ``integration`` (skip in CI unless the worker jar + java are available).
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
-
 from blastbox.contract import EmbeddedResource, ExtractedText, find_by_type
 from blastbox.errors import OutputTrustError
 from blastbox.host.trust import validate_worker_output
 from blastbox.limits import Limits
 from blastbox.worker.harness import run_detonation
 
-from redtusk.engine import IMAGE, RedTuskEngine, _build_tree
+from redtusk.engine import _DEFAULT_WORKER_JAR, RedTuskEngine, _build_tree
 
 pytestmark = pytest.mark.integration
 
@@ -41,24 +42,24 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _image_available() -> bool:
-    import subprocess
-    r = subprocess.run(
-        ["docker", "image", "inspect", IMAGE],
-        capture_output=True,
-    )
-    return r.returncode == 0
+def _worker_jar() -> str:
+    import os
+    return os.environ.get("REDTUSK_WORKER_JAR", _DEFAULT_WORKER_JAR)
 
 
-def _docker_running() -> bool:
-    import subprocess
-    r = subprocess.run(["docker", "info"], capture_output=True)
-    return r.returncode == 0
+def _jar_available() -> bool:
+    return Path(_worker_jar()).is_file()
 
 
-_SKIP_LIVE = not (_docker_running() and _image_available())
+def _java_available() -> bool:
+    import shutil
+    return shutil.which("java") is not None
+
+
+_SKIP_LIVE = not (_java_available() and _jar_available())
 _SKIP_REASON = (
-    f"Docker not running or image {IMAGE!r} not present — live worker unavailable"
+    f"java not on PATH or worker jar {_worker_jar()!r} not present "
+    "— live JVM worker unavailable"
 )
 
 
@@ -214,7 +215,7 @@ _SAMPLE_RMETA: dict = {
         "submitted_at": "2026-01-01T00:00:00+00:00",
     },
     "extraction": {
-        "root_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "root_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # noqa: E501
         "root_language": "en",
         "duration_ms": 420,
         "entries": [
@@ -222,7 +223,7 @@ _SAMPLE_RMETA: dict = {
                 "path": "/",
                 "parent_path": None,
                 "depth": 0,
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # noqa: E501
                 "size_bytes": 9500,
                 "sha256": "b" * 64,
                 "md5": None,
@@ -262,7 +263,7 @@ _SAMPLE_RMETA: dict = {
                 "path": "/embedded/doc.docx",
                 "parent_path": "/",
                 "depth": 1,
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # noqa: E501
                 "size_bytes": 3200,
                 "sha256": "d" * 64,
                 "md5": None,

@@ -19,30 +19,30 @@ requires-python = ">=3.12"
 # starting point; regenerate it WITH HASHES (pip-tools/uv) for production.
 # Upper bounds cap the next major (or next minor for 0.x) to avoid silently
 # pulling in breaking releases; the runtime dependency SET is unchanged.
+# RedTusk now runs ON blastbox.host: it ships only the engine adapter
+# (redtusk.engine), the ingress extension (redtusk.blastbox_ingress), a lean CLI,
+# and structured logging. The bespoke FastAPI/dispatcher/jobs/pool host stack was
+# deleted — its deps moved out. Core stays light so the cold worker can install
+# it `--no-deps` on top of blastbox core (it imports only redtusk.engine).
 dependencies = [
-    "fastapi[standard]>=0.111,<1.0",
-    "uvicorn[standard]>=0.29,<1.0",
+    "blastbox>=0.1.10,<0.2",
     "click>=8.1,<9.0",
-    "python-multipart>=0.0.9,<0.1",
     "structlog>=24.1.0,<26.0",
-    "prometheus-client>=0.20.0,<1.0",
-    "psycopg[binary,pool]>=3.2.0,<4.0",
-    "aiosqlite>=0.20.0,<1.0",
-    "jsonschema>=4.21.0,<5.0",
-    "rfc3339-validator>=0.1.4,<0.2",
-    "python-magic>=0.4.27,<0.5",
-    "pyzipper>=0.3.6,<0.4",
-    "blastbox>=0.1.2,<0.2",
 ]
 
 [project.optional-dependencies]
+# The api/dispatcher tier runs `blastbox serve` / `blastbox dispatch` and loads
+# the ingress extension (which imports fastapi) — all provided by blastbox[host].
+host = [
+    "blastbox[host]>=0.1.10,<0.2",
+]
 dev = [
+    "blastbox[host]>=0.1.10,<0.2",
     "pytest>=8.0.0,<9.0",
     "pytest-asyncio>=0.23.0,<1.0",
     "httpx>=0.27.0,<1.0",
     "ruff>=0.3.0,<1.0",
     "mypy>=1.9.0,<2.0",
-    "types-jsonschema>=4.21.0,<5.0",
 ]
 
 [project.scripts]

@@ -1,0 +1,71 @@
+# RedTusk CRaC worker — a warm-JVM tier that works in a PLAIN container (no
+# Firecracker, no gVisor C/R): the JVM is checkpointed at BUILD time with Azul's
+# warp engine and RESTORED per job, so each job skips the JVM cold boot.
+#
+# Ground-truthed (2026-06-11, file-IPC, warp, uid 10001, no privileged caps):
+#   checkpoint -> restore -> CapDropper drops CAP_CHECKPOINT_RESTORE -> the
+#   restored warm JVM processes the job -> metadata.json. ~1.1s end-to-end.
+#
+# Why warp (not criu): Azul Zulu CRaC's `-XX:CRaCEngine=warp` is a userspace
+# checkpoint engine — it needs NONE of criu's CAP_CHECKPOINT_RESTORE/CAP_SYS_ADMIN,
+# so checkpoint+restore run under the same hardened --cap-drop=ALL the cold worker
+# uses. (The worker still drops CAP_CHECKPOINT_RESTORE post-restore as belt-and-
+# suspenders, via libcap_dropper.so.)
+#
+# Build context = redtusk repo root. Needs redtusk-worker:default for the jar +
+# native libs + ZXingReader (Tika jar is JDK-portable, runs fine on Azul CRaC):
+#   docker build -f deploy/docker/Dockerfile.default     -t redtusk-worker:default .
+#   docker build -f deploy/docker/Dockerfile.crac-worker -t redtusk-worker:crac .
+ARG BASE_IMAGE=redtusk-worker:default
+FROM ${BASE_IMAGE} AS artifacts
+
+# Azul Zulu CRaC 25 ships the JDK + the warp engine.
+FROM azul/zulu-openjdk:25-jdk-crac
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime tools the worker may shell out to (OCR/QR are off by default but the
+# binaries must exist). tesseract via apt; ZXingReader copied from the default image.
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng libheif-examples libwps-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r -g 10001 redtusk \
+    && useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk
+
+COPY --from=artifacts /app/redtusk-worker.jar /app/redtusk-worker.jar
+COPY --from=artifacts /app/libksm_helper.so   /app/libksm_helper.so
+COPY --from=artifacts /app/libcap_dropper.so  /app/libcap_dropper.so
+COPY --from=artifacts /usr/local/bin/ZXingReader      /usr/local/bin/ZXingReader
+COPY --from=artifacts /usr/local/bin/ZXingReader.real /usr/local/bin/ZXingReader.real
+
+# The CRaC checkpoint PINS its file-IPC scratch path into the image. It MUST be
+# writable at restore — the blastbox cold worker mounts the rootfs --read-only with
+# only a --tmpfs /tmp writable, so the scratch lives UNDER /tmp (recreated per
+# restore). The engine's CRaC path reads the same REDTUSK_CRAC_SCRATCH.
+ARG REDTUSK_CRAC_SCRATCH=/tmp/redtusk-crac
+ENV REDTUSK_CRAC_SCRATCH=${REDTUSK_CRAC_SCRATCH}
+RUN mkdir -p ${REDTUSK_CRAC_SCRATCH}/control ${REDTUSK_CRAC_SCRATCH}/in /out /app/checkpoint \
+    && chown -R 10001:10001 ${REDTUSK_CRAC_SCRATCH} /out /app/checkpoint
+
+USER 10001:10001
+WORKDIR /app
+
+# Build-time warp checkpoint. The worker (--checkpoint) announces control.ready on
+# the file-IPC scratch, then Core.checkpointRestore() dumps the warm JVM to
+# /app/checkpoint and exits. (warp may exit non-zero by design on some builds; the
+# `test` confirms the image was actually written, which is the real success gate.)
+RUN java -XX:CRaCEngine=warp -XX:CRaCCheckpointTo=/app/checkpoint \
+        --enable-native-access=ALL-UNNAMED -Djava.library.path=/app \
+        -jar /app/redtusk-worker.jar --checkpoint ${REDTUSK_CRAC_SCRATCH} \
+    ; test -s /app/checkpoint/core.img \
+    && echo "warp checkpoint baked at ${REDTUSK_CRAC_SCRATCH}: $(du -sh /app/checkpoint | cut -f1)"
+
+# Runtime: warp restore. The JVM resumes at the point Core.checkpointRestore()
+# returned at build time — runJob continues: drop the cap, re-announce ready on the
+# (dispatcher-mounted) /scratch, wait for control.go, process ONE job, exit. The
+# dispatcher mounts a fresh per-job /scratch (input + job.json + go) + /out.
+ENTRYPOINT ["java", "-XX:CRaCRestoreFrom=/app/checkpoint"]
+
+LABEL org.opencontainers.image.title="redtusk-worker-crac" \
+      org.opencontainers.image.description="RedTusk warm-JVM CRaC worker (Azul warp; restore-per-job)" \
+      org.opencontainers.image.version="0.1.0"
