@@ -659,8 +659,14 @@ class RedTuskEngine:
         for f in sorted(rmeta_dir.rglob("*")):
             if not f.is_file():
                 continue
-            if f == meta_path:
-                continue
+            # Declare rmeta/metadata.json (the recursive extraction tree) as an artifact
+            # like every other rmeta file — do NOT skip it. It is served verbatim by the
+            # /v1/jobs/{id}/rmeta route, so it MUST go through the trust gate: declaring it
+            # makes seal_envelope re-hash it, the warm path copy+re-verify it, and the
+            # manifest-enforced serve route accept it (audit M-4 — previously this file was
+            # served as worker-controlled bytes the host never validated). It is distinct
+            # from the blastbox ENVELOPE metadata.json at the output-dir ROOT (this one is
+            # under the rmeta/ subdir → declared path "rmeta/metadata.json").
             rel_to_outdir = f.relative_to(outdir)
             rel_str = str(rel_to_outdir)
             artifact_id = _safe_artifact_id(rel_str, used_ids)
