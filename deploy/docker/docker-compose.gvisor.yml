@@ -62,9 +62,9 @@ services:
       # --- sidecar primitive ---
       # On a warm-pool MISS, requeue the job for the cold dispatcher instead of cold-
       # falling-back (this socket-less box can't launch a cold worker → would fail closed
-      # "runsc unavailable"). REQUIRES blastbox>=0.1.7: in 0.1.6 this flag is a no-op and a
+      # "runsc unavailable"). REQUIRES blastbox>=0.1.8: in <=0.1.7 this flag is a no-op and a
       # warm-pool miss fails the job (confirmed on toolz2). Until redtusk:dev is rebuilt
-      # against blastbox>=0.1.7, expect rare miss-failures under sustained gVisor saturation.
+      # against blastbox>=0.1.8, expect rare miss-failures under sustained gVisor saturation.
       - BLASTBOX_DISPATCH_WARM_ONLY=1
       # Concurrency MUST match warm_size — the warm dispatch path blocks until the job
       # finishes, so N threads are needed to keep N slots busy (default 1 starves the pool).
@@ -100,8 +100,8 @@ services:
       # warm parse ~14% across a 15-doc corpus sweep with ZERO per-doc regressions (the
       # work-bound parse never benefited from the wide pools; FC/native are unaffected — no
       # tax to remove — so this is gVisor-tier-only). JAVA_TOOL_OPTIONS appends the one flag,
-      # keeping the AOT-cache-matched default flags intact. Requires blastbox>=0.1.7 (the
-      # EXTRA_ENV channel was a no-op before — same phantom-var class as WARM_ONLY).
+      # keeping the AOT-cache-matched default flags intact. Requires blastbox>=0.1.8 (the
+      # EXTRA_ENV channel was a no-op in <=0.1.7 — same phantom-var class as WARM_ONLY).
       - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2"]
     volumes:
       # job_root (host-consistent, same path as the cold dispatcher) — read the staged input.
