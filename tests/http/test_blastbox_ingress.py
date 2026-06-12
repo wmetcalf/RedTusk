@@ -14,6 +14,7 @@ the cutover). Output lives under ``<job_root>/<id>/output`` — this test passes
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -52,6 +53,14 @@ def _make_done_job(tmp_path: Path, store: InMemoryJobStore, *, write_rmeta: bool
     (output_dir / "rmeta").mkdir(parents=True)
     if write_rmeta:
         (output_dir / "rmeta" / "metadata.json").write_bytes(_RMETA_BYTES)
+
+    # Dispatcher-sealed envelope manifest. The engine (M-4) declares rmeta/metadata.json
+    # as an artifact so it goes through the trust gate; blastbox's fixed-filename /rmeta
+    # route (H-1, blastbox>=0.1.8) serves ONLY paths declared here, so the manifest must
+    # list it — otherwise an undeclared file would be served as un-re-hashed worker bytes.
+    (output_dir / "metadata.json").write_text(
+        json.dumps({"artifacts": [{"path": "rmeta/metadata.json"}]})
+    )
 
     job.result_dir = str(output_dir)
     job.input_sha256 = "a" * 64
