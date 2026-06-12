@@ -675,24 +675,31 @@ class RedTuskEngine:
             source="redtusk",
         )
 
-        # Collect artifacts: every non-metadata.json file the JVM wrote,
-        # referenced with paths relative to outdir (not rmeta_dir) so the
-        # blastbox envelope path confinement passes with outdir as root.
+        # Collect artifacts: every file the JVM wrote under rmeta/, referenced with paths
+        # relative to outdir (not rmeta_dir) so the blastbox envelope path confinement passes
+        # with outdir as root. rmeta/metadata.json (the recursive extraction tree) is declared
+        # like any other rmeta file — it is served verbatim by /v1/jobs/{id}/rmeta, so it MUST go
+        # through the trust gate (audit M-4: declaring it makes seal_envelope re-hash it and the
+        # manifest-enforced serve route accept it; it is distinct from the blastbox ENVELOPE
+        # metadata.json at the output ROOT — this one is under rmeta/ → "rmeta/metadata.json").
+        #
+        # Normally a fresh rglob of rmeta_dir is authoritative (cold + Firecracker tiers). But a
+        # gVisor C/R-restored warm worker has a STALE directory view: readdir/rglob misses the
+        # files the JVM wrote post-restore, even though is_file() on the exact path WORKS (which is
+        # why meta_path.is_file() passed above). rglob would then silently return nothing and we'd
+        # declare an EMPTY manifest. Detect that (rglob missed the rmeta doc we KNOW exists) and
+        # reconstruct the artifact list from the rmeta document's OWN entries (in memory, not the
+        # FS) — stat-checked so only existing files are declared. Cold/FC are unchanged; the C/R
+        # tier gets a correct manifest. (blastbox's C/R runtime separately recovers the BYTES that
+        # the same stale view drops from the host bind mount; this fixes the DECLARATION half.)
+        rel_paths = sorted(
+            f.relative_to(outdir).as_posix() for f in rmeta_dir.rglob("*") if f.is_file()
+        )
+        if "rmeta/metadata.json" not in rel_paths:
+            rel_paths = _reconstruct_rmeta_artifact_paths(outdir, rmeta_dir, entries)
         artifacts: list[DeclaredArtifact] = []
         used_ids: set[str] = set()
-        for f in sorted(rmeta_dir.rglob("*")):
-            if not f.is_file():
-                continue
-            # Declare rmeta/metadata.json (the recursive extraction tree) as an artifact
-            # like every other rmeta file — do NOT skip it. It is served verbatim by the
-            # /v1/jobs/{id}/rmeta route, so it MUST go through the trust gate: declaring it
-            # makes seal_envelope re-hash it, the warm path copy+re-verify it, and the
-            # manifest-enforced serve route accept it (audit M-4 — previously this file was
-            # served as worker-controlled bytes the host never validated). It is distinct
-            # from the blastbox ENVELOPE metadata.json at the output-dir ROOT (this one is
-            # under the rmeta/ subdir → declared path "rmeta/metadata.json").
-            rel_to_outdir = f.relative_to(outdir)
-            rel_str = str(rel_to_outdir)
+        for rel_str in rel_paths:
             artifact_id = _safe_artifact_id(rel_str, used_ids)
             kind = _infer_artifact_kind(rel_str)
             artifacts.append(DeclaredArtifact(id=artifact_id, path=rel_str, kind=kind))
@@ -721,6 +728,63 @@ class RedTuskEngine:
 
 
 _ARTIFACT_ID_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]")
+
+_EMBEDDED_NAME_DISALLOWED = re.compile(r"[^a-zA-Z0-9._+\- ]")
+
+
+def _sanitize_embedded_component(part: str) -> str:
+    """Sanitize ONE path component exactly like the JVM EmbeddedFileExtractor.resolveOutFile."""
+    cleaned = _EMBEDDED_NAME_DISALLOWED.sub("_", part).strip()
+    return cleaned if cleaned not in ("", ".", "..") else "_"
+
+
+def _embedded_disk_relpath(entry_path: str) -> str:
+    """Map an rmeta entry path (e.g. ``/sub/évil*.png``) to the embedded file's ON-DISK relative
+    path under ``rmeta/embedded/`` — a FULL replication of the JVM EmbeddedFileExtractor's
+    ``resolveOutFile`` + ``disambiguate``: each component is sanitized; if ANY component was altered
+    (``lossy``) the FINAL component is suffixed with a 16-hex (64-bit) prefix of SHA-256(original
+    rel path) before the extension, matching the on-disk name the worker actually wrote. This lets
+    the engine reconstruct the declaration WITHOUT a directory listing (needed when a gVisor
+    C/R-restored worker's readdir is stale), including for lossy special-character names."""
+    rel = entry_path.lstrip("/")
+    parts = rel.split("/")
+    out_parts: list[str] = []
+    lossy = False
+    for i, original in enumerate(parts):
+        part = _sanitize_embedded_component(original)
+        if part != original:
+            lossy = True
+        if lossy and i == len(parts) - 1:
+            tag = hashlib.sha256(rel.encode("utf-8")).hexdigest()[:16]
+            dot = part.rfind(".")
+            part = f"{part[:dot]}_{tag}{part[dot:]}" if dot > 0 else f"{part}_{tag}"
+        out_parts.append(part)
+    return "/".join(out_parts)
+
+
+def _reconstruct_rmeta_artifact_paths(
+    outdir: Path, rmeta_dir: Path, entries: list[dict[str, Any]]
+) -> list[str]:
+    """Declare rmeta artifacts from the in-memory rmeta entries (stat-checked) instead of a
+    directory walk — for when a gVisor C/R-restored worker's readdir is stale. The rmeta doc is
+    always present (meta_path.is_file() passed); embedded files live at
+    ``rmeta/embedded/<_embedded_disk_relpath(entry path)>``. Only files that actually exist
+    (is_file, which works on the stale view) are returned."""
+    paths: set[str] = set()
+    if (rmeta_dir / "metadata.json").is_file():
+        paths.add("rmeta/metadata.json")
+    emb_root = rmeta_dir / "embedded"
+    for e in entries:
+        ep = e.get("path") or ""
+        if not ep.lstrip("/"):
+            continue
+        cand = emb_root / _embedded_disk_relpath(ep)
+        try:
+            if cand.is_file():
+                paths.add(cand.relative_to(outdir).as_posix())
+        except OSError:
+            continue
+    return sorted(paths)
 
 
 def _safe_artifact_id(rel_str: str, used: set[str]) -> str:
