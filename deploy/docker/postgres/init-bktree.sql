@@ -26,8 +26,10 @@ CREATE OR REPLACE FUNCTION colorhash_bin_distance(
 ) RETURNS int AS $$
     SELECT CASE
         -- Guard the inputs: malformed hashes, or bin bounds outside [0,14] / inverted,
-        -- would make substring() return '' and the hex->bit(4) cast raise at query time.
-        WHEN length(a) <> 14 OR length(b) <> 14
+        -- would make the hex->bit(4) cast raise at query time. A length check alone is NOT
+        -- enough — a 14-char NON-hex value (e.g. a client-supplied /v1/similar query hash)
+        -- passes length yet fails ('x' || 'z')::bit(4); require exactly 14 hex chars.
+        WHEN a !~ '^[0-9a-fA-F]{14}$' OR b !~ '^[0-9a-fA-F]{14}$'
              OR first_bin < 0 OR last_bin > 14 OR first_bin > last_bin THEN 2147483647
         ELSE coalesce((
             SELECT sum(abs(

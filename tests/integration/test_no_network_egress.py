@@ -42,6 +42,20 @@ def _skip_reason() -> str | None:
         return "java not on PATH"
     if not Path(_worker_jar()).is_file():
         return f"worker jar {_worker_jar()!r} not present"
+    # strace is on PATH but ptrace may still be DENIED (restricted CI/containers, yama
+    # ptrace_scope, a seccomp policy). Probe with a trivial trace so the test SKIPS rather
+    # than FAILS where ptrace isn't permitted — a strace that can't attach proves nothing.
+    try:
+        probe = subprocess.run(
+            ["strace", "-f", "-e", "trace=none", "true"],
+            capture_output=True,
+            timeout=10,
+        )
+        if probe.returncode != 0:
+            detail = probe.stderr.decode(errors="replace")[:120].strip()
+            return f"strace cannot ptrace here: {detail}"
+    except Exception as exc:  # noqa: BLE001
+        return f"strace ptrace probe failed: {exc}"
     return None
 
 

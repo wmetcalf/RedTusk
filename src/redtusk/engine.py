@@ -464,6 +464,8 @@ class RedTuskEngine:
         engine on the cold path — warmup MUST NOT raise (a raise fails the slot).
         Inert on the cold path (warmup is simply never called there).
         """
+        proc: subprocess.Popen[bytes] | None = None
+        tmp: tempfile.TemporaryDirectory[str] | None = None
         try:
             tmp = tempfile.TemporaryDirectory(prefix="redtusk-warm-")
             scratch = Path(tmp.name) / "slot"
@@ -505,6 +507,22 @@ class RedTuskEngine:
         except Exception as exc:  # noqa: BLE001
             logger.warning("redtusk warmup failed (cold path): %s", exc)
             self._warm = None
+            # Don't leak the JVM process / temp dir if we raised after Popen (e.g. an
+            # OSError from ready.exists() or an interrupted sleep). On the success path
+            # the proc+tmp are owned by self._warm (cleaned by close()/_produce_rmeta);
+            # this branch only runs on failure, where nothing else will reap them.
+            if proc is not None:
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+            if tmp is not None:
+                try:
+                    tmp.cleanup()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def close(self) -> None:
         """Tear down an unused warm JVM (e.g. a warm slot reaped without a job)."""
@@ -582,13 +600,19 @@ class RedTuskEngine:
         except Exception as exc:  # noqa: BLE001
             # Fail-closed to cold: a fresh JVM produces the rmeta into the same dir.
             logger.warning("redtusk warm detonation failed (%s); cold fallback", exc)
-            try:
-                warm.tmp.cleanup()
-            except Exception:  # noqa: BLE001
-                pass
             _run_worker(input, rmeta_dir, timeout=timeout)
             return
         finally:
+            # Always reap the warm JVM + temp dir. On success communicate() already reaped
+            # proc (poll() != None → no-op). On an exception BEFORE communicate() (e.g.
+            # read_bytes/write_bytes raised), the JVM is still blocked on control.go — kill it
+            # so it isn't leaked (it would otherwise hold its heap forever), then drop the dir.
+            try:
+                if warm.proc.poll() is None:
+                    warm.proc.kill()
+                    warm.proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 warm.tmp.cleanup()
             except Exception:  # noqa: BLE001
