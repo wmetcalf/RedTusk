@@ -693,7 +693,7 @@ class RedTuskEngine:
         # tier gets a correct manifest. (blastbox's C/R runtime separately recovers the BYTES that
         # the same stale view drops from the host bind mount; this fixes the DECLARATION half.)
         rel_paths = sorted(
-            str(f.relative_to(outdir)) for f in rmeta_dir.rglob("*") if f.is_file()
+            f.relative_to(outdir).as_posix() for f in rmeta_dir.rglob("*") if f.is_file()
         )
         if "rmeta/metadata.json" not in rel_paths:
             rel_paths = _reconstruct_rmeta_artifact_paths(outdir, rmeta_dir, entries)
@@ -729,19 +729,37 @@ class RedTuskEngine:
 
 _ARTIFACT_ID_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]")
 
-# Mirrors the JVM EmbeddedFileExtractor.resolveOutFile per-component sanitization so the engine
-# can reconstruct an embedded file's on-disk path from its rmeta entry path WITHOUT a directory
-# listing (needed when a gVisor C/R-restored worker's readdir is stale). NOTE: the JVM also appends
-# a short hash to a LOSSY (sanitized-changed) final component to disambiguate collisions — that is
-# deliberately NOT replicated here, so embedded entries with special characters fall back to
-# whatever the (stale) rglob can still list. Their bytes are recovered by blastbox's C/R runtime
-# regardless; they are simply not re-declared via this path. Normal names round-trip exactly.
 _EMBEDDED_NAME_DISALLOWED = re.compile(r"[^a-zA-Z0-9._+\- ]")
 
 
 def _sanitize_embedded_component(part: str) -> str:
+    """Sanitize ONE path component exactly like the JVM EmbeddedFileExtractor.resolveOutFile."""
     cleaned = _EMBEDDED_NAME_DISALLOWED.sub("_", part).strip()
     return cleaned if cleaned not in ("", ".", "..") else "_"
+
+
+def _embedded_disk_relpath(entry_path: str) -> str:
+    """Map an rmeta entry path (e.g. ``/sub/évil*.png``) to the embedded file's ON-DISK relative
+    path under ``rmeta/embedded/`` — a FULL replication of the JVM EmbeddedFileExtractor's
+    ``resolveOutFile`` + ``disambiguate``: each component is sanitized; if ANY component was altered
+    (``lossy``) the FINAL component is suffixed with a 16-hex (64-bit) prefix of SHA-256(original
+    rel path) before the extension, matching the on-disk name the worker actually wrote. This lets
+    the engine reconstruct the declaration WITHOUT a directory listing (needed when a gVisor
+    C/R-restored worker's readdir is stale), including for lossy special-character names."""
+    rel = entry_path.lstrip("/")
+    parts = rel.split("/")
+    out_parts: list[str] = []
+    lossy = False
+    for i, original in enumerate(parts):
+        part = _sanitize_embedded_component(original)
+        if part != original:
+            lossy = True
+        if lossy and i == len(parts) - 1:
+            tag = hashlib.sha256(rel.encode("utf-8")).hexdigest()[:16]
+            dot = part.rfind(".")
+            part = f"{part[:dot]}_{tag}{part[dot:]}" if dot > 0 else f"{part}_{tag}"
+        out_parts.append(part)
+    return "/".join(out_parts)
 
 
 def _reconstruct_rmeta_artifact_paths(
@@ -750,21 +768,20 @@ def _reconstruct_rmeta_artifact_paths(
     """Declare rmeta artifacts from the in-memory rmeta entries (stat-checked) instead of a
     directory walk — for when a gVisor C/R-restored worker's readdir is stale. The rmeta doc is
     always present (meta_path.is_file() passed); embedded files live at
-    ``rmeta/embedded/<sanitized entry path>`` (see _sanitize_embedded_component). Only files that
-    actually exist (is_file, which works on the stale view) are returned."""
+    ``rmeta/embedded/<_embedded_disk_relpath(entry path)>``. Only files that actually exist
+    (is_file, which works on the stale view) are returned."""
     paths: set[str] = set()
     if (rmeta_dir / "metadata.json").is_file():
         paths.add("rmeta/metadata.json")
     emb_root = rmeta_dir / "embedded"
     for e in entries:
-        rel = (e.get("path") or "").lstrip("/")
-        if not rel:
+        ep = e.get("path") or ""
+        if not ep.lstrip("/"):
             continue
-        sanitized = "/".join(_sanitize_embedded_component(p) for p in rel.split("/"))
-        cand = emb_root / sanitized
+        cand = emb_root / _embedded_disk_relpath(ep)
         try:
             if cand.is_file():
-                paths.add(str(cand.relative_to(outdir)))
+                paths.add(cand.relative_to(outdir).as_posix())
         except OSError:
             continue
     return sorted(paths)

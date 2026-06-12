@@ -68,18 +68,40 @@ def test_detection_label_cap_matches_contract():
 def test_reconstruct_rmeta_artifact_paths_from_entries(tmp_path):
     """gVisor C/R fallback: when the restored worker's readdir is stale (rglob misses files
     is_file() confirms), detonate reconstructs the artifact manifest from the rmeta entries
-    instead of a directory walk — declaring rmeta/metadata.json + each entry's embedded file
-    that actually exists on disk. Normal names round-trip; missing/special-char names are skipped
-    (their bytes are recovered by blastbox's C/R runtime, just not re-declared here)."""
-    from redtusk.engine import _reconstruct_rmeta_artifact_paths
+    instead of a directory walk — declaring rmeta/metadata.json + each entry's embedded file that
+    actually exists on disk, for BOTH normal and lossy (sanitized+hashed) names. Absent entries
+    are skipped."""
+    from redtusk.engine import _embedded_disk_relpath, _reconstruct_rmeta_artifact_paths
 
     rmeta = tmp_path / "rmeta"
     (rmeta / "embedded").mkdir(parents=True)
     (rmeta / "metadata.json").write_text("{}")
     (rmeta / "embedded" / "image1.wmf").write_bytes(b"x")
-    entries = [{"path": "/"}, {"path": "/image1.wmf"}, {"path": "/missing.png"}]
+    lossy_name = "/évil*.png"
+    lossy_disk = _embedded_disk_relpath(lossy_name)  # JVM-replicated on-disk name
+    (rmeta / "embedded" / lossy_disk).write_bytes(b"y")
+    entries = [
+        {"path": "/"}, {"path": "/image1.wmf"}, {"path": lossy_name}, {"path": "/gone.png"},
+    ]
     got = _reconstruct_rmeta_artifact_paths(tmp_path, rmeta, entries)
-    assert got == ["rmeta/embedded/image1.wmf", "rmeta/metadata.json"]
+    assert "rmeta/metadata.json" in got
+    assert "rmeta/embedded/image1.wmf" in got
+    assert f"rmeta/embedded/{lossy_disk}" in got  # lossy name reconstructed + declared
+    assert not any("gone" in p for p in got)  # absent entry skipped
+
+
+def test_embedded_disk_relpath_replicates_jvm():
+    """Mirrors EmbeddedFileExtractor.resolveOutFile + disambiguate(shortHash = SHA-256[:16])."""
+    import hashlib
+
+    from redtusk.engine import _embedded_disk_relpath
+
+    assert _embedded_disk_relpath("/image1.wmf") == "image1.wmf"  # normal: unchanged, no hash
+    lossy = "évil*.png"
+    tag = hashlib.sha256(lossy.encode()).hexdigest()[:16]
+    assert _embedded_disk_relpath("/" + lossy) == f"_vil__{tag}.png"  # lossy → hash before .ext
+    tag2 = hashlib.sha256(b"a*b/c.png").hexdigest()[:16]
+    assert _embedded_disk_relpath("/a*b/c.png") == f"a_b/c_{tag2}.png"  # lossy parent → final hash
 
 
 def test_sanitize_embedded_component_matches_jvm():
