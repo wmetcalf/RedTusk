@@ -63,3 +63,29 @@ def test_detection_label_cap_matches_contract():
     Detection(label="x" * 64, mime="m", confidence=1.0, source="redtusk")
     with pytest.raises(ValidationError):
         Detection(label="x" * 65, mime="m", confidence=1.0, source="redtusk")
+
+
+def test_reconstruct_rmeta_artifact_paths_from_entries(tmp_path):
+    """gVisor C/R fallback: when the restored worker's readdir is stale (rglob misses files
+    is_file() confirms), detonate reconstructs the artifact manifest from the rmeta entries
+    instead of a directory walk — declaring rmeta/metadata.json + each entry's embedded file
+    that actually exists on disk. Normal names round-trip; missing/special-char names are skipped
+    (their bytes are recovered by blastbox's C/R runtime, just not re-declared here)."""
+    from redtusk.engine import _reconstruct_rmeta_artifact_paths
+
+    rmeta = tmp_path / "rmeta"
+    (rmeta / "embedded").mkdir(parents=True)
+    (rmeta / "metadata.json").write_text("{}")
+    (rmeta / "embedded" / "image1.wmf").write_bytes(b"x")
+    entries = [{"path": "/"}, {"path": "/image1.wmf"}, {"path": "/missing.png"}]
+    got = _reconstruct_rmeta_artifact_paths(tmp_path, rmeta, entries)
+    assert got == ["rmeta/embedded/image1.wmf", "rmeta/metadata.json"]
+
+
+def test_sanitize_embedded_component_matches_jvm():
+    from redtusk.engine import _sanitize_embedded_component
+
+    assert _sanitize_embedded_component("image1.wmf") == "image1.wmf"  # normal: unchanged
+    assert _sanitize_embedded_component("ré*sumé") == "r__sum_"  # non-[a-zA-Z0-9._+- ] -> _
+    assert _sanitize_embedded_component("") == "_"
+    assert _sanitize_embedded_component("..") == "_"
