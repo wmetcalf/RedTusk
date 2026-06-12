@@ -94,6 +94,15 @@ services:
       # (run_warm.py), invoked by its LITERAL venv path so blastbox + redtusk import
       # cleanly. NO LD_PRELOAD (file-IPC, no socket accept to retry across restore).
       - BLASTBOX_GVISOR_WARM_ARGV=["/opt/redtusk/bin/python3","/opt/blastbox/run_warm.py"]
+      # Cap the warm JVM's perceived CPU count. The host has many cores, so the JVM
+      # otherwise sizes its thread pools (ForkJoinPool, etc.) host-wide and the resulting
+      # futex traffic is ALL taxed under the gVisor Sentry. ActiveProcessorCount=2 cut the
+      # warm parse ~14% across a 15-doc corpus sweep with ZERO per-doc regressions (the
+      # work-bound parse never benefited from the wide pools; FC/native are unaffected — no
+      # tax to remove — so this is gVisor-tier-only). JAVA_TOOL_OPTIONS appends the one flag,
+      # keeping the AOT-cache-matched default flags intact. Requires blastbox>=0.1.7 (the
+      # EXTRA_ENV channel was a no-op before — same phantom-var class as WARM_ONLY).
+      - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2"]
     volumes:
       # job_root (host-consistent, same path as the cold dispatcher) — read the staged input.
       - "${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs:${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs"
