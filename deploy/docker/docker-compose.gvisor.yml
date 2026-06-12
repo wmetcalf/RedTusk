@@ -33,7 +33,7 @@ services:
     # snapshot is rebuilt fresh each boot; a leftover checkpoint image makes `runsc
     # checkpoint` fail "file exists" (it won't overwrite), so the sidecar couldn't survive a
     # restart without this. (Image default command is the API server.)
-    command: ["sh", "-c", "rm -rf /var/lib/blastbox/gvisor-snapshot /var/lib/blastbox/gvisor-base-* 2>/dev/null; rm -rf /var/lib/blastbox/gvisor-root/* 2>/dev/null; exec blastbox dispatch"]
+    command: ["sh", "-c", "rm -rf /var/lib/blastbox/gvisor-snapshot /var/lib/blastbox/gvisor-base-* /var/lib/blastbox/gvisor-root 2>/dev/null; mkdir -p /var/lib/blastbox/gvisor-root; exec blastbox dispatch"]
     restart: unless-stopped
     # Liveness is covered by restart: unless-stopped; the image default healthcheck is the
     # wrong probe for a warm-only, root-running dispatcher.
@@ -71,7 +71,9 @@ services:
       - BLASTBOX_DISPATCH_CONCURRENCY=${REDTUSK_GVISOR_WARM_SIZE:-4}
       - BLASTBOX_POOL_RUNTIME=gvisor
       - BLASTBOX_POOL_WARM_SIZE=${REDTUSK_GVISOR_WARM_SIZE:-4}
-      - BLASTBOX_POOL_CEILING=${REDTUSK_GVISOR_CEILING:-8}
+      # Default = warm_size: with BURST_SIZE=0 the pool never grows past warm_size, so a
+      # higher ceiling is unreachable (matches the FC sidecar). Raise it only alongside burst.
+      - BLASTBOX_POOL_CEILING=${REDTUSK_GVISOR_CEILING:-4}
       # Burst MUST be 0 on this socket-less warm-only sidecar (mirrors the FC sidecar).
       # Burst overflow launches EXTRA *cold* docker workers — which this box cannot do
       # (no docker socket), and its in-container runtime selection then fails closed
