@@ -136,19 +136,91 @@ def test_detonate_fails_closed_on_malformed_rmeta(tmp_path, monkeypatch):
         RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))
 
 
-def test_thumbnails_default_on_for_warm_tiers():
-    """Warm guests (FC/gVisor) can't receive the per-job REDTUSK_ENABLE_THUMBNAILS
-    (snapshot env is frozen), so the JVM job descriptor default must be ON or warm
-    tiers silently produce no thumbnails."""
+def test_thumbnails_default_on_when_no_param():
+    """ON is the default when a job sends no REDTUSK_ENABLE_THUMBNAILS — sensible for
+    direct API callers and warm guests dispatched without the param. This is the
+    DEFAULT, not a floor: an explicit per-job override still wins on every tier
+    (see the cold + warm toggle-off tests below)."""
     from redtusk.engine import _DEFAULT_JOB
 
     assert _DEFAULT_JOB["enable_thumbnails"] is True
 
 
 def test_env_param_overrides_can_disable_thumbnails_on_cold(monkeypatch):
-    """Cold still honors an explicit per-job off (the override beats the default)."""
+    """Cold honors an explicit per-job off (the override beats the default)."""
     monkeypatch.setenv("REDTUSK_ENABLE_THUMBNAILS", "false")
     assert _env_param_overrides()["enable_thumbnails"] is False
+
+
+class _FakeWarmProc:
+    """A warm-JVM Popen double: alive (poll None) until communicate(), then exited 0."""
+
+    def __init__(self) -> None:
+        self._done = False
+        self.returncode = 0
+
+    def poll(self):
+        return 0 if self._done else None
+
+    def communicate(self, timeout=None):
+        self._done = True
+        return (b"", b"")
+
+    def kill(self):
+        self._done = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_warm_detonate_threads_per_job_thumbnail_toggle_into_jobjson(tmp_path, monkeypatch):
+    """The warm JVM reads enable_thumbnails per job from the job.json the engine writes
+    to control/. blastbox's warm worker injects the allowlisted REDTUSK_ENABLE_THUMBNAILS
+    into os.environ BEFORE detonate, so an explicit per-job OFF disables thumbnails on the
+    WARM tier too — not just cold. This guards that the warm path threads the override into
+    job.json (the regression that would silently revert warm to default-only)."""
+    monkeypatch.setenv("REDTUSK_ENABLE_THUMBNAILS", "false")  # as the warm injector would set it
+
+    eng = RedTuskEngine()
+    slot = tmp_path / "slot"
+    in_dir, ctrl = slot / "in", slot / "control"
+    for d in (slot, in_dir, ctrl):
+        d.mkdir(parents=True)
+    eng._warm = types.SimpleNamespace(
+        proc=_FakeWarmProc(), scratch=slot, in_dir=in_dir, control_dir=ctrl,
+        tmp=types.SimpleNamespace(cleanup=lambda: None),
+    )
+
+    inp = tmp_path / "input.docx"
+    inp.write_bytes(b"warm doc bytes")
+    eng._produce_rmeta(inp, tmp_path / "out" / "rmeta", timeout=5.0)
+
+    assert (ctrl / "control.go").exists(), "warm path was not taken"
+    job = json.loads((ctrl / "job.json").read_text())
+    assert job["enable_thumbnails"] is False  # per-job OFF reached the warm JVM descriptor
+
+
+def test_warm_detonate_defaults_thumbnails_on_when_no_param(tmp_path, monkeypatch):
+    """Converse of the toggle-off guard: with no param, the warm job.json keeps the ON default."""
+    for v in ("REDTUSK_ENABLE_THUMBNAILS", "REDTUSK_ENABLE_QR", "REDTUSK_ENABLE_OCR"):
+        monkeypatch.delenv(v, raising=False)
+
+    eng = RedTuskEngine()
+    slot = tmp_path / "slot"
+    in_dir, ctrl = slot / "in", slot / "control"
+    for d in (slot, in_dir, ctrl):
+        d.mkdir(parents=True)
+    eng._warm = types.SimpleNamespace(
+        proc=_FakeWarmProc(), scratch=slot, in_dir=in_dir, control_dir=ctrl,
+        tmp=types.SimpleNamespace(cleanup=lambda: None),
+    )
+
+    inp = tmp_path / "input.docx"
+    inp.write_bytes(b"warm doc bytes")
+    eng._produce_rmeta(inp, tmp_path / "out" / "rmeta", timeout=5.0)
+
+    job = json.loads((ctrl / "job.json").read_text())
+    assert job["enable_thumbnails"] is True
 
 
 def test_env_param_overrides_absent_is_empty(monkeypatch):
