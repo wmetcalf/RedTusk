@@ -34,10 +34,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # The cold worker imports ONLY blastbox core (it never needs the [host] ingress
-# extras). Pin blastbox for a reproducible image — the cold dispatch/worker path
-# is byte-identical across 0.1.6–0.1.7, and 0.1.7 is the first release that ships
-# `blastbox.worker.cold` (0.1.2, the pyproject floor, does NOT).
-ARG BLASTBOX_VERSION=0.1.7
+# extras). Pin blastbox for a reproducible image. Keep the default in sync with
+# the `blastbox>=0.1.12` floor in pyproject.toml: the package is installed
+# `--no-deps` below, so a stale default here would NOT be upgraded to satisfy the
+# floor — the venv would silently run an incompatible blastbox.
+ARG BLASTBOX_VERSION=0.1.12
 
 RUN python3.12 -m venv /opt/redtusk \
     && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
