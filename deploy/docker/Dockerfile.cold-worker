@@ -41,11 +41,12 @@ ARG BLASTBOX_VERSION=0.1.7
 
 RUN python3.12 -m venv /opt/redtusk \
     && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/redtusk/bin/pip install --no-cache-dir "blastbox==${BLASTBOX_VERSION}"
+    && /opt/redtusk/bin/pip install --no-cache-dir "blastbox==${BLASTBOX_VERSION}" "jsonschema>=4.0,<5.0"
 
 # Install the redtusk package WITHOUT its host deps (fastapi/uvicorn/psycopg/…):
-# the cold worker only imports `redtusk.engine`, which needs nothing but blastbox
-# + stdlib. `redtusk/__init__` is import-light (just _version) so this stays lean.
+# the cold worker only imports `redtusk.engine`, which needs blastbox + stdlib +
+# jsonschema (the rmeta trust-gate schema validator — installed above since --no-deps
+# skips it). `redtusk/__init__` is import-light (just _version) so this stays lean.
 COPY pyproject.toml /src/redtusk/
 COPY src /src/redtusk/src
 RUN /opt/redtusk/bin/pip install --no-cache-dir --no-deps /src/redtusk \
