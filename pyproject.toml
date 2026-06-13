@@ -28,6 +28,7 @@ dependencies = [
     "blastbox>=0.1.11,<0.2",
     "click>=8.1,<9.0",
     "structlog>=24.1.0,<26.0",
+    "jsonschema>=4.0,<5.0",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +51,13 @@ redtusk = "redtusk.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Package the web UI assets (index.html + the assets/ subdir the blastbox
+# StaticUI seam serves at GET / and /assets). Without this, pip install copies
+# only the .py modules and the UI silently 404s (make_extension() sees no
+# index.html → static_ui=None).
+[tool.setuptools.package-data]
+redtusk = ["static/index.html", "static/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

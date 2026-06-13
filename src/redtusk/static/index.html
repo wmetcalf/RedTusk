@@ -6,9 +6,9 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>RedTusk</title>
-  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
+  <link rel="stylesheet" href="/assets/app.css" />
 </head>
 <body>
   <aside class="similar-panel" id="similar-panel" aria-hidden="true">
@@ -25,8 +25,8 @@
   </aside>
   <h1>
     <picture>
-      <source srcset="/static/logo.webp" type="image/webp">
-      <img src="/static/logo.png" alt="RedTusk" style="height:4rem;vertical-align:middle;margin-right:0.75rem;margin-bottom:0.2rem">
+      <source srcset="/assets/logo.webp" type="image/webp">
+      <img src="/assets/logo.png" alt="RedTusk" style="height:4rem;vertical-align:middle;margin-right:0.75rem;margin-bottom:0.2rem">
     </picture><a href="/" data-act="nav-list" data-prevent="1" style="color:inherit;text-decoration:none">RedTusk</a> <span id="version"></span> <a id="theme-song" href="https://suno.com/s/JfDeaLrS1JUN6dfe" target="_blank" rel="noopener" title="Theme song" style="font-size:1rem;text-decoration:none;margin-left:0.5rem;opacity:0.7">🎶</a></h1>
 
   <!-- Detail view — shown only on /jobs/<id>. Renders into #detail-content
@@ -62,8 +62,7 @@
              style="width:4.5rem;background:#1a1a1a;border:1px solid #444;color:#ccc;padding:0.1rem 0.3rem;border-radius:3px;font-size:0.85rem">
     </div>
     <div class="btn-row">
-      <button id="sync-btn" data-act="upload-sync">Extract (sync)</button>
-      <button id="queue-btn" class="secondary" data-act="upload-async">Queue (async)</button>
+      <button id="queue-btn" data-act="upload-async">Extract</button>
     </div>
     <div id="upload-status"></div>
     <div id="upload-result"></div>
@@ -104,6 +103,6 @@
   </div>
   </div><!-- #list-view -->
 
-  <script src="/static/app.js"></script>
+  <script src="/assets/app.js"></script>
 </body>
 </html>

@@ -48,6 +48,8 @@ from blastbox.contract import (
 from blastbox.limits import Limits
 from blastbox.worker.engine import DetonationResult
 
+from redtusk.schema import validate_rmeta
+
 logger = logging.getLogger(__name__)
 
 # Default locations of the JVM worker artifacts inside the cold-worker image.
@@ -79,7 +81,11 @@ _DEFAULT_JOB: dict[str, Any] = {
     },
     "enable_qr": False,
     "enable_ocr": False,
-    "enable_thumbnails": False,
+    # Default ON so warm tiers (FC microVM / gVisor C/R) generate thumbnails too:
+    # their guest env is frozen at snapshot time, so a per-job REDTUSK_ENABLE_THUMBNAILS
+    # can't reach them — they fall back to this default. Cold still honors the per-job
+    # param (the UI toggle, which also defaults on). See _env_param_overrides.
+    "enable_thumbnails": True,
     "ocr_lang": "eng",
     "ocr_psm": 3,
     "ocr_max_image_dim": 2000,
@@ -93,6 +99,56 @@ _DEFAULT_JOB: dict[str, Any] = {
     "zxing_path": "/usr/local/bin/ZXingReader",
     "tesseract_path": "tesseract",
 }
+
+
+def _env_param_overrides() -> dict[str, Any]:
+    """Map UI-forwarded job params onto the JVM job descriptor.
+
+    The dispatcher forwards a job's allowlisted ``params``
+    (``BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS``) into the worker as env vars, but ONLY
+    for UPPERCASE env-shaped keys (``^[A-Z][A-Z0-9_]*$`` — the dispatcher's
+    unconditional shape floor; lowercase keys are dropped before any allowlist).
+    So the web UI sends — and the allowlist lists — ``REDTUSK_ENABLE_QR`` /
+    ``REDTUSK_ENABLE_OCR`` / ``REDTUSK_ENABLE_THUMBNAILS`` /
+    ``REDTUSK_MAX_RECURSION_DEPTH`` / ``REDTUSK_MAX_EMBEDDED_ENTRIES``. Absent or
+    empty → the JVM default in ``_DEFAULT_JOB`` is kept. Anything not in the
+    allowlist never reaches here, so this can't flip sandbox/runtime.
+    """
+
+    def _flag(name: str) -> bool | None:
+        v = os.environ.get(name)
+        if not v:
+            return None
+        return v.strip().lower() in ("1", "true", "yes", "on")
+
+    def _int(name: str) -> int | None:
+        v = os.environ.get(name)
+        if not v:
+            return None
+        try:
+            return int(v)
+        except ValueError:
+            return None
+
+    out: dict[str, Any] = {}
+    for env_key, job_key in (
+        ("REDTUSK_ENABLE_QR", "enable_qr"),
+        ("REDTUSK_ENABLE_OCR", "enable_ocr"),
+        ("REDTUSK_ENABLE_THUMBNAILS", "enable_thumbnails"),
+    ):
+        f = _flag(env_key)
+        if f is not None:
+            out[job_key] = f
+    limits: dict[str, Any] = {}
+    depth = _int("REDTUSK_MAX_RECURSION_DEPTH")
+    if depth is not None:
+        limits["max_recursion_depth"] = depth
+    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES")
+    if entries is not None:
+        limits["max_embedded_entries"] = entries
+    if limits:
+        out["limits"] = {**_DEFAULT_JOB["limits"], **limits}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +386,7 @@ def _run_worker(
         # worker's metadata.json + artifacts land under the harness outdir.
         job: dict[str, Any] = {
             **_DEFAULT_JOB,
+            **_env_param_overrides(),
             "input_path": str(in_dir / filename_hint),
             "output_dir": str(rmeta_outdir),
             "sha256": sha256,
@@ -413,6 +470,7 @@ def _crac_restore_worker(
     (in_dir / filename_hint).write_bytes(input_bytes)
     job: dict[str, Any] = {
         **_DEFAULT_JOB,
+        **_env_param_overrides(),
         "input_path": str(in_dir / filename_hint),
         "output_dir": str(rmeta_outdir),
         "sha256": _sha256_bytes(input_bytes),
@@ -575,6 +633,7 @@ class RedTuskEngine:
             (warm.in_dir / filename_hint).write_bytes(input_bytes)
             job: dict[str, Any] = {
                 **_DEFAULT_JOB,
+                **_env_param_overrides(),
                 "input_path": str(warm.in_dir / filename_hint),
                 "output_dir": str(rmeta_dir),
                 "sha256": _sha256_bytes(input_bytes),
@@ -657,12 +716,36 @@ class RedTuskEngine:
 
         rmeta: dict[str, Any] = json.loads(meta_path.read_bytes())
 
+        # Trust gate (restored from the bespoke host): validate the worker-produced
+        # rmeta against the strict Draft-2020-12 schema BEFORE we embed it in the
+        # envelope / serve it. A malformed rmeta — worker bug, version drift, or a
+        # hostile-input-induced shape — fails the job (engine_error) instead of
+        # flowing unvalidated to the UI. Real corpus rmeta conforms (no false fails).
+        validate_rmeta(rmeta)
+
         extraction = rmeta.get("extraction", {})
         entries: list[dict[str, Any]] = extraction.get("entries", [])
         root_ct: str = extraction.get("root_content_type") or "application/octet-stream"
 
         # Build payload tree
         payload = _build_tree(entries)
+
+        # Embed the FULL rmeta document as a single JSON-string envelope field
+        # (mirrors ClippyShot's ``clippyshot_metadata``): the host UI reads the
+        # extraction tree straight from the sealed envelope, so we no longer ship a
+        # separate ``rmeta/metadata.json`` artifact (which collided by name with the
+        # blastbox ENVELOPE metadata.json at the zip root). Fail-open: a
+        # serialization hiccup must never fail the job — the UI falls back to /rmeta.
+        try:
+            rmeta_json = json.dumps(rmeta, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            rmeta_json = ""
+        if rmeta_json and payload.metadata is not None:
+            try:
+                # frozen models still allow mutating the contained fields dict
+                payload.metadata.fields["redtusk_rmeta"] = rmeta_json
+            except Exception:  # noqa: BLE001
+                pass
 
         # Detection from root content-type.  ``label`` is capped at 64 chars by
         # the contract; long MIME types (e.g. the 71-char OOXML wordprocessingml
@@ -675,13 +758,15 @@ class RedTuskEngine:
             source="redtusk",
         )
 
-        # Collect artifacts: every file the JVM wrote under rmeta/, referenced with paths
-        # relative to outdir (not rmeta_dir) so the blastbox envelope path confinement passes
-        # with outdir as root. rmeta/metadata.json (the recursive extraction tree) is declared
-        # like any other rmeta file — it is served verbatim by /v1/jobs/{id}/rmeta, so it MUST go
-        # through the trust gate (audit M-4: declaring it makes seal_envelope re-hash it and the
-        # manifest-enforced serve route accept it; it is distinct from the blastbox ENVELOPE
-        # metadata.json at the output ROOT — this one is under rmeta/ → "rmeta/metadata.json").
+        # Collect artifacts: every file the JVM wrote under rmeta/ (embedded files +
+        # thumbnails), referenced with paths relative to outdir (not rmeta_dir) so the
+        # blastbox envelope path confinement passes with outdir as root.
+        #
+        # ``rmeta/metadata.json`` is deliberately NOT declared (see the filter below):
+        # its content is embedded in the envelope as the ``redtusk_rmeta`` field, so
+        # declaring it too would put a second metadata.json in /result (the wart this
+        # change removes). The legacy /v1/jobs/{id}/rmeta route still serves it for
+        # jobs sealed before this change (they declared it); new jobs use the field.
         #
         # Normally a fresh rglob of rmeta_dir is authoritative (cold + Firecracker tiers). But a
         # gVisor C/R-restored warm worker has a STALE directory view: readdir/rglob misses the
@@ -697,6 +782,11 @@ class RedTuskEngine:
         )
         if "rmeta/metadata.json" not in rel_paths:
             rel_paths = _reconstruct_rmeta_artifact_paths(outdir, rmeta_dir, entries)
+        # The rmeta doc is embedded in the envelope (redtusk_rmeta) — keep it as the
+        # stale-view sentinel above, but drop it from the DECLARED set so it isn't a
+        # second metadata.json in the sealed /result zip. Sentinel check stays intact
+        # (it ran on the unfiltered rglob result).
+        rel_paths = [p for p in rel_paths if p != "rmeta/metadata.json"]
         artifacts: list[DeclaredArtifact] = []
         used_ids: set[str] = set()
         for rel_str in rel_paths:
