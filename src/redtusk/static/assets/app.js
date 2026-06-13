@@ -43,36 +43,62 @@
       while (n >= 1024 && i < units.length-1) { n/=1024; i++; }
       return n.toFixed(i?1:0)+' '+units[i];
     }
-    function optParams() {
-      const qr        = document.getElementById('toggle-qr').checked;
-      const ocr       = document.getElementById('toggle-ocr').checked;
-      const thumbs    = document.getElementById('toggle-thumbnails').checked;
-      const depth     = parseInt(document.getElementById('opt-depth').value) || 10;
-      const entries   = parseInt(document.getElementById('opt-entries').value) || 5000;
-      return '?enable_qr='+qr+'&enable_ocr='+ocr
-           + '&enable_thumbnails='+thumbs
-           + '&max_recursion_depth='+depth
-           + '&max_embedded_entries='+entries;
+    // Append the scanner/limit toggles as host `params` form fields. Keys MUST be
+    // UPPERCASE env-shaped (the dispatcher drops anything not ^[A-Z][A-Z0-9_]*$
+    // before the allowlist); they must also be in BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS.
+    function appendJobParams(fd) {
+      const qr      = document.getElementById('toggle-qr').checked;
+      const ocr     = document.getElementById('toggle-ocr').checked;
+      const thumbs  = document.getElementById('toggle-thumbnails').checked;
+      const depth   = parseInt(document.getElementById('opt-depth').value) || 10;
+      const entries = parseInt(document.getElementById('opt-entries').value) || 5000;
+      fd.append('params', 'REDTUSK_ENABLE_QR=' + qr);
+      fd.append('params', 'REDTUSK_ENABLE_OCR=' + ocr);
+      fd.append('params', 'REDTUSK_ENABLE_THUMBNAILS=' + thumbs);
+      fd.append('params', 'REDTUSK_MAX_RECURSION_DEPTH=' + depth);
+      fd.append('params', 'REDTUSK_MAX_EMBEDDED_ENTRIES=' + entries);
+    }
+
+    // ── blastbox.host ⇄ UI adapter ────────────────────────────────
+    // The UI was authored against RedTusk's bespoke API; on blastbox.host the
+    // job shape differs (job_id/status/filename + epoch timestamps, and the
+    // extraction tree lives behind a separate /rmeta fetch instead of inline
+    // job.result). normalizeJob() maps a host job record into the shape the
+    // rest of this file already speaks, so the rich viewer (buildJobView/
+    // buildTree) is reused verbatim.
+    const _BB_STATE = { done: 'succeeded', failed: 'failed', rejected: 'failed',
+                        queued: 'queued', running: 'running' };
+    // UI state-filter value → host `state` query param (inverse of _BB_STATE;
+    // 'succeeded' collapses to host 'done').
+    const _UI_TO_BB_STATE = { queued: 'queued', running: 'running',
+                              succeeded: 'done', failed: 'failed' };
+    const _epochToIso = (e) => (e == null ? null : new Date(e * 1000).toISOString());
+
+    function normalizeJob(j) {
+      if (!j || j.id) return j;            // already normalized / not a host record
+      const created = j.created_at, started = j.started_at, finished = j.finished_at;
+      return {
+        id: j.job_id,
+        state: _BB_STATE[j.status] || j.status || 'queued',
+        filename_hint: j.filename || '—',
+        submitted_at: _epochToIso(created),
+        started_at: _epochToIso(started),
+        completed_at: _epochToIso(finished),
+        processing_ms: (finished != null && started != null) ? (finished - started) * 1000 : null,
+        queue_ms: (started != null && created != null) ? (started - created) * 1000 : null,
+        error_detail: j.error || null,
+        worker_runtime: j.worker_runtime || null,
+        // qr_count isn't in the host list summary; the detail view surfaces QR
+        // per-entry from /rmeta. result stays null until the detail view fetches it.
+        qr_count: null,
+        result: null,
+        _bb: j,
+      };
     }
 
     // ── upload ────────────────────────────────────────────────────
-    async function uploadSync() {
-      const files = document.getElementById('file-input').files;
-      if (!files.length) { setStatus('Select a file first.'); return; }
-      setButtons(true); setStatus('Extracting '+files[0].name+'…');
-      document.getElementById('upload-result').style.display='none';
-      try {
-        const resp = await fetch('/v1/convert'+optParams(), {
-          method:'POST', body:files[0],
-          headers:{'Content-Disposition':'attachment; filename="'+encodeURIComponent(files[0].name)+'"'}
-        });
-        const data = await resp.json().catch(()=>null);
-        setStatus(resp.ok ? 'Done ('+resp.status+')' : 'Error '+resp.status);
-        if (data) { const el=document.getElementById('upload-result'); el.innerHTML=buildJobView(data); el.style.display='block'; }
-      } catch(e) { setStatus('Failed: '+e.message); }
-      finally { setButtons(false); fetchJobs(); }
-    }
-
+    // The host is async-only (submit→dispatch→poll); the bespoke synchronous
+    // /v1/convert path is not ported, so the UI queues every upload.
     async function uploadAsync() {
       const files = document.getElementById('file-input').files;
       if (!files.length) { setStatus('Select file(s) first.'); return; }
@@ -80,10 +106,12 @@
       let ok=0, fail=0;
       for (const f of files) {
         try {
-          const r = await fetch('/v1/jobs'+optParams(), {
-            method:'POST', body:f,
-            headers:{'Content-Disposition':'attachment; filename="'+encodeURIComponent(f.name)+'"'}
-          });
+          // Host submit is multipart: file + engine + repeated `params` fields.
+          const fd = new FormData();
+          fd.append('file', f);
+          fd.append('engine', 'redtusk');
+          appendJobParams(fd);
+          const r = await fetch('/v1/jobs', { method:'POST', body: fd });
           if (r.ok) ok++; else fail++;
         } catch { fail++; }
       }
@@ -92,8 +120,8 @@
     }
 
     function setButtons(d) {
-      document.getElementById('sync-btn').disabled=d;
-      document.getElementById('queue-btn').disabled=d;
+      const b = document.getElementById('queue-btn');
+      if (b) b.disabled = d;
     }
     function setStatus(m) { document.getElementById('upload-status').textContent=m; }
 
@@ -171,7 +199,6 @@
     const CLICK_ACTIONS = {
       'nav-list': () => navigateToList(),
       'nav-job': (el) => navigateToJob(el.dataset.arg),
-      'upload-sync': () => uploadSync(),
       'upload-async': () => uploadAsync(),
       'clear-search': () => clearSearch(),
       'toggle-text': (el) => toggleText(el),
@@ -283,13 +310,29 @@
       }
     }
 
-    function thumbUrlFor(jobId, entryPath) {
-      if (!jobId) return null;
-      if (!entryPath || entryPath === '/') {
-        return '/v1/jobs/' + jobId + '/artifacts/thumbnail.jpg';
-      }
+    // Thumbnails on blastbox.host: the worker writes them under rmeta/ (root →
+    // rmeta/thumbnail.jpg, embedded → rmeta/embedded/thumbnails/<rel>.jpg) and the
+    // engine auto-declares them as artifacts. The host serves artifacts by *id*, so
+    // we resolve a thumbnail's relative PATH to its declared id via _curArtMap
+    // (built from the envelope's artifacts[] when the detail view loads).
+    let _curArtMap = {};            // artifact path → id, for the job being rendered
+
+    function _artUrl(jobId, path) {
+      if (!jobId || !path) return null;
+      const id = _curArtMap[path];
+      return id ? '/v1/jobs/' + jobId + '/artifacts/' + encodeURIComponent(id) : null;
+    }
+
+    function _entryThumbPath(entryPath) {
+      if (!entryPath || entryPath === '/') return 'rmeta/thumbnail.jpg';
       const rel = entryPath.startsWith('/') ? entryPath.slice(1) : entryPath;
-      return '/v1/jobs/' + jobId + '/artifacts/embedded/thumbnails/' + rel + '.jpg';
+      return 'rmeta/embedded/thumbnails/' + rel + '.jpg';
+    }
+
+    function thumbUrlFor(jobId, entryPath) {
+      // Same-job lookups resolve via the loaded artifact map. Cross-job matches
+      // (the similarity panel) have no map here, so they render without a thumb.
+      return _artUrl(jobId, _entryThumbPath(entryPath));
     }
 
     function renderSimilarMatches(matches) {
@@ -552,18 +595,12 @@
         // Detail panel (hidden by default)
         html += '<div class="tree-body" id="'+uid+'" style="display:none">';
 
-        if (e.has_thumbnail && jobId) {
-          // Root entry thumbnail is written directly as thumbnail.jpg;
-          // embedded entry thumbnails mirror the path under embedded/thumbnails/.
-          let thumbUrl;
-          if (e.path === '/') {
-            thumbUrl = '/v1/jobs/'+jobId+'/artifacts/thumbnail.jpg';
-          } else {
-            const rel = e.path.startsWith('/') ? e.path.slice(1) : e.path;
-            thumbUrl = '/v1/jobs/'+jobId+'/artifacts/embedded/thumbnails/'+rel+'.jpg';
-          }
+        // Resolve the thumbnail (root → rmeta/thumbnail.jpg, embedded →
+        // rmeta/embedded/thumbnails/<rel>.jpg) to its declared-artifact id.
+        const _thumbUrl = (e.has_thumbnail && jobId) ? _artUrl(jobId, _entryThumbPath(e.path)) : null;
+        if (_thumbUrl) {
           // data-src: deferred until the tree node is opened (set by treeToggle)
-          html += '<img data-src="'+esc(thumbUrl)+'" alt="" style="max-width:256px;max-height:256px;display:block;margin:0.4rem 0;border:1px solid #333;border-radius:3px" data-onerror="thumb">';
+          html += '<img data-src="'+esc(_thumbUrl)+'" alt="" style="max-width:256px;max-height:256px;display:block;margin:0.4rem 0;border:1px solid #333;border-radius:3px" data-onerror="thumb">';
         }
         if (sha)          html += '<div class="tree-meta">sha256: <a class="hash-link" data-hash="sha256" data-val="'+esc(sha)+'" title="Find entries with this exact SHA-256">'+esc(sha)+'</a></div>';
         if (e.md5)        html += '<div class="tree-meta">md5: <span class="mono">'+esc(e.md5)+'</span> &nbsp; sha1: <span class="mono">'+esc(e.sha1||'—')+'</span></div>';
@@ -692,7 +729,8 @@
       const ind = document.getElementById('refresh-indicator');
       ind.textContent = q ? 'searching…' : 'refreshing…';
       try {
-        const stateQS = activeStateFilter ? `&state=${activeStateFilter}` : '';
+        const bbState = activeStateFilter ? (_UI_TO_BB_STATE[activeStateFilter] || activeStateFilter) : '';
+        const stateQS = bbState ? `&state=${bbState}` : '';
         const offset = (currentPage - 1) * PAGE_SIZE;
         const url = q
           ? `/v1/jobs?limit=200&q=${encodeURIComponent(q)}${stateQS}`
@@ -700,7 +738,9 @@
         const resp = await fetch(url);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
-        const jobs = Array.isArray(data) ? data : (data.jobs || []);
+        const raw = Array.isArray(data) ? data : (data.jobs || []);
+        const jobs = raw.map(normalizeJob);
+        _lastPageFull = !q && raw.length >= PAGE_SIZE;
 
         for (const j of jobs) {
           if (j.state === 'queued' || j.state === 'running') jobCache.delete(j.id);
@@ -725,11 +765,11 @@
     // ── pagination state ──────────────────────────────────────────
     const PAGE_SIZE = 50;
     let currentPage = 1;   // 1-based
-    let totalJobs = 0;     // total matching current filter (state, not search)
+    let _lastPageFull = false;  // last list page returned a full PAGE_SIZE → a Next exists
 
     function goToPage(p) {
-      const maxP = Math.max(1, Math.ceil(totalJobs / PAGE_SIZE));
-      currentPage = Math.min(Math.max(1, p), maxP);
+      // No aggregate total on the host; Next is gated by _lastPageFull in the pager.
+      currentPage = Math.max(1, p);
       fetchJobs();
     }
 
@@ -743,35 +783,17 @@
         el.innerHTML = '';
         return;
       }
-      const totalPages = Math.max(1, Math.ceil(totalJobs / PAGE_SIZE));
-      if (totalPages <= 1) {
-        el.innerHTML = `<span class="count">${totalJobs} job${totalJobs===1?'':'s'}</span>`;
-        return;
-      }
-      const parts = [];
-      const pg = (label, page, opts) => {
-        const o = opts || {};
-        const cls = 'pg' + (o.active ? ' active' : '') + (o.disabled ? ' disabled' : '') + (o.gap ? ' gap' : '');
-        if (o.gap) return `<span class="${cls}">…</span>`;
-        const click = o.disabled || o.active ? '' : `data-act="go-page" data-arg="${page}"`;
-        return `<span class="${cls}" ${click}>${label}</span>`;
-      };
-      parts.push(pg('« First', 1, { disabled: currentPage === 1 }));
-      parts.push(pg('‹ Prev', currentPage - 1, { disabled: currentPage === 1 }));
-
-      // Page numbers with smart truncation: 1 ... (cur-1, cur, cur+1) ... last
-      const pageSet = new Set([1, totalPages, currentPage, currentPage - 1, currentPage + 1, currentPage - 2, currentPage + 2]);
-      const pages = [...pageSet].filter(p => p >= 1 && p <= totalPages).sort((a, b) => a - b);
-      let prev = 0;
-      for (const p of pages) {
-        if (p - prev > 1) parts.push(pg('', 0, { gap: true }));
-        parts.push(pg(String(p), p, { active: p === currentPage }));
-        prev = p;
-      }
-
-      parts.push(pg('Next ›', currentPage + 1, { disabled: currentPage === totalPages }));
-      parts.push(pg('Last »', totalPages, { disabled: currentPage === totalPages }));
-      parts.push(`<span class="count">page ${currentPage} / ${totalPages} · ${totalJobs} job${totalJobs===1?'':'s'}</span>`);
+      // The host returns no aggregate count, so there's no "page N/total" or
+      // last-page jump — just Prev/Next, with Next gated on the last page being
+      // full (a partial page means we've reached the end).
+      const pg = (label, page, disabled) => disabled
+        ? `<span class="pg disabled">${label}</span>`
+        : `<span class="pg" data-act="go-page" data-arg="${page}">${label}</span>`;
+      const parts = [
+        pg('‹ Prev', currentPage - 1, currentPage === 1),
+        `<span class="count">page ${currentPage}</span>`,
+        pg('Next ›', currentPage + 1, !_lastPageFull),
+      ];
       el.innerHTML = parts.join('');
     }
 
@@ -781,7 +803,7 @@
     function setStateFilter(state) {
       // Toggle off if already active
       activeStateFilter = (activeStateFilter === state) ? null : state;
-      renderStatePills(window._lastCounts || {});
+      renderStatePills();
       // Clear any text-search so the two filters don't fight
       const inp = document.getElementById('search-input');
       if (inp.value) { inp.value = ''; activeQuery = ''; }
@@ -790,15 +812,15 @@
       fetchJobs();
     }
 
-    function renderStatePills(counts) {
-      window._lastCounts = counts;
-      const total = (counts.queued||0) + (counts.running||0) + (counts.succeeded||0) + (counts.failed||0);
+    function renderStatePills() {
+      // Pure filter pills — the host exposes no aggregate per-state tally, so we
+      // drop the live count badges and keep the pills as state filters.
       const states = [
-        { key: null,        label: 'All',       n: total },
-        { key: 'queued',    label: 'Queued',    n: counts.queued    || 0 },
-        { key: 'running',   label: 'Running',   n: counts.running   || 0 },
-        { key: 'succeeded', label: 'Succeeded', n: counts.succeeded || 0 },
-        { key: 'failed',    label: 'Failed',    n: counts.failed    || 0 },
+        { key: null,        label: 'All' },
+        { key: 'queued',    label: 'Queued' },
+        { key: 'running',   label: 'Running' },
+        { key: 'succeeded', label: 'Succeeded' },
+        { key: 'failed',    label: 'Failed' },
       ];
       const el = document.getElementById('state-pills');
       if (!el) return;
@@ -808,33 +830,15 @@
         // data-act delegation (CSP blocks inline onclick); set-state handler
         // reads dataset.arg, falling back to null for the "all" pill.
         const act = s.key ? `data-act="set-state" data-arg="${s.key}"` : 'data-act="set-state"';
-        return `<span class="${classes}" ${act}>${s.label}<span class="n">${s.n}</span></span>`;
+        return `<span class="${classes}" ${act}>${s.label}</span>`;
       }).join('');
     }
 
     async function fetchJobCounts() {
-      try {
-        const r = await fetch('/v1/jobs/counts');
-        if (!r.ok) return;
-        const d = await r.json();
-        const counts = d.counts || {};
-        renderStatePills(counts);
-        // Update totalJobs for the pager based on the active state filter.
-        if (activeStateFilter) {
-          totalJobs = counts[activeStateFilter] || 0;
-        } else {
-          totalJobs = (counts.queued||0) + (counts.running||0)
-                    + (counts.succeeded||0) + (counts.failed||0);
-        }
-        // If we're past the last page (e.g. jobs drained / deleted), step
-        // back. Don't fire another fetch from here — the regular 3s poll
-        // will reflect it.
-        const totalPages = Math.max(1, Math.ceil(totalJobs / PAGE_SIZE));
-        if (currentPage > totalPages) currentPage = totalPages;
-        renderPager();
-      } catch (e) {
-        // best-effort
-      }
+      // blastbox.host has no aggregate /counts endpoint; the pills are pure
+      // filters and the pager infers paging from page fullness. Keep the pills
+      // rendered (and their active-state highlight in sync) — that's all.
+      renderStatePills();
     }
 
     // ── delete ────────────────────────────────────────────────────
@@ -937,7 +941,36 @@
           content.innerHTML = '<div style="padding:1.5rem;color:#ef5350">Job not found (HTTP ' + r.status + ')</div>';
           return;
         }
-        const job = await r.json();
+        const job = normalizeJob(await r.json());
+        _curArtMap = {};
+        if (job.state === 'succeeded') {
+          // Prefer the sealed envelope: it carries the embedded rmeta document
+          // (redtusk_rmeta) — exactly the {extraction,input,sandbox,…} shape
+          // buildJobView consumes — AND the declared artifacts[] (path→id) needed
+          // to resolve thumbnails. One fetch covers both.
+          try {
+            const mr = await fetch('/v1/jobs/' + encodeURIComponent(id) + '/metadata');
+            if (mr.ok) {
+              const env = await mr.json();
+              for (const a of (env.artifacts || [])) {
+                if (a && a.path && a.id) _curArtMap[a.path] = a.id;
+              }
+              const fields = (((env.payload || {}).metadata) || {}).fields || {};
+              const rj = fields.redtusk_rmeta;
+              if (typeof rj === 'string' && rj) {
+                try { job.result = JSON.parse(rj); } catch { job.result = null; }
+              }
+            }
+          } catch { /* fall through to the legacy /rmeta route */ }
+          // Fallback for jobs sealed before the embed (no redtusk_rmeta field):
+          // the legacy /rmeta route still serves their declared rmeta/metadata.json.
+          if (!job.result) {
+            try {
+              const rr = await fetch('/v1/jobs/' + encodeURIComponent(id) + '/rmeta');
+              if (rr.ok) job.result = await rr.json();
+            } catch { /* viewer degrades to summary-only */ }
+          }
+        }
         renderJobDetail(id, job);
 
         // Only poll while the job is in flight. Terminal jobs are immutable.
@@ -957,7 +990,7 @@
       const content = document.getElementById('detail-content');
       let html = '<div class="expand-actions" style="margin-bottom:0.75rem">';
       if (job.state === 'succeeded') {
-        html += '<a href="/v1/jobs/' + id + '/infected-zip" download><button class="dl">⬇ infected.zip (pw: infected)</button></a>';
+        html += '<a href="/v1/jobs/' + id + '/result" download><button class="dl">⬇ result.zip (pw: infected)</button></a>';
       }
       const isTerminal = job.state === 'succeeded' || job.state === 'failed';
       if (isTerminal) {
@@ -1041,8 +1074,9 @@
       try {
         // Search: fetch up to 200 results, single shot, no pagination.
         // Normal: fetch the current page via offset=(page-1)*PAGE_SIZE.
-        // State filter layers on top of either mode.
-        const stateQS = activeStateFilter ? `&state=${activeStateFilter}` : '';
+        // State filter layers on top of either mode (mapped to host states).
+        const bbState = activeStateFilter ? (_UI_TO_BB_STATE[activeStateFilter] || activeStateFilter) : '';
+        const stateQS = bbState ? `&state=${bbState}` : '';
         const offset = (currentPage - 1) * PAGE_SIZE;
         const url = activeQuery
           ? `/v1/jobs?limit=200&q=${encodeURIComponent(activeQuery)}${stateQS}`
@@ -1050,7 +1084,10 @@
         const resp = await fetch(url);
         if (!resp.ok) throw new Error('HTTP '+resp.status);
         const data = await resp.json();
-        const jobs = Array.isArray(data) ? data : (data.jobs||[]);
+        const raw = Array.isArray(data) ? data : (data.jobs||[]);
+        const jobs = raw.map(normalizeJob);
+        // The host returns no total count; the pager infers "more" from a full page.
+        _lastPageFull = !activeQuery && raw.length >= PAGE_SIZE;
 
         for (const j of jobs) {
           // List response is summary-only; evict stale in-flight entries.
