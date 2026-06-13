@@ -79,7 +79,11 @@ _DEFAULT_JOB: dict[str, Any] = {
     },
     "enable_qr": False,
     "enable_ocr": False,
-    "enable_thumbnails": False,
+    # Default ON so warm tiers (FC microVM / gVisor C/R) generate thumbnails too:
+    # their guest env is frozen at snapshot time, so a per-job REDTUSK_ENABLE_THUMBNAILS
+    # can't reach them — they fall back to this default. Cold still honors the per-job
+    # param (the UI toggle, which also defaults on). See _env_param_overrides.
+    "enable_thumbnails": True,
     "ocr_lang": "eng",
     "ocr_psm": 3,
     "ocr_max_image_dim": 2000,

@@ -93,6 +93,21 @@ def test_env_param_overrides_uppercase_only(monkeypatch):
     assert out["limits"]["max_recursion_depth"] == 20
 
 
+def test_thumbnails_default_on_for_warm_tiers():
+    """Warm guests (FC/gVisor) can't receive the per-job REDTUSK_ENABLE_THUMBNAILS
+    (snapshot env is frozen), so the JVM job descriptor default must be ON or warm
+    tiers silently produce no thumbnails."""
+    from redtusk.engine import _DEFAULT_JOB
+
+    assert _DEFAULT_JOB["enable_thumbnails"] is True
+
+
+def test_env_param_overrides_can_disable_thumbnails_on_cold(monkeypatch):
+    """Cold still honors an explicit per-job off (the override beats the default)."""
+    monkeypatch.setenv("REDTUSK_ENABLE_THUMBNAILS", "false")
+    assert _env_param_overrides()["enable_thumbnails"] is False
+
+
 def test_env_param_overrides_absent_is_empty(monkeypatch):
     for v in (
         "REDTUSK_ENABLE_QR", "REDTUSK_ENABLE_OCR", "REDTUSK_ENABLE_THUMBNAILS",
