@@ -153,14 +153,18 @@ def test_env_param_overrides_can_disable_thumbnails_on_cold(monkeypatch):
 
 
 class _FakeWarmProc:
-    """A warm-JVM Popen double: alive (poll None) until communicate(), then exited 0."""
+    """A warm-JVM Popen double: alive (poll None) until communicate(), then exited.
 
-    def __init__(self) -> None:
+    poll()/wait() report self.returncode (not a hardcoded 0) so a test can simulate a
+    non-zero warm exit if needed, conforming to the subprocess.Popen contract.
+    """
+
+    def __init__(self, returncode: int = 0) -> None:
         self._done = False
-        self.returncode = 0
+        self.returncode = returncode
 
     def poll(self):
-        return 0 if self._done else None
+        return self.returncode if self._done else None
 
     def communicate(self, timeout=None):
         self._done = True
@@ -170,7 +174,24 @@ class _FakeWarmProc:
         self._done = True
 
     def wait(self, timeout=None):
-        return 0
+        return self.returncode
+
+
+def _warm_engine_with_fake_slot(tmp_path: Path):
+    """A RedTuskEngine wired to a fake warm slot (real control dir + fake JVM proc) and a
+    staged input. Returns (engine, control_dir, input_path) for the warm _produce_rmeta path."""
+    eng = RedTuskEngine()
+    slot = tmp_path / "slot"
+    in_dir, ctrl = slot / "in", slot / "control"
+    for d in (slot, in_dir, ctrl):
+        d.mkdir(parents=True)
+    eng._warm = types.SimpleNamespace(
+        proc=_FakeWarmProc(), scratch=slot, in_dir=in_dir, control_dir=ctrl,
+        tmp=types.SimpleNamespace(cleanup=lambda: None),
+    )
+    inp = tmp_path / "input.docx"
+    inp.write_bytes(b"warm doc bytes")
+    return eng, ctrl, inp
 
 
 def test_warm_detonate_threads_per_job_thumbnail_toggle_into_jobjson(tmp_path, monkeypatch):
@@ -181,18 +202,7 @@ def test_warm_detonate_threads_per_job_thumbnail_toggle_into_jobjson(tmp_path, m
     job.json (the regression that would silently revert warm to default-only)."""
     monkeypatch.setenv("REDTUSK_ENABLE_THUMBNAILS", "false")  # as the warm injector would set it
 
-    eng = RedTuskEngine()
-    slot = tmp_path / "slot"
-    in_dir, ctrl = slot / "in", slot / "control"
-    for d in (slot, in_dir, ctrl):
-        d.mkdir(parents=True)
-    eng._warm = types.SimpleNamespace(
-        proc=_FakeWarmProc(), scratch=slot, in_dir=in_dir, control_dir=ctrl,
-        tmp=types.SimpleNamespace(cleanup=lambda: None),
-    )
-
-    inp = tmp_path / "input.docx"
-    inp.write_bytes(b"warm doc bytes")
+    eng, ctrl, inp = _warm_engine_with_fake_slot(tmp_path)
     eng._produce_rmeta(inp, tmp_path / "out" / "rmeta", timeout=5.0)
 
     assert (ctrl / "control.go").exists(), "warm path was not taken"
@@ -205,18 +215,7 @@ def test_warm_detonate_defaults_thumbnails_on_when_no_param(tmp_path, monkeypatc
     for v in ("REDTUSK_ENABLE_THUMBNAILS", "REDTUSK_ENABLE_QR", "REDTUSK_ENABLE_OCR"):
         monkeypatch.delenv(v, raising=False)
 
-    eng = RedTuskEngine()
-    slot = tmp_path / "slot"
-    in_dir, ctrl = slot / "in", slot / "control"
-    for d in (slot, in_dir, ctrl):
-        d.mkdir(parents=True)
-    eng._warm = types.SimpleNamespace(
-        proc=_FakeWarmProc(), scratch=slot, in_dir=in_dir, control_dir=ctrl,
-        tmp=types.SimpleNamespace(cleanup=lambda: None),
-    )
-
-    inp = tmp_path / "input.docx"
-    inp.write_bytes(b"warm doc bytes")
+    eng, ctrl, inp = _warm_engine_with_fake_slot(tmp_path)
     eng._produce_rmeta(inp, tmp_path / "out" / "rmeta", timeout=5.0)
 
     job = json.loads((ctrl / "job.json").read_text())
