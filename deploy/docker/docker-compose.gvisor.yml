@@ -65,6 +65,14 @@ services:
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
       - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
       - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
+      # Per-engine allowlist — MUST mirror the cold dispatcher. Without it this warm tier
+      # falls back to denylist-only (forwards every shape-valid non-reserved param), so a
+      # client's params could reach the worker's REDTUSK_* knobs. Default-deny by default.
+      - BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS=${BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS:-}
+      # Engine-OWNED reserved keys — MUST mirror the cold dispatcher (see docker-compose.yml).
+      # JVM binary/jar/opts/library + CRaC dirs = code-exec vectors; dropped UNCONDITIONALLY
+      # so they're blocked even on this warm tier and on the warm→cold JVM-relaunch fallback.
+      - BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS=${BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS:-REDTUSK_JAVA_BIN,REDTUSK_WORKER_JAR,REDTUSK_JAVA_OPTS,REDTUSK_JAVA_LIBRARY_PATH,REDTUSK_AOT_CACHE,REDTUSK_CRAC_CHECKPOINT,REDTUSK_CRAC_SCRATCH}
       # Trust-gate cap — MUST match the cold dispatcher (RedTusk's rmeta inlines text).
       - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
       # --- sidecar primitive ---
