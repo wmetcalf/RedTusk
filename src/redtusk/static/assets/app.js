@@ -72,7 +72,14 @@
     // 'succeeded' collapses to host 'done').
     const _UI_TO_BB_STATE = { queued: 'queued', running: 'running',
                               succeeded: 'done', failed: 'failed' };
-    const _epochToIso = (e) => (e == null ? null : new Date(e * 1000).toISOString());
+    const _epochToIso = (e) => {
+      // Defensive: a single unparseable timestamp must not throw (RangeError from
+      // new Date(NaN).toISOString()) and crash the whole job-list map.
+      if (e == null) return null;
+      const n = Number(e);
+      if (Number.isNaN(n)) return null;
+      try { return new Date(n * 1000).toISOString(); } catch { return null; }
+    };
 
     function normalizeJob(j) {
       if (!j || j.id) return j;            // already normalized / not a host record
@@ -319,6 +326,10 @@
 
     function _artUrl(jobId, path) {
       if (!jobId || !path) return null;
+      // _curArtMap belongs to the CURRENTLY-loaded detail job only. For cross-job
+      // lookups (e.g. the similarity panel's matches) we have no map, so resolve
+      // nothing rather than mis-resolve against the active job's artifacts.
+      if (!_lastJobDetail || _lastJobDetail.id !== jobId) return null;
       const id = _curArtMap[path];
       return id ? '/v1/jobs/' + jobId + '/artifacts/' + encodeURIComponent(id) : null;
     }
