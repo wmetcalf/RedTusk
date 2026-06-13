@@ -171,6 +171,16 @@ services:
       # overrides (enable_qr/ocr/thumbnails, max_recursion_depth, …) are a follow-on
       # (the engine still uses its built-in job defaults); empty = forward nothing.
       - BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS=${BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS:-}
+      # Engine-OWNED reserved keys (blastbox core is engine-agnostic; RedTusk names its own
+      # dangerous knobs here). These are CODE-EXEC vectors a client must NEVER set via
+      # job.params — the JVM binary / worker jar / JVM opts (-javaagent…) / native library
+      # path / AOT cache, and the CRaC checkpoint+scratch dirs (restore an attacker image).
+      # The engine reads them from os.environ when it launches/feeds the JVM (cold + warm→cold
+      # fallback). Dropped UNCONDITIONALLY — before the allowlist — so they're blocked even on
+      # a warm tier running without the (optional, default-empty) allowlist. Non-empty default
+      # = the floor holds with no extra config. Operator-set CONTAINER env (the real values
+      # baked into the image) is unaffected; only client job.params overrides are dropped.
+      - BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS=${BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS:-REDTUSK_JAVA_BIN,REDTUSK_WORKER_JAR,REDTUSK_JAVA_OPTS,REDTUSK_JAVA_LIBRARY_PATH,REDTUSK_AOT_CACHE,REDTUSK_CRAC_CHECKPOINT,REDTUSK_CRAC_SCRATCH}
       - BLASTBOX_DISPATCH_CONCURRENCY=${BLASTBOX_DISPATCH_CONCURRENCY:-}
       - BLASTBOX_WORKER_TIMEOUT_S=${BLASTBOX_WORKER_TIMEOUT_S:-300}
       # Worker runtime: empty = auto-detect (prefer runsc). Plain runc is
