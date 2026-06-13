@@ -48,6 +48,8 @@ from blastbox.contract import (
 from blastbox.limits import Limits
 from blastbox.worker.engine import DetonationResult
 
+from redtusk.schema import validate_rmeta
+
 logger = logging.getLogger(__name__)
 
 # Default locations of the JVM worker artifacts inside the cold-worker image.
@@ -713,6 +715,13 @@ class RedTuskEngine:
             raise RuntimeError("redtusk worker did not produce metadata.json")
 
         rmeta: dict[str, Any] = json.loads(meta_path.read_bytes())
+
+        # Trust gate (restored from the bespoke host): validate the worker-produced
+        # rmeta against the strict Draft-2020-12 schema BEFORE we embed it in the
+        # envelope / serve it. A malformed rmeta — worker bug, version drift, or a
+        # hostile-input-induced shape — fails the job (engine_error) instead of
+        # flowing unvalidated to the UI. Real corpus rmeta conforms (no false fails).
+        validate_rmeta(rmeta)
 
         extraction = rmeta.get("extraction", {})
         entries: list[dict[str, Any]] = extraction.get("entries", [])

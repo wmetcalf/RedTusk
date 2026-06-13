@@ -1,6 +1,8 @@
     // ── version ───────────────────────────────────────────────────
-    fetch('/version').then(r=>r.text()).then(v=>{
-      document.getElementById('version').textContent = v.trim();
+    // Host route is /v1/version returning JSON {version, allowed_engines} (the old
+    // bespoke /version plaintext route wasn't ported).
+    fetch('/v1/version').then(r=>r.json()).then(d=>{
+      document.getElementById('version').textContent = d && d.version ? 'v'+d.version : '';
     }).catch(()=>{});
 
     // ── helpers ───────────────────────────────────────────────────
@@ -1051,7 +1053,10 @@
         const el = document.getElementById('pool-status');
         const stats = {};
         for (const line of text.split('\n')) {
-          const m = line.match(/^redtusk_pool_slots\{state="(\w+)"\}\s+(\d+)/);
+          // blastbox names the gauge blastbox_pool_slots. NB: in the split api/
+          // dispatcher topology the pool lives in the dispatcher, so the api's
+          // /metrics usually has no slot gauge — the widget then renders empty.
+          const m = line.match(/^blastbox_pool_slots\{state="(\w+)"\}\s+(\d+)/);
           if (m) stats[m[1]]=parseInt(m[2]);
         }
         if (!Object.keys(stats).length) { el.innerHTML=''; return; }

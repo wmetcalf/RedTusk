@@ -17,26 +17,49 @@ import json
 import types
 from pathlib import Path
 
+import pytest
+
 from redtusk.engine import RedTuskEngine, _env_param_overrides
 
+
+def _entry(path, parent, depth, ct, sha, **extra):
+    """A schema-valid extraction entry (all required fields present)."""
+    e = {
+        "path": path, "parent_path": parent, "depth": depth, "content_type": ct,
+        "size_bytes": 10, "sha256": sha, "metadata": {}, "text": "", "language": None,
+        "qr": {"codes": [], "skipped": None},
+        "ocr": {"text": "", "language": None, "duration_ms": 0, "skipped": None},
+        "error": None,
+    }
+    e.update(extra)
+    return e
+
+
+# A schema-conformant rmeta (detonate now validates it via the restored trust gate).
 _RMETA_FIXTURE = {
     "redtusk_version": "test",
-    "input": {"filename_hint": "x.xlsx", "size_bytes": 10, "sha256": "ab" * 32},
+    "input": {
+        "filename_hint": "x.xlsx", "size_bytes": 10, "sha256": "ab" * 32,
+        "submitted_at": "2026-01-01T00:00:00+00:00",
+    },
     "extraction": {
         "root_content_type": "application/vnd.ms-excel",
         "root_language": "en",
         "duration_ms": 5,
         "entries": [
-            {"path": "/", "content_type": "application/vnd.ms-excel", "depth": 0,
-             "metadata": {}},
-            {"path": "/image3.jpeg", "content_type": "image/jpeg", "depth": 1,
-             "metadata": {}, "has_thumbnail": True, "sha256": "cd" * 32},
+            _entry("/", None, 0, "application/vnd.ms-excel", "ab" * 32),
+            _entry("/image3.jpeg", "/", 1, "image/jpeg", "cd" * 32, has_thumbnail=True),
         ],
     },
-    "limits": {},
+    "limits": {
+        "max_recursion_depth": 10, "max_embedded_entries": 5000,
+        "max_extracted_bytes": 524_288_000, "ocr_timeout_s": 30,
+    },
     "truncated": None,
     "warnings": [],
-    "sandbox": {"profile": "default", "runtime": "runc"},
+    "sandbox": {
+        "profile": "default", "runtime": "runc", "appcds": True, "ksm": False, "crac": False,
+    },
 }
 
 
@@ -91,6 +114,26 @@ def test_env_param_overrides_uppercase_only(monkeypatch):
     assert out["enable_thumbnails"] is True
     assert out["enable_qr"] is False
     assert out["limits"]["max_recursion_depth"] == 20
+
+
+def test_detonate_fails_closed_on_malformed_rmeta(tmp_path, monkeypatch):
+    """Trust gate: a worker rmeta that violates the schema fails the job (raises),
+    not flows unvalidated to the UI."""
+    from redtusk.schema import SchemaValidationError
+
+    bad = {"redtusk_version": "x"}  # missing required input/extraction/...
+
+    def fake_produce(self, input, rmeta_dir, timeout):
+        (rmeta_dir / "embedded").mkdir(parents=True, exist_ok=True)
+        (rmeta_dir / "metadata.json").write_text(json.dumps(bad))
+
+    monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", fake_produce)
+    inp = tmp_path / "x"
+    inp.write_bytes(b"x")
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(SchemaValidationError):
+        RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))
 
 
 def test_thumbnails_default_on_for_warm_tiers():

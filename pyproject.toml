@@ -28,6 +28,7 @@ dependencies = [
     "blastbox>=0.1.11,<0.2",
     "click>=8.1,<9.0",
     "structlog>=24.1.0,<26.0",
+    "jsonschema>=4.0,<5.0",
 ]
 
 [project.optional-dependencies]

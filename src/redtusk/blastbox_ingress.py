@@ -39,7 +39,7 @@ import os
 from pathlib import Path as _FsPath
 
 from blastbox.host.ingress.extension import IngressExtension, StaticUI
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 router = APIRouter()
@@ -64,6 +64,19 @@ def get_rmeta(job_id: str, request: Request) -> FileResponse:
         filename=f"{job_id}.rmeta.json",
     )
     return resp
+
+
+@router.get("/jobs/{job_id}")
+def spa_deeplink(job_id: str) -> FileResponse:
+    """Serve the SPA shell for client-routed deep-links (``/jobs/<id>``) so a hard
+    refresh / bookmark / share of a job-detail URL works — the front-end then routes
+    on ``window.location.pathname``. Distinct from ``/v1/jobs/{id}`` (the JSON API);
+    the StaticUI seam only registers ``GET /`` + ``/assets``, so without this a
+    refresh on a detail URL 404s. 404 when the UI isn't packaged (REDTUSK_SERVE_UI=0)."""
+    index = _STATIC_DIR / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(str(index), media_type="text/html")
 
 
 def make_extension() -> IngressExtension:
