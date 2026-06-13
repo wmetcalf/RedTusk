@@ -29,7 +29,7 @@ def test_every_dispatcher_declares_redtusk_reserved_keys():
     """The reserved floor (RCE knobs) is set on cold + FC + gVisor dispatchers, with a
     non-empty default so it holds even with no extra .env config. Dropped unconditionally."""
     for fname in _COMPOSE_FILES:
-        compose = (_DEPLOY / fname).read_text()
+        compose = (_DEPLOY / fname).read_text(encoding="utf-8")
         assert "BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS=" in compose, fname
         for key in _RESERVED:
             assert key in compose, f"{key} not reserved in {fname}"
@@ -40,7 +40,7 @@ def test_warm_sidecars_also_set_the_allowlist():
     — mirroring the cold dispatcher. Without it they fall back to denylist-only and forward
     every shape-valid non-reserved param to the warm worker."""
     for fname in ("docker-compose.firecracker.yml", "docker-compose.gvisor.yml"):
-        compose = (_DEPLOY / fname).read_text()
+        compose = (_DEPLOY / fname).read_text(encoding="utf-8")
         assert "BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS=" in compose, (
             f"{fname} warm dispatcher is missing the allowlist (legacy denylist-only)"
         )
