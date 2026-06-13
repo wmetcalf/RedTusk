@@ -35,6 +35,14 @@ services:
     # restart without this. (Image default command is the API server.)
     command: ["sh", "-c", "rm -rf /var/lib/blastbox/gvisor-snapshot /var/lib/blastbox/gvisor-base-* /var/lib/blastbox/gvisor-root 2>/dev/null; mkdir -p /var/lib/blastbox/gvisor-root; exec blastbox dispatch"]
     restart: unless-stopped
+    # Aggregate memory ceiling for the warm pool (the host memory cgroup GvisorConfig defers
+    # to: it intentionally does NOT RLIMIT_AS the worker tree — risks false VADDR kills —
+    # relying on the inner sandbox plus an operator cgroup HERE). Brings gVisor warm to parity
+    # with the cold worker (BLASTBOX_WORKER_MEMORY, default 2g) and FC guest (BLASTBOX_FC_MEM_MIB,
+    # default 2048), which are already bounded. Default 0 = unbounded (unchanged behaviour);
+    # set REDTUSK_GVISOR_MEMORY in the env/.env (e.g. 24g) to bound dispatcher + all warm slots
+    # collectively (not per slot — size for the pool).
+    mem_limit: ${REDTUSK_GVISOR_MEMORY:-0}
     # Liveness is covered by restart: unless-stopped; the image default healthcheck is the
     # wrong probe for a warm-only, root-running dispatcher.
     healthcheck:
