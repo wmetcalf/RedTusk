@@ -79,7 +79,12 @@ _DEFAULT_JOB: dict[str, Any] = {
         "max_extracted_bytes": 524_288_000,
         "ocr_timeout_s": 30,
     },
-    "enable_qr": False,
+    # QR default ON: this is a forensic fork — QR codes in docs/emails are a primary IOC
+    # (decoded payloads are commonly phishing URLs), and the zxing scan is cheap. Matches
+    # ClippyShot's QR-on default. Per-job REDTUSK_ENABLE_QR=0 still turns it off.
+    "enable_qr": True,
+    # OCR stays OFF by default (heavier: tesseract per image, image-bomb/DoS-sensitive) —
+    # opt in per job with REDTUSK_ENABLE_OCR=1.
     "enable_ocr": False,
     # Default ON so warm tiers (FC microVM / gVisor C/R) generate thumbnails too:
     # their guest env is frozen at snapshot time, so a per-job REDTUSK_ENABLE_THUMBNAILS
