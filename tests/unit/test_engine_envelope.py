@@ -146,6 +146,17 @@ def test_thumbnails_default_on_when_no_param():
     assert _DEFAULT_JOB["enable_thumbnails"] is True
 
 
+def test_qr_default_on_ocr_default_off():
+    """QR defaults ON (forensic IOC — decoded QR payloads are commonly phishing URLs) and
+    the zxing scan is cheap, so warm guests dispatched without a param still get it. OCR
+    stays OFF by default (tesseract-per-image is heavier / image-bomb-sensitive). Both are
+    DEFAULTS, not floors: explicit REDTUSK_ENABLE_QR=0 / REDTUSK_ENABLE_OCR=1 still win."""
+    from redtusk.engine import _DEFAULT_JOB
+
+    assert _DEFAULT_JOB["enable_qr"] is True
+    assert _DEFAULT_JOB["enable_ocr"] is False
+
+
 def test_env_param_overrides_can_disable_thumbnails_on_cold(monkeypatch):
     """Cold honors an explicit per-job off (the override beats the default)."""
     monkeypatch.setenv("REDTUSK_ENABLE_THUMBNAILS", "false")
