@@ -43,6 +43,29 @@ class ParserRunnerTest {
         assertNull(root.error());
     }
 
+    @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named = "redtusk.macro.file", matches = ".+")
+    @Test
+    void extractsMacroEvenWhenBodyBustsWriteLimit() throws Exception {
+        // Gated manual validation. Point at a real macro-bearing file whose body text exceeds
+        // the 8 MB per-parse char cap (a junk-padded malspam .xls/.xlsm). Pre-fix, the
+        // cumulative write-limit starved the VBA source (no text/x-vbasic entry); post-fix the
+        // OfficeParser / OOXML extractor emits macros BEFORE the body, so they survive.
+        //   -Dredtusk.macro.file=/path/to/truncation-case.xls
+        File f = new File(System.getProperty("redtusk.macro.file"));
+        assertTrue(f.isFile(), "file not found: " + f);
+        ParserRunner runner = new ParserRunner(noLimits(), false, false, "eng", 3, 2000, false, "", "tesseract");
+        ParseResult result = runner.parse(f, f.getName(), "0".repeat(64));
+        long macroEntries = result.entries().stream()
+                .filter(e -> e.contentType() != null && e.contentType().contains("vbasic"))
+                .count();
+        long maxText = result.entries().stream()
+                .mapToLong(e -> e.text() == null ? 0 : e.text().length()).max().orElse(0);
+        System.out.println("MACRO-VALIDATION file=" + f.getName()
+                + " entries=" + result.entries().size()
+                + " macroEntries=" + macroEntries + " maxTextLen=" + maxText);
+        assertTrue(macroEntries > 0, "expected >=1 text/x-vbasic macro entry (was " + macroEntries + ")");
+    }
+
     @Test
     void respectsMaxEmbeddedEntriesLimit() throws Exception {
         var limits = new JobDescriptor.LimitsDescriptor(10, 1, 524288000L, 60);
