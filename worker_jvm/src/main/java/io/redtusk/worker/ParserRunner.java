@@ -299,7 +299,10 @@ public final class ParserRunner {
             parseErrorMsg = e.getMessage();
         }
 
-        List<Metadata> metaList = handler.getMetadataList();
+        // Copy to an ArrayList: Tika's RecursiveParserWrapperHandler returns a LinkedList, so the
+        // indexed entry loop below would be O(N^2) on large containers — and the salvage path
+        // below needs a guaranteed-mutable list to prepend the root. ArrayList fixes both.
+        List<Metadata> metaList = new ArrayList<>(handler.getMetadataList());
         // SALVAGE on a mid-document parser crash (e.g. POI RecordFormatException on a malformed
         // BIFF body): entries emitted BEFORE the crash are still in the handler's list — notably
         // the macros, which OfficeParser/OOXML now emit ahead of the body. The root metadata is
