@@ -486,10 +486,13 @@
       // disambiguates them.
       if (job && job.worker_runtime) {
         const rt = job.worker_runtime, tier = job.worker_tier;
-        html += kv('Worker tier', rt === 'warm'
-          ? (tier === 'firecracker' ? 'warm · Firecracker microVM'
-             : tier === 'gvisor' ? 'warm · gVisor C/R' : 'warm')
-          : rt);
+        let tierLabel = rt;   // cold runtimes (runc/runsc) shown as-is
+        if (rt === 'warm') {
+          if (tier === 'firecracker')   tierLabel = 'warm · Firecracker microVM';
+          else if (tier === 'gvisor')   tierLabel = 'warm · gVisor C/R';
+          else                          tierLabel = 'warm';
+        }
+        html += kv('Worker tier', tierLabel);
       }
       if (job && job.parse_ms != null)      html += kv('Tika parse',  fmtMs(job.parse_ms));
       if (result.truncated) html += kv('Truncated', result.truncated.reason+' ('+result.truncated.observed+'/'+result.truncated.limit+')');
