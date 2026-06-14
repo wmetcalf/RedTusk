@@ -44,3 +44,13 @@ def test_warm_sidecars_also_set_the_allowlist():
         assert "BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS=" in compose, (
             f"{fname} warm dispatcher is missing the allowlist (legacy denylist-only)"
         )
+
+
+def test_tier_routing_env_wired():
+    """Tier routing is operator/test-gated: the API carries BLASTBOX_ALLOW_TIER_ROUTING (default
+    off) and every dispatcher carries BLASTBOX_MAX_QUEUED_AGE_S (bound a down-tier-pinned job)."""
+    base = (_DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "BLASTBOX_ALLOW_TIER_ROUTING=${BLASTBOX_ALLOW_TIER_ROUTING:-}" in base
+    for fname in _COMPOSE_FILES:
+        compose = (_DEPLOY / fname).read_text(encoding="utf-8")
+        assert "BLASTBOX_MAX_QUEUED_AGE_S=${BLASTBOX_MAX_QUEUED_AGE_S:-0}" in compose, fname

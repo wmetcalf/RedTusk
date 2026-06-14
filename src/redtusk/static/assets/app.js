@@ -97,6 +97,7 @@
         queue_ms: (started != null && created != null) ? (started - created) * 1000 : null,
         error_detail: j.error || null,
         worker_runtime: j.worker_runtime || null,
+        worker_tier: j.worker_tier || null,   // 'firecracker' | 'gvisor' for warm jobs
         // qr_count isn't in the host list summary; the detail view surfaces QR
         // per-entry from /rmeta. result stays null until the detail view fetches it.
         qr_count: null,
@@ -480,6 +481,16 @@
       if (job && job.queue_ms != null)      html += kv('Queue time',  fmtMs(job.queue_ms));
       if (job && job.pool_wait_ms != null)  html += kv('Pool wait',   fmtMs(job.pool_wait_ms));
       if (job && job.processing_ms != null) html += kv('Worker time', fmtMs(job.processing_ms));
+      // Dispatcher tier that ran the job (distinct from the in-VM Sandbox below): the two warm
+      // backends (FC microVM vs gVisor C/R) both report worker_runtime="warm" — worker_tier
+      // disambiguates them.
+      if (job && job.worker_runtime) {
+        const rt = job.worker_runtime, tier = job.worker_tier;
+        html += kv('Worker tier', rt === 'warm'
+          ? (tier === 'firecracker' ? 'warm · Firecracker microVM'
+             : tier === 'gvisor' ? 'warm · gVisor C/R' : 'warm')
+          : rt);
+      }
       if (job && job.parse_ms != null)      html += kv('Tika parse',  fmtMs(job.parse_ms));
       if (result.truncated) html += kv('Truncated', result.truncated.reason+' ('+result.truncated.observed+'/'+result.truncated.limit+')');
       if ((result.warnings||[]).length) html += kv('Warnings', result.warnings.length);

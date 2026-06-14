@@ -85,6 +85,7 @@ services:
       # Concurrency MUST match warm_size — the warm dispatch path blocks until the job
       # finishes, so N threads are needed to keep N slots busy (default 1 starves the pool).
       - BLASTBOX_DISPATCH_CONCURRENCY=${REDTUSK_GVISOR_WARM_SIZE:-4}
+      - BLASTBOX_MAX_QUEUED_AGE_S=${BLASTBOX_MAX_QUEUED_AGE_S:-0}  # bound stuck target_tier jobs
       - BLASTBOX_POOL_RUNTIME=gvisor
       - BLASTBOX_POOL_WARM_SIZE=${REDTUSK_GVISOR_WARM_SIZE:-4}
       # Default = warm_size: with BURST_SIZE=0 the pool never grows past warm_size, so a

@@ -105,6 +105,10 @@ services:
       - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
       - BLASTBOX_ALLOWED_ENGINES=redtusk
       - BLASTBOX_INGRESS_EXTENSION=redtusk.blastbox_ingress:make_extension
+      # Per-job tier routing (target_tier pins which dispatcher tier claims a job) is an
+      # OPERATOR/TEST knob — default OFF so a client can't pin/flood a pool. Set to 1 to let
+      # the API accept a target_tier form field; dispatchers always honor a set target_tier.
+      - BLASTBOX_ALLOW_TIER_ROUTING=${BLASTBOX_ALLOW_TIER_ROUTING:-}
     ports:
       # The app does not authenticate — front with a reverse proxy for any exposed
       # deploy. REDTUSK_BIND_ADDR=127.0.0.1 restricts to localhost.
@@ -183,6 +187,9 @@ services:
       - BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS=${BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS:-REDTUSK_JAVA_BIN,REDTUSK_WORKER_JAR,REDTUSK_JAVA_OPTS,REDTUSK_JAVA_LIBRARY_PATH,REDTUSK_AOT_CACHE,REDTUSK_CRAC_CHECKPOINT,REDTUSK_CRAC_SCRATCH}
       - BLASTBOX_DISPATCH_CONCURRENCY=${BLASTBOX_DISPATCH_CONCURRENCY:-}
       - BLASTBOX_WORKER_TIMEOUT_S=${BLASTBOX_WORKER_TIMEOUT_S:-300}
+      # Opt-in ceiling (0 = off) on QUEUED age before a job is FAILed + its input deleted —
+      # bounds a target_tier pinned to a tier with no running dispatcher (routing-enabled mode).
+      - BLASTBOX_MAX_QUEUED_AGE_S=${BLASTBOX_MAX_QUEUED_AGE_S:-0}
       # Worker runtime: empty = auto-detect (prefer runsc). Plain runc is
       # fail-closed REFUSED unless BLASTBOX_ALLOW_RUNC=1.
       - BLASTBOX_WORKER_RUNTIME=${BLASTBOX_WORKER_RUNTIME:-}
