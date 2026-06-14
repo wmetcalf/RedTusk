@@ -288,17 +288,30 @@ public final class ParserRunner {
             rootMeta.set(TikaCoreProperties.RESOURCE_NAME_KEY, filenameHint);
         }
 
+        boolean parseThrew = false;
+        String parseErrorMsg = null;
         try (TikaInputStream stream = TikaInputStream.get(inputFile.toPath())) {
             wrapper.parse(stream, handler, rootMeta, context);
         } catch (Exception e) {
             LOG.warning("Tika parse threw [" + e.getClass().getName() + "]: " + e.getMessage()
                     + (e.getCause() != null ? " caused by " + e.getCause().getClass().getName() + ": " + e.getCause().getMessage() : ""));
-            return new ParseResult(List.of(errorEntry("/", null, 0,
-                guessContentType(rootMeta), inputFile.length(),
-                rootSha256, e.getMessage())), List.of(), null);
+            parseThrew = true;
+            parseErrorMsg = e.getMessage();
         }
 
         List<Metadata> metaList = handler.getMetadataList();
+        // SALVAGE on a mid-document parser crash (e.g. POI RecordFormatException on a malformed
+        // BIFF body): entries emitted BEFORE the crash are still in the handler's list — notably
+        // the macros, which OfficeParser/OOXML now emit ahead of the body. The root metadata is
+        // only inserted (at index 0) on a clean endDocument, so on a throw the partial list holds
+        // just the embedded docs; prepend the root we passed in to restore the normal
+        // [root, embedded...] shape the loop below expects. The error is attached to the root
+        // entry after the loop. Without this, a crash discarded the already-extracted macros.
+        if (parseThrew) {
+            if (metaList.isEmpty() || metaList.get(0).get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH) != null) {
+                metaList.add(0, rootMeta);
+            }
+        }
         List<EntryResult> results = new ArrayList<>(metaList.size());
         List<ParseResult.WorkerWarning> warnings = new ArrayList<>();
         // Per-job dedup cache for the Unicode-QR scan. Multipart EML with
@@ -579,6 +592,22 @@ public final class ParserRunner {
                 path, parentPath, depth, contentType, sizeBytes,
                 sha256, md5, sha1, pass1Thumb, pass1Skip, phash, colorhash, metadata, text, language, qr, ocr, null
             ));
+        }
+
+        // If the parse threw mid-document, attach the error to the (salvaged) root entry and
+        // warn — the partial entries (e.g. macros emitted before the crash) are preserved.
+        if (parseThrew && !results.isEmpty()) {
+            EntryResult r0 = results.get(0);
+            results.set(0, new EntryResult(
+                r0.path(), r0.parentPath(), r0.depth(), r0.contentType(), r0.sizeBytes(),
+                r0.sha256(), r0.md5(), r0.sha1(), r0.hasThumbnail(), r0.thumbnailSkipped(),
+                r0.phash(), r0.colorhash(), r0.metadata(), r0.text(), r0.language(),
+                r0.qr(), r0.ocr(), parseErrorMsg));
+            int salvaged = results.size() - 1;
+            warnings.add(new ParseResult.WorkerWarning(
+                "partial_extraction",
+                "parser crashed mid-document; " + salvaged + " embedded entr"
+                    + (salvaged == 1 ? "y" : "ies") + " salvaged: " + parseErrorMsg, "/"));
         }
 
         // Truncation: in Tika 4.x the root metadata gets EMBEDDED_RESOURCE_LIMIT_REACHED /
