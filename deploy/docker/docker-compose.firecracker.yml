@@ -47,6 +47,11 @@ services:
       # JVM binary/jar/opts/library + CRaC dirs = code-exec vectors; dropped UNCONDITIONALLY
       # so they're blocked even on this warm tier and on the warm→cold JVM-relaunch fallback.
       - BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS=${BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS:-REDTUSK_JAVA_BIN,REDTUSK_WORKER_JAR,REDTUSK_JAVA_OPTS,REDTUSK_JAVA_LIBRARY_PATH,REDTUSK_AOT_CACHE,REDTUSK_CRAC_CHECKPOINT,REDTUSK_CRAC_SCRATCH}
+      # Operator DEFAULT params — MUST mirror the cold dispatcher. Applied for any key a job
+      # doesn't set (job value wins), through the allowlist above. Makes an enablement default
+      # a RUNTIME decision (flip .env + restart, no rebuild) that reaches this warm tier too —
+      # warm.py injects forwarded params into the guest env before detonate. Empty; .env sets it.
+      - BLASTBOX_ENGINE_REDTUSK_DEFAULT_PARAMS=${BLASTBOX_ENGINE_REDTUSK_DEFAULT_PARAMS:-}
       # Trust-gate cap — MUST match the cold dispatcher (RedTusk's rmeta inlines text).
       - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
       # --- sidecar primitive ---

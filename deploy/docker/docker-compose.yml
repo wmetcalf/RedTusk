@@ -171,9 +171,9 @@ services:
       # EngineSpec registry: NAME=image:tag. Worker image built from
       # Dockerfile.cold-worker (which is FROM redtusk-worker:default).
       - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
-      # Per-engine forwardable-param allowlist (default-deny). RedTusk per-request
-      # overrides (enable_qr/ocr/thumbnails, max_recursion_depth, …) are a follow-on
-      # (the engine still uses its built-in job defaults); empty = forward nothing.
+      # Per-engine forwardable-param allowlist (default-deny). RedTusk per-request overrides
+      # (REDTUSK_ENABLE_QR/OCR/THUMBNAILS, REDTUSK_MAX_*) forward ONLY if listed here; the
+      # deployment .env sets the list. Empty (this default) = forward nothing (block-all).
       - BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS=${BLASTBOX_ENGINE_REDTUSK_PARAM_KEYS:-}
       # Engine-OWNED reserved keys (blastbox core is engine-agnostic; RedTusk names its own
       # dangerous knobs here). These are CODE-EXEC vectors a client must NEVER set via
@@ -185,6 +185,12 @@ services:
       # = the floor holds with no extra config. Operator-set CONTAINER env (the real values
       # baked into the image) is unaffected; only client job.params overrides are dropped.
       - BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS=${BLASTBOX_ENGINE_REDTUSK_RESERVED_KEYS:-REDTUSK_JAVA_BIN,REDTUSK_WORKER_JAR,REDTUSK_JAVA_OPTS,REDTUSK_JAVA_LIBRARY_PATH,REDTUSK_AOT_CACHE,REDTUSK_CRAC_CHECKPOINT,REDTUSK_CRAC_SCRATCH}
+      # Operator DEFAULT params: applied for any key a job doesn't set (the per-job value
+      # always wins), forwarded through the allowlist above (so a default key must also be in
+      # _PARAM_KEYS). Makes an enablement default (e.g. QR-on) a RUNTIME decision in the deploy
+      # env — flip + restart the dispatcher, NO image/snapshot rebuild, reaches cold AND warm.
+      # Empty here; the .env sets policy, e.g. REDTUSK_ENABLE_QR=1,REDTUSK_ENABLE_OCR=0.
+      - BLASTBOX_ENGINE_REDTUSK_DEFAULT_PARAMS=${BLASTBOX_ENGINE_REDTUSK_DEFAULT_PARAMS:-}
       - BLASTBOX_DISPATCH_CONCURRENCY=${BLASTBOX_DISPATCH_CONCURRENCY:-}
       - BLASTBOX_WORKER_TIMEOUT_S=${BLASTBOX_WORKER_TIMEOUT_S:-300}
       # Opt-in ceiling (0 = off) on QUEUED age before a job is FAILed + its input deleted —

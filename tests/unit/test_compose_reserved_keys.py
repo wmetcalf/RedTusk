@@ -46,6 +46,19 @@ def test_warm_sidecars_also_set_the_allowlist():
         )
 
 
+def test_every_dispatcher_carries_default_params_passthrough():
+    """The operator DEFAULT-params knob must be wired on cold + FC + gVisor dispatchers (a
+    .env-driven runtime default forwarded for any key a job omits). If a warm sidecar drops
+    it, that tier silently can't receive the deployment's default enablement (e.g. QR-on) —
+    the exact gap this feature closes — so guard the passthrough on EVERY dispatcher."""
+    for fname in _COMPOSE_FILES:
+        compose = (_DEPLOY / fname).read_text(encoding="utf-8")
+        assert (
+            "BLASTBOX_ENGINE_REDTUSK_DEFAULT_PARAMS=${BLASTBOX_ENGINE_REDTUSK_DEFAULT_PARAMS:-}"
+            in compose
+        ), f"{fname} dispatcher is missing the DEFAULT_PARAMS passthrough"
+
+
 def test_tier_routing_env_wired():
     """Tier routing is operator/test-gated: the API carries BLASTBOX_ALLOW_TIER_ROUTING (default
     off) and every dispatcher carries BLASTBOX_MAX_QUEUED_AGE_S (bound a down-tier-pinned job)."""
