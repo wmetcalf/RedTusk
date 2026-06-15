@@ -51,7 +51,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 
 # Clone Tika fork pinned to a specific commit for supply-chain integrity.
 # Update TIKA_FORK_SHA when intentionally pulling new commits.
-ARG TIKA_FORK_SHA=d894ef2b8ed6dce3ecf4e6945c7f768fdf460c58
+ARG TIKA_FORK_SHA=d9efd9ca2466e8c38272bcea6705d2ba5bb92ab7
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
