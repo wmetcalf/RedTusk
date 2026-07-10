@@ -1,7 +1,7 @@
 # RedTusk
 
 <p align="center">
-  <img src="src/redtusk/static/logo.png" alt="RedTusk logo" width="200">
+  <img src="src/redtusk/static/assets/logo.png" alt="RedTusk logo" width="200">
 </p>
 
 Sandboxed Apache Tika document extraction service.
