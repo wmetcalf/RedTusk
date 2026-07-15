@@ -164,6 +164,12 @@ def _env_param_overrides() -> dict[str, Any]:
 # rmeta → blastbox contract conversion helpers
 # ---------------------------------------------------------------------------
 
+# contract Record.fields is Field(max_length=4096) and RAISES past it. rmeta `metadata` is
+# schema-typed {"type":"object"} with no maxProperties, so a document surfacing thousands of
+# metadata properties (XMP/OOXML custom props) would overflow it -> crash. Cap the forwarded
+# key count below 4096 (leaving headroom for the ~8 per-entry `extra` scalar keys).
+_MAX_RECORD_KEYS = 4000
+
 
 def _coerce_metadata_value(v: Any) -> Any:
     """Coerce a Tika metadata value into a ``Record``-safe type.
@@ -191,7 +197,7 @@ def _coerce_metadata_value(v: Any) -> Any:
 def _make_record(raw: dict[str, Any]) -> Record:
     """Build a ``Record`` from a dict of Tika metadata, coercing all values."""
     fields: dict[str, Any] = {}
-    for k, v in raw.items():
+    for k, v in list(raw.items())[:_MAX_RECORD_KEYS]:  # cap key COUNT (Record.fields max_length=4096)
         safe_key = str(k)[:256]  # guard against absurdly long keys
         fields[safe_key] = _coerce_metadata_value(v)
     return Record(fields=fields)
@@ -229,7 +235,9 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
     def _make_node(e: dict[str, Any]) -> EmbeddedResource:
         path = e.get("path") or "/"
         ct = e.get("content_type") or "application/octet-stream"
-        depth = int(e.get("depth", 0))
+        # Clamp to EmbeddedResource.depth's contract bound (Field(ge=0, le=64), which RAISES);
+        # the rmeta schema only enforces depth>=0, so a tampered/drifted entry could exceed 64.
+        depth = max(0, min(int(e.get("depth", 0)), 64))
         meta_raw = e.get("metadata") or {}
         # Include a small set of useful per-entry scalar fields in the Record.
         extra: dict[str, Any] = {}
@@ -240,7 +248,7 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
                 extra[scalar_key] = _coerce_metadata_value(val)
         combined: dict[str, Any] = {**extra}
         if isinstance(meta_raw, dict):
-            for k, v in meta_raw.items():
+            for k, v in list(meta_raw.items())[:_MAX_RECORD_KEYS]:  # cap key COUNT (see _MAX_RECORD_KEYS)
                 combined[str(k)] = _coerce_metadata_value(v)
         # Clip to the contract field bounds (which RAISE, not truncate): rmeta entry path /
         # content_type / text are schema-valid at ANY length (no maxLength), so an attacker's

@@ -307,3 +307,45 @@ def test_detonate_clips_unbounded_rmeta_strings(tmp_path, monkeypatch):
     out = tmp_path / "out"; out.mkdir()
     res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
     assert len(res.detected.mime) <= 255
+
+
+def test_detonate_bounds_record_key_count(tmp_path, monkeypatch):
+    # rmeta entry `metadata` is schema-typed {"type":"object"} with NO maxProperties, but the
+    # contract Record.fields is Field(max_length=4096) which RAISES (caps key COUNT). A document
+    # with >4096 metadata properties (XMP/OOXML custom props) must not crash the mapping.
+    huge_meta = {f"k{i}": "v" for i in range(5000)}
+    hostile = {**_RMETA_FIXTURE, "extraction": {
+        **_RMETA_FIXTURE["extraction"],
+        "entries": [_entry("/", None, 0, "application/vnd.ms-excel", "ab" * 32, metadata=huge_meta)],
+    }}
+
+    def _write(self, input, rmeta_dir, timeout):
+        (rmeta_dir / "embedded").mkdir(parents=True, exist_ok=True)
+        (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
+
+    monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", _write)
+    inp = tmp_path / "x.xlsx"; inp.write_bytes(b"x")
+    out = tmp_path / "out"; out.mkdir()
+    RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
+
+
+def test_detonate_clamps_out_of_range_entry_depth(tmp_path, monkeypatch):
+    # EmbeddedResource.depth is Field(ge=0, le=64) which RAISES; the rmeta schema only enforces
+    # depth minimum:0 (no maximum), so a tampered/version-drifted worker entry with depth>64
+    # (the trust-gate threat model is a compromised worker) must be clamped, not crash.
+    hostile = {**_RMETA_FIXTURE, "extraction": {
+        **_RMETA_FIXTURE["extraction"],
+        "entries": [
+            _entry("/", None, 0, "application/vnd.ms-excel", "ab" * 32),
+            _entry("/deep", "/", 65, "image/jpeg", "cd" * 32),  # depth 65 > le=64
+        ],
+    }}
+
+    def _write(self, input, rmeta_dir, timeout):
+        (rmeta_dir / "embedded").mkdir(parents=True, exist_ok=True)
+        (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
+
+    monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", _write)
+    inp = tmp_path / "x.xlsx"; inp.write_bytes(b"x")
+    out = tmp_path / "out"; out.mkdir()
+    RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
