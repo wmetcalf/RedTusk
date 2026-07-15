@@ -415,10 +415,10 @@ is **live-proven on real ARM64 AWS** — it ran real jobs on the `aws-ec2` dispo
 FROM eclipse-temurin:25-jdk-noble
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip zxing-cpp-tools && rm -rf /var/lib/apt/lists/*
-# self-contained engine (arch-independent bytecode)
-COPY redtusk-worker.jar /opt/redtusk/
-# the two JNI natives, recompiled for ARM64
-COPY ksm_helper.so cap_dropper.so /opt/redtusk/
+# self-contained engine — RedTuskEngine defaults to /app/redtusk-worker.jar
+COPY redtusk-worker.jar /app/
+# the two JNI natives, recompiled for ARM64 — java.library.path defaults to /app
+COPY ksm_helper.so cap_dropper.so /app/
 # the RedTusk python adapter (this repo); pip also pulls blastbox (its dep)
 COPY . /src/redtusk
 RUN pip3 install --break-system-packages /src/redtusk
