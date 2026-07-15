@@ -126,12 +126,16 @@ def _env_param_overrides() -> dict[str, Any]:
             return None
         return v.strip().lower() in ("1", "true", "yes", "on")
 
-    def _int(name: str) -> int | None:
+    def _int(name: str, lo: int, hi: int) -> int | None:
+        # Clamp the dispatcher-forwarded (potentially client-influenced) limit into [lo, hi]: a
+        # negative value must not silently disable the recursion/embedded-entry DoS guard, and an
+        # absurd value must not drive the worker toward unbounded recursion/allocation. (Mirrors
+        # ClippyShot's clamped _int; job.json is never schema-validated, so this is the only bound.)
         v = os.environ.get(name)
         if not v:
             return None
         try:
-            return int(v)
+            return min(hi, max(lo, int(v)))
         except ValueError:
             return None
 
@@ -145,10 +149,14 @@ def _env_param_overrides() -> dict[str, Any]:
         if f is not None:
             out[job_key] = f
     limits: dict[str, Any] = {}
-    depth = _int("REDTUSK_MAX_RECURSION_DEPTH")
+    depth = _int("REDTUSK_MAX_RECURSION_DEPTH", 0, 64)
     if depth is not None:
         limits["max_recursion_depth"] = depth
-    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES")
+    # Ceiling is the contract's EmbeddedResource.children cap (max_length=10000): a flat archive
+    # maps every entry as a direct child of one node, so allowing more would build a tree the
+    # host's envelope re-parse rejects. The mapper's post-construction .append doesn't re-validate,
+    # so the only place to bound it is here (and at the worker's own extraction limit).
+    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES", 0, 10_000)
     if entries is not None:
         limits["max_embedded_entries"] = entries
     if limits:
@@ -159,6 +167,12 @@ def _env_param_overrides() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # rmeta → blastbox contract conversion helpers
 # ---------------------------------------------------------------------------
+
+# contract Record.fields is Field(max_length=4096) and RAISES past it. rmeta `metadata` is
+# schema-typed {"type":"object"} with no maxProperties, so a document surfacing thousands of
+# metadata properties (XMP/OOXML custom props) would overflow it -> crash. Cap the forwarded
+# key count below 4096 (leaving headroom for the ~8 per-entry `extra` scalar keys).
+_MAX_RECORD_KEYS = 4000
 
 
 def _coerce_metadata_value(v: Any) -> Any:
@@ -187,7 +201,7 @@ def _coerce_metadata_value(v: Any) -> Any:
 def _make_record(raw: dict[str, Any]) -> Record:
     """Build a ``Record`` from a dict of Tika metadata, coercing all values."""
     fields: dict[str, Any] = {}
-    for k, v in raw.items():
+    for k, v in list(raw.items())[:_MAX_RECORD_KEYS]:  # cap key COUNT (Record.fields max_length=4096)
         safe_key = str(k)[:256]  # guard against absurdly long keys
         fields[safe_key] = _coerce_metadata_value(v)
     return Record(fields=fields)
@@ -225,7 +239,9 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
     def _make_node(e: dict[str, Any]) -> EmbeddedResource:
         path = e.get("path") or "/"
         ct = e.get("content_type") or "application/octet-stream"
-        depth = int(e.get("depth", 0))
+        # Clamp to EmbeddedResource.depth's contract bound (Field(ge=0, le=64), which RAISES);
+        # the rmeta schema only enforces depth>=0, so a tampered/drifted entry could exceed 64.
+        depth = max(0, min(int(e.get("depth", 0)), 64))
         meta_raw = e.get("metadata") or {}
         # Include a small set of useful per-entry scalar fields in the Record.
         extra: dict[str, Any] = {}
@@ -236,11 +252,15 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
                 extra[scalar_key] = _coerce_metadata_value(val)
         combined: dict[str, Any] = {**extra}
         if isinstance(meta_raw, dict):
-            for k, v in meta_raw.items():
+            for k, v in list(meta_raw.items())[:_MAX_RECORD_KEYS]:  # cap key COUNT (see _MAX_RECORD_KEYS)
                 combined[str(k)] = _coerce_metadata_value(v)
+        # Clip to the contract field bounds (which RAISE, not truncate): rmeta entry path /
+        # content_type / text are schema-valid at ANY length (no maxLength), so an attacker's
+        # container entry name (ZIP allows 64KiB names) would overflow embedded_path (4096) /
+        # content_type (255) and crash the mapping. char_count keeps the true (pre-clip) length.
         node = EmbeddedResource(
-            embedded_path=path,
-            content_type=ct,
+            embedded_path=path[:4096],
+            content_type=ct[:255],
             depth=depth,
             metadata=Record(fields=combined),
             children=[],
@@ -248,7 +268,7 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
         text = e.get("text") or ""
         if text:
             node.children.append(
-                ExtractedText(text=text, char_count=len(text))
+                ExtractedText(text=text[:10_000_000], char_count=len(text))
             )
         return node
 
@@ -752,13 +772,13 @@ class RedTuskEngine:
             except Exception:  # noqa: BLE001
                 pass
 
-        # Detection from root content-type.  ``label`` is capped at 64 chars by
-        # the contract; long MIME types (e.g. the 71-char OOXML wordprocessingml
-        # type) are truncated for the label while the full value is preserved in
-        # ``mime``.
+        # Detection from root content-type. Both contract fields RAISE past their bound and
+        # root_content_type is schema-valid at any length (no maxLength), so clip label to 64
+        # AND mime to 255 -- a worker-influenced content-type over 255 chars would otherwise
+        # crash the mapping (Detection.mime is Field(max_length=255), not truncating).
         detected = Detection(
             label=(root_ct.split(";")[0].strip() or "unknown")[:64],
-            mime=root_ct,
+            mime=root_ct[:255],
             confidence=1.0,
             source="redtusk",
         )
@@ -807,10 +827,13 @@ class RedTuskEngine:
             warnings.append(Warning(code=code, message=detail))
         if rmeta.get("truncated"):
             tr = rmeta["truncated"]
+            # Clip like the rmeta-warnings loop above: truncated.limit/observed are schema-valid
+            # but UNBOUNDED integers, and Warning.message is Field(max_length=2000) (pydantic
+            # RAISES, not truncates), so an unclipped f-string crashes the mapping.
             warnings.append(Warning(
                 code="truncated",
-                message=f"Extraction truncated: reason={tr.get('reason')}, "
-                        f"limit={tr.get('limit')}, observed={tr.get('observed')}",
+                message=(f"Extraction truncated: reason={tr.get('reason')}, "
+                         f"limit={tr.get('limit')}, observed={tr.get('observed')}")[:2000],
             ))
 
         return DetonationResult(
