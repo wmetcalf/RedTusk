@@ -242,9 +242,13 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
         if isinstance(meta_raw, dict):
             for k, v in meta_raw.items():
                 combined[str(k)] = _coerce_metadata_value(v)
+        # Clip to the contract field bounds (which RAISE, not truncate): rmeta entry path /
+        # content_type / text are schema-valid at ANY length (no maxLength), so an attacker's
+        # container entry name (ZIP allows 64KiB names) would overflow embedded_path (4096) /
+        # content_type (255) and crash the mapping. char_count keeps the true (pre-clip) length.
         node = EmbeddedResource(
-            embedded_path=path,
-            content_type=ct,
+            embedded_path=path[:4096],
+            content_type=ct[:255],
             depth=depth,
             metadata=Record(fields=combined),
             children=[],
@@ -252,7 +256,7 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
         text = e.get("text") or ""
         if text:
             node.children.append(
-                ExtractedText(text=text, char_count=len(text))
+                ExtractedText(text=text[:10_000_000], char_count=len(text))
             )
         return node
 
@@ -756,13 +760,13 @@ class RedTuskEngine:
             except Exception:  # noqa: BLE001
                 pass
 
-        # Detection from root content-type.  ``label`` is capped at 64 chars by
-        # the contract; long MIME types (e.g. the 71-char OOXML wordprocessingml
-        # type) are truncated for the label while the full value is preserved in
-        # ``mime``.
+        # Detection from root content-type. Both contract fields RAISE past their bound and
+        # root_content_type is schema-valid at any length (no maxLength), so clip label to 64
+        # AND mime to 255 -- a worker-influenced content-type over 255 chars would otherwise
+        # crash the mapping (Detection.mime is Field(max_length=255), not truncating).
         detected = Detection(
             label=(root_ct.split(";")[0].strip() or "unknown")[:64],
-            mime=root_ct,
+            mime=root_ct[:255],
             confidence=1.0,
             source="redtusk",
         )

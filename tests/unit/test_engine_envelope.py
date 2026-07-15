@@ -280,3 +280,30 @@ def test_detonate_clips_huge_truncated_warning(tmp_path, monkeypatch):
     res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
     tw = [w for w in res.warnings if w.code == "truncated"]
     assert tw and len(tw[0].message) <= 2000
+
+
+def test_detonate_clips_unbounded_rmeta_strings(tmp_path, monkeypatch):
+    # rmeta entry path/content_type and root_content_type are schema-valid at ANY length (no
+    # maxLength) but the blastbox contract RAISES: EmbeddedResource.embedded_path (4096) /
+    # content_type (255), Detection.mime (255). Passing them unclipped crashed detonate. Every
+    # one must be clipped, matching the fleet's titanarum mapper (same class as the truncated fix).
+    big_path = "/" + "a" * 5000                 # > embedded_path 4096
+    big_ct = "application/" + "x" * 300         # > content_type / mime 255
+    hostile = {**_RMETA_FIXTURE, "extraction": {
+        **_RMETA_FIXTURE["extraction"],
+        "root_content_type": big_ct,            # -> Detection.mime
+        "entries": [
+            _entry("/", None, 0, "application/vnd.ms-excel", "ab" * 32),
+            _entry(big_path, "/", 1, big_ct, "cd" * 32),
+        ],
+    }}
+
+    def _write(self, input, rmeta_dir, timeout):
+        (rmeta_dir / "embedded").mkdir(parents=True, exist_ok=True)
+        (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
+
+    monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", _write)
+    inp = tmp_path / "x.xlsx"; inp.write_bytes(b"x")
+    out = tmp_path / "out"; out.mkdir()
+    res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
+    assert len(res.detected.mime) <= 255
