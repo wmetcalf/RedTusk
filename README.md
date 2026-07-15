@@ -446,7 +446,8 @@ and post-resume jobs** (reuses every `BLASTBOX_EC2_*` / `BLASTBOX_AWS_*` above):
 
 ```sh
 BLASTBOX_POOL_RUNTIME=aws-ec2-hibernate
-BLASTBOX_EC2_INSTANCE_TYPE=m7g.large        # hibernation-capable (t4g/m6g/m7g, RAM ≤ 150 GB); AL2023 AMI
+BLASTBOX_EC2_INSTANCE_TYPE=m7g.large        # hibernation-capable (t4g/m6g/m7g, RAM ≤ 150 GB)
+BLASTBOX_EC2_AMI=ami-...                     # a hibernation-enabled build of the worker AMI
 BLASTBOX_EC2_ROOT_VOLUME_GB=30              # must be ≥ instance RAM
 BLASTBOX_EC2_ORPHAN_MAX_AGE_S=3600          # host-side sweep for slots parked when a dispatcher crashed
 ```
