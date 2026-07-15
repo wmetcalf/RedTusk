@@ -411,13 +411,17 @@ is **live-proven on real ARM64 AWS** — it ran real jobs on the `aws-ec2` dispo
 `/healthz` means warm:
 
 ```dockerfile
-FROM eclipse-temurin:25-jdk-noble                # JDK 25; noble — jammy lacks zxing-cpp-tools
+# JDK 25; the noble variant — jammy lacks zxing-cpp-tools
+FROM eclipse-temurin:25-jdk-noble
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip zxing-cpp-tools && rm -rf /var/lib/apt/lists/*
-COPY redtusk-worker.jar /opt/redtusk/            # self-contained engine (arch-independent bytecode)
-COPY ksm_helper.so cap_dropper.so /opt/redtusk/  # 2 JNI natives, recompiled for ARM64
-COPY . /src/redtusk                              # the RedTusk python adapter (this repo)
-RUN pip3 install --break-system-packages /src/redtusk   # engine adapter + blastbox (its dep)
+# self-contained engine (arch-independent bytecode)
+COPY redtusk-worker.jar /opt/redtusk/
+# the two JNI natives, recompiled for ARM64
+COPY ksm_helper.so cap_dropper.so /opt/redtusk/
+# the RedTusk python adapter (this repo); pip also pulls blastbox (its dep)
+COPY . /src/redtusk
+RUN pip3 install --break-system-packages /src/redtusk
 ENV BLASTBOX_ENGINE=redtusk.engine:RedTuskEngine
 ENTRYPOINT ["python3", "-m", "blastbox.worker.http_agent"]
 ```
@@ -431,14 +435,18 @@ tiers). The host POSTs each job's input and gets the sealed output tar back over
 ```sh
 BLASTBOX_POOL_RUNTIME=aws-ec2
 BLASTBOX_AWS_REGION=us-east-1
-BLASTBOX_EC2_AMI=ami-...                    # required — worker AMI, agent brought up via user-data
-BLASTBOX_EC2_INSTANCE_TYPE=m7g.large        # ARM64 default
+# required — worker AMI, agent brought up via user-data
+BLASTBOX_EC2_AMI=ami-...
+# ARM64 default
+BLASTBOX_EC2_INSTANCE_TYPE=m7g.large
 BLASTBOX_EC2_SUBNET_ID=subnet-...
 BLASTBOX_EC2_SECURITY_GROUPS=sg-...
-BLASTBOX_EC2_AGENT_TOKEN=<bearer>           # agent expects it on the readiness probe + /detonate
-BLASTBOX_EC2_SELF_TERMINATE=1               # guest self-kills after MAX_DURATION_S — a crashed
-                                            # dispatcher can't leak a running instance
-BLASTBOX_POOL_WARMING_TIMEOUT_S=240         # aws-ec2 first-boot can exceed the 120s default
+# the agent expects this bearer on the readiness probe + /detonate
+BLASTBOX_EC2_AGENT_TOKEN=<bearer>
+# guest self-kills after MAX_DURATION_S so a crashed dispatcher can't leak a running instance
+BLASTBOX_EC2_SELF_TERMINATE=1
+# aws-ec2 first-boot can exceed the 120s default
+BLASTBOX_POOL_WARMING_TIMEOUT_S=240
 ```
 
 **Warm EC2 hibernate — `stop --hibernate`/`start` C/R; the same warmed PID served the pre-hibernate
@@ -446,10 +454,14 @@ and post-resume jobs** (reuses every `BLASTBOX_EC2_*` / `BLASTBOX_AWS_*` above):
 
 ```sh
 BLASTBOX_POOL_RUNTIME=aws-ec2-hibernate
-BLASTBOX_EC2_INSTANCE_TYPE=m7g.large        # hibernation-capable (t4g/m6g/m7g, RAM ≤ 150 GB)
-BLASTBOX_EC2_AMI=ami-...                     # a hibernation-enabled build of the worker AMI
-BLASTBOX_EC2_ROOT_VOLUME_GB=30              # must be ≥ instance RAM
-BLASTBOX_EC2_ORPHAN_MAX_AGE_S=3600          # host-side sweep for slots parked when a dispatcher crashed
+# hibernation-capable type (t4g/m6g/m7g, RAM ≤ 150 GB)
+BLASTBOX_EC2_INSTANCE_TYPE=m7g.large
+# a hibernation-enabled build of the worker AMI
+BLASTBOX_EC2_AMI=ami-...
+# must be ≥ instance RAM (RAM is saved to the encrypted root EBS on hibernate)
+BLASTBOX_EC2_ROOT_VOLUME_GB=30
+# host-side sweep for slots parked when a dispatcher crashed
+BLASTBOX_EC2_ORPHAN_MAX_AGE_S=3600
 ```
 
 Both AWS families are **fail-closed**: a tier is refused at selection unless `sts get-caller-identity`
