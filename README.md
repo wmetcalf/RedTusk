@@ -396,6 +396,73 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d redtusk.example.com --non-interactive --agree-tos -m you@example.com
 ```
 
+### AWS / cloud workers
+
+RedTusk is a blastbox **engine** (`redtusk.engine:RedTuskEngine`) — ingress, dispatch, and the
+worker pool are all blastbox.host's. The AWS worker tiers are therefore selected and configured
+entirely with `BLASTBOX_*` knobs on the dispatcher; RedTusk only supplies the prebaked ARM64 worker
+image. Four tiers: `aws-ec2` and `aws-lambda-microvm` are **disposable** (one job, then terminate);
+`aws-ec2-hibernate` and `aws-lambda-snapstart` are **warm** (`stop --hibernate`/`start` C/R and
+per-microVM suspend/resume — a parked instance keeps the same warmed process across jobs). RedTusk
+is **live-proven on real ARM64 AWS** — it ran real jobs on the `aws-ec2` disposable tier.
+
+**Worker image (ARM64).** Bake the JVM engine plus blastbox's generic HTTP agent, which serves
+`GET /healthz` + `POST /detonate` and runs `engine.warmup()` before it binds — so a healthy
+`/healthz` means warm:
+
+```dockerfile
+FROM eclipse-temurin:25-jdk-noble                # JDK 25; noble — jammy lacks zxing-cpp-tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip zxing-cpp-tools && rm -rf /var/lib/apt/lists/*
+COPY redtusk-worker.jar /opt/redtusk/            # self-contained engine (arch-independent bytecode)
+COPY ksm_helper.so cap_dropper.so /opt/redtusk/  # 2 JNI natives, recompiled for ARM64
+COPY . /src/redtusk                              # the RedTusk python adapter (this repo)
+RUN pip3 install --break-system-packages /src/redtusk   # engine adapter + blastbox (its dep)
+ENV BLASTBOX_ENGINE=redtusk.engine:RedTuskEngine
+ENTRYPOINT ["python3", "-m", "blastbox.worker.http_agent"]
+```
+
+Push it to a registry the tier can pull (an EC2 AMI baked from it, or a MicroVM image for the Lambda
+tiers). The host POSTs each job's input and gets the sealed output tar back over blastbox's generic
+`remote_http` transport.
+
+**Disposable EC2 — one job, then terminate** (`BLASTBOX_*` on the dispatcher):
+
+```sh
+BLASTBOX_POOL_RUNTIME=aws-ec2
+BLASTBOX_AWS_REGION=us-east-1
+BLASTBOX_EC2_AMI=ami-...                    # required — worker AMI, agent brought up via user-data
+BLASTBOX_EC2_INSTANCE_TYPE=m7g.large        # ARM64 default
+BLASTBOX_EC2_SUBNET_ID=subnet-...
+BLASTBOX_EC2_SECURITY_GROUPS=sg-...
+BLASTBOX_EC2_AGENT_TOKEN=<bearer>           # agent expects it on the readiness probe + /detonate
+BLASTBOX_EC2_SELF_TERMINATE=1               # guest self-kills after MAX_DURATION_S — a crashed
+                                            # dispatcher can't leak a running instance
+BLASTBOX_POOL_WARMING_TIMEOUT_S=240         # aws-ec2 first-boot can exceed the 120s default
+```
+
+**Warm EC2 hibernate — `stop --hibernate`/`start` C/R; the same warmed PID served the pre-hibernate
+and post-resume jobs** (reuses every `BLASTBOX_EC2_*` / `BLASTBOX_AWS_*` above):
+
+```sh
+BLASTBOX_POOL_RUNTIME=aws-ec2-hibernate
+BLASTBOX_EC2_INSTANCE_TYPE=m7g.large        # hibernation-capable (t4g/m6g/m7g, RAM ≤ 150 GB); AL2023 AMI
+BLASTBOX_EC2_ROOT_VOLUME_GB=30              # must be ≥ instance RAM
+BLASTBOX_EC2_ORPHAN_MAX_AGE_S=3600          # host-side sweep for slots parked when a dispatcher crashed
+```
+
+Both AWS families are **fail-closed**: a tier is refused at selection unless `sts get-caller-identity`
+and a read-only service probe both pass. Instance IP is **private by default**; a public IP requires
+dispatcher TLS or the runtime fails closed — set `BLASTBOX_EC2_PUBLIC_IP=1` together with
+`BLASTBOX_DISPATCH_TLS_CA` / `_TLS_CERT` / `_TLS_KEY` (from `blastbox pki init`) and the worker
+agent's `BLASTBOX_WORKER_AGENT_CLIENT_CA`. The EC2 self-hosted agent → worker path is **mTLS**; the
+Lambda MicroVM tiers (`aws-lambda-microvm` disposable, `aws-lambda-snapstart` warm, configured with
+`BLASTBOX_LAMBDA_*`) use a per-VM HTTPS URL + JWE token instead — AWS-fronted, so no self-hosted
+mTLS. For local + cloud overflow, use `BLASTBOX_POOL_RUNTIME=cascade` with
+`BLASTBOX_POOL_TIERS=static:8,aws-ec2:16` (the local tier fail-closes; an overflow tier that isn't
+available at startup is skipped). See blastbox.host's `CONFIGURATION.md` / `DEPLOYMENT.md` for the
+full per-tier knob reference.
+
 ### Local dev (no Docker required)
 
 ```sh
