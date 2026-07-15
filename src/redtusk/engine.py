@@ -152,7 +152,11 @@ def _env_param_overrides() -> dict[str, Any]:
     depth = _int("REDTUSK_MAX_RECURSION_DEPTH", 0, 64)
     if depth is not None:
         limits["max_recursion_depth"] = depth
-    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES", 0, 100_000)
+    # Ceiling is the contract's EmbeddedResource.children cap (max_length=10000): a flat archive
+    # maps every entry as a direct child of one node, so allowing more would build a tree the
+    # host's envelope re-parse rejects. The mapper's post-construction .append doesn't re-validate,
+    # so the only place to bound it is here (and at the worker's own extraction limit).
+    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES", 0, 10_000)
     if entries is not None:
         limits["max_embedded_entries"] = entries
     if limits:
