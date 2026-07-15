@@ -126,12 +126,16 @@ def _env_param_overrides() -> dict[str, Any]:
             return None
         return v.strip().lower() in ("1", "true", "yes", "on")
 
-    def _int(name: str) -> int | None:
+    def _int(name: str, lo: int, hi: int) -> int | None:
+        # Clamp the dispatcher-forwarded (potentially client-influenced) limit into [lo, hi]: a
+        # negative value must not silently disable the recursion/embedded-entry DoS guard, and an
+        # absurd value must not drive the worker toward unbounded recursion/allocation. (Mirrors
+        # ClippyShot's clamped _int; job.json is never schema-validated, so this is the only bound.)
         v = os.environ.get(name)
         if not v:
             return None
         try:
-            return int(v)
+            return min(hi, max(lo, int(v)))
         except ValueError:
             return None
 
@@ -145,10 +149,10 @@ def _env_param_overrides() -> dict[str, Any]:
         if f is not None:
             out[job_key] = f
     limits: dict[str, Any] = {}
-    depth = _int("REDTUSK_MAX_RECURSION_DEPTH")
+    depth = _int("REDTUSK_MAX_RECURSION_DEPTH", 0, 64)
     if depth is not None:
         limits["max_recursion_depth"] = depth
-    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES")
+    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES", 0, 100_000)
     if entries is not None:
         limits["max_embedded_entries"] = entries
     if limits:
@@ -807,10 +811,13 @@ class RedTuskEngine:
             warnings.append(Warning(code=code, message=detail))
         if rmeta.get("truncated"):
             tr = rmeta["truncated"]
+            # Clip like the rmeta-warnings loop above: truncated.limit/observed are schema-valid
+            # but UNBOUNDED integers, and Warning.message is Field(max_length=2000) (pydantic
+            # RAISES, not truncates), so an unclipped f-string crashes the mapping.
             warnings.append(Warning(
                 code="truncated",
-                message=f"Extraction truncated: reason={tr.get('reason')}, "
-                        f"limit={tr.get('limit')}, observed={tr.get('observed')}",
+                message=(f"Extraction truncated: reason={tr.get('reason')}, "
+                         f"limit={tr.get('limit')}, observed={tr.get('observed')}")[:2000],
             ))
 
         return DetonationResult(

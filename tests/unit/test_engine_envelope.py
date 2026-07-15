@@ -240,3 +240,43 @@ def test_env_param_overrides_absent_is_empty(monkeypatch):
     ):
         monkeypatch.delenv(v, raising=False)
     assert _env_param_overrides() == {}
+
+
+def test_env_param_overrides_clamps_out_of_range_limits(monkeypatch):
+    # Dispatcher-forwarded (potentially client-influenced) resource limits must be clamped to a
+    # sane range: a negative value must not silently disable the recursion/embedded-entry DoS
+    # guard, and an absurd value must not drive the worker toward unbounded recursion/allocation.
+    for k in ("REDTUSK_ENABLE_QR", "REDTUSK_ENABLE_OCR", "REDTUSK_ENABLE_THUMBNAILS"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("REDTUSK_MAX_RECURSION_DEPTH", "-1")
+    monkeypatch.setenv("REDTUSK_MAX_EMBEDDED_ENTRIES", "999999999999")
+    lim = _env_param_overrides()["limits"]
+    assert 0 <= lim["max_recursion_depth"] <= 64
+    assert 0 <= lim["max_embedded_entries"] <= 100_000
+    # a legit in-range override is preserved unchanged
+    monkeypatch.setenv("REDTUSK_MAX_RECURSION_DEPTH", "20")
+    monkeypatch.setenv("REDTUSK_MAX_EMBEDDED_ENTRIES", "5000")
+    lim2 = _env_param_overrides()["limits"]
+    assert lim2["max_recursion_depth"] == 20
+    assert lim2["max_embedded_entries"] == 5000
+
+
+def test_detonate_clips_huge_truncated_warning(tmp_path, monkeypatch):
+    # truncated.observed is schema-valid but UNBOUNDED (integer, no max); the truncated-warning
+    # f-string interpolated it into a max_length=2000 Warning.message -> pydantic ValidationError
+    # crashed detonate. The message must be clipped like the sibling rmeta-warnings loop.
+    hostile = {**_RMETA_FIXTURE,
+               "truncated": {"reason": "max_embedded_entries", "limit": 5000, "observed": 10 ** 2000}}
+
+    def _write(self, input, rmeta_dir, timeout):
+        (rmeta_dir / "embedded" / "thumbnails").mkdir(parents=True, exist_ok=True)
+        (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
+        (rmeta_dir / "embedded" / "image3.jpeg").write_bytes(b"\xff\xd8jpeg")
+        (rmeta_dir / "embedded" / "thumbnails" / "image3.jpeg.jpg").write_bytes(b"\xff\xd8thumb")
+
+    monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", _write)
+    inp = tmp_path / "x.xlsx"; inp.write_bytes(b"x")
+    out = tmp_path / "out"; out.mkdir()
+    res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
+    tw = [w for w in res.warnings if w.code == "truncated"]
+    assert tw and len(tw[0].message) <= 2000
