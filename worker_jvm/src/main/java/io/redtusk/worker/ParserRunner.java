@@ -224,13 +224,32 @@ public final class ParserRunner {
                     if ("NO_OCR".equals(((Enum<?>) e).name())) { noOcr = e; break; }
                 }
                 if (noOcr != null) {
-                    pdfCfg.getClass()
-                          .getMethod("setOcrStrategy", strategyClass)
-                          .invoke(pdfCfg, noOcr);
+                    // TIKA-4748 moved the OCR strategy off the flat PDFParserConfig
+                    // setter into the nested OcrConfig (pdfCfg.getOcr().setStrategy).
+                    // Try the nested path first, fall back to the pre-4748 flat
+                    // setter, so we force NO_OCR against either Tika API. Getting
+                    // this wrong silently reverts PDF to the AUTO strategy, which
+                    // renders every page through PDFBox+Tesseract and crashes on a
+                    // long tail of malformed PDFs (see comment above) — so a total
+                    // failure to disable OCR is logged, not swallowed.
+                    try {
+                        Object ocrConfig = pdfCfg.getClass().getMethod("getOcr").invoke(pdfCfg);
+                        ocrConfig.getClass()
+                                 .getMethod("setStrategy", strategyClass)
+                                 .invoke(ocrConfig, noOcr);
+                    } catch (NoSuchMethodException preTika4748) {
+                        pdfCfg.getClass()
+                              .getMethod("setOcrStrategy", strategyClass)
+                              .invoke(pdfCfg, noOcr);
+                    }
                 }
             }
-        } catch (ReflectiveOperationException ignore) {
-            // Older Tika / upstream — falls back to default AUTO behaviour.
+        } catch (ReflectiveOperationException e) {
+            // Could not force NO_OCR on the PDF parser — it will fall back to the
+            // AUTO strategy (per-page PDFBox render + Tesseract), which is both slow
+            // and crash-prone on adversarial PDFs. Surface it instead of hiding it.
+            LOG.warning("Could not disable PDF-page OCR (setOcrStrategy/getOcr unavailable): "
+                    + e.getMessage() + " — PDF parsing may fall back to AUTO OCR.");
         }
         context.set(PDFParserConfig.class, pdfCfg);
 
