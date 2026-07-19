@@ -55,7 +55,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # sync + the audit-hardening PRs (wmetcalf/tika #8/#9/#10). Once those PRs merge into
 # 4.0-upstream-office-links, re-pin to that branch tip, restore --branch, and delete
 # test/all-fixes. This SHA was validated end-to-end through the RedTusk worker.
-ARG TIKA_FORK_SHA=fe5933d1abf6affa5e5f97b5b8e13bc07915f81a
+ARG TIKA_FORK_SHA=0a0372e496402d286dda162f9864bc2b3052b8be
 RUN git clone \
         --branch test/all-fixes \
         https://github.com/wmetcalf/tika.git \

@@ -47,7 +47,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # TEMPORARY pin: `test/all-fixes` = the 200-commit upstream sync + audit-hardening
 # PRs (wmetcalf/tika #8/#9/#10), validated end-to-end through the RedTusk worker.
 # Re-pin to the 4.0-upstream-office-links tip and restore --branch once those merge.
-ARG TIKA_FORK_SHA=fe5933d1abf6affa5e5f97b5b8e13bc07915f81a
+ARG TIKA_FORK_SHA=0a0372e496402d286dda162f9864bc2b3052b8be
 RUN git clone \
         --branch test/all-fixes \
         https://github.com/wmetcalf/tika.git \
