@@ -234,6 +234,13 @@ public final class ParserRunner {
                     // failure to disable OCR is logged, not swallowed.
                     try {
                         Object ocrConfig = pdfCfg.getClass().getMethod("getOcr").invoke(pdfCfg);
+                        if (ocrConfig == null) {
+                            // getOcr() is a non-null field getter in the pinned Tika, but
+                            // this block is reflective/version-tolerant by design — guard
+                            // against a null return (NPE isn't a ReflectiveOperationException
+                            // and would escape) and fall back to the pre-4748 flat setter.
+                            throw new NoSuchMethodException("getOcr() returned null");
+                        }
                         ocrConfig.getClass()
                                  .getMethod("setStrategy", strategyClass)
                                  .invoke(ocrConfig, noOcr);
