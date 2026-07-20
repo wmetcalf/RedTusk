@@ -49,11 +49,11 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-# TEMPORARY pin: `test/all-fixes` = the 200-commit upstream sync + audit-hardening
-# PRs (wmetcalf/tika #8/#9/#10), validated end-to-end through the RedTusk worker.
-# Re-pin to the 4.0-upstream-office-links tip and restore --branch once those merge.
-ARG TIKA_FORK_SHA=0a0372e496402d286dda162f9864bc2b3052b8be
-RUN git clone --branch test/all-fixes \
+# Durable pin: `4.0-upstream-office-links` tip after the 200-commit upstream sync
+# (wmetcalf/tika #7) + audit-hardening PRs (#8/#9/#10) + inventory regen (#11) merged.
+# Validated end-to-end through the RedTusk worker; inventory CI green on the branch.
+ARG TIKA_FORK_SHA=f2b166c6facb3577ff92f40062bf9332d8b668ff
+RUN git clone --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git /src/tika \
     && git -C /src/tika checkout "$TIKA_FORK_SHA"
 

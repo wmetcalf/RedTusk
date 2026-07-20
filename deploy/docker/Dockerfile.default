@@ -51,13 +51,13 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 
 # Clone Tika fork pinned to a specific commit for supply-chain integrity.
 # Update TIKA_FORK_SHA when intentionally pulling new commits.
-# TEMPORARY pin: the `test/all-fixes` integration branch = the 200-commit upstream
-# sync + the audit-hardening PRs (wmetcalf/tika #8/#9/#10). Once those PRs merge into
-# 4.0-upstream-office-links, re-pin to that branch tip, restore --branch, and delete
-# test/all-fixes. This SHA was validated end-to-end through the RedTusk worker.
-ARG TIKA_FORK_SHA=0a0372e496402d286dda162f9864bc2b3052b8be
+# Durable pin: `4.0-upstream-office-links` tip after the 200-commit upstream sync
+# (wmetcalf/tika #7) + the audit-hardening PRs (#8/#9/#10) merged, plus the
+# regenerated metadata-field inventory (#11). Validated end-to-end through the
+# RedTusk worker; metadata-field-inventory CI green on the branch.
+ARG TIKA_FORK_SHA=f2b166c6facb3577ff92f40062bf9332d8b668ff
 RUN git clone \
-        --branch test/all-fixes \
+        --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
         /src/tika \
     && git -C /src/tika checkout "$TIKA_FORK_SHA"
