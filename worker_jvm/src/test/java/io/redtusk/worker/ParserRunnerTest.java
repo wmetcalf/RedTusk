@@ -106,4 +106,38 @@ class ParserRunnerTest {
         assertNotNull(result.truncated());
         assertEquals("max_extracted_bytes", result.truncated().reason());
     }
+
+    /**
+     * forceNoOcr() must actually land NO_OCR on the pinned Tika's PDF parser config.
+     *
+     * <p>The strategy setter is reflected because Tika keeps moving it (TIKA-4748 shifted
+     * it from the flat PDFParserConfig.setOcrStrategy into the nested OcrConfig). Reflection
+     * fails "safe" — it logs and leaves the config at AUTO — so a future Tika bump that
+     * renames OcrConfig.Strategy or changes the setter would silently revert PDFs to the
+     * per-page PDFBox+Tesseract AUTO path that this whole mechanism exists to avoid (it
+     * crashes on a long tail of malformed PDFs). Compilation won't catch that; only reading
+     * the strategy back off the real Tika classes will. This test is that readback: it goes
+     * red exactly when the reflection stops working, forcing a conscious update instead of a
+     * silent regression.
+     */
+    @Test
+    void forceNoOcrActuallyDisablesPdfOcr() throws Exception {
+        org.apache.tika.parser.pdf.PDFParserConfig pdfCfg =
+            new org.apache.tika.parser.pdf.PDFParserConfig();
+
+        assertTrue(ParserRunner.forceNoOcr(pdfCfg),
+            "forceNoOcr must report success against the pinned Tika API — a false return "
+            + "means the reflection no longer finds OcrConfig.Strategy/NO_OCR or the setter, "
+            + "so PDF OCR silently falls back to AUTO. Update forceNoOcr() for the new Tika API.");
+
+        // Read the strategy back through the same reflective shape and assert it is NO_OCR.
+        // getOcr() is the pinned Tika's nested config; getStrategy() returns the OcrConfig.Strategy
+        // enum. We compare on enum name so we don't have to hardcode the enum type.
+        Object ocrConfig = pdfCfg.getClass().getMethod("getOcr").invoke(pdfCfg);
+        assertNotNull(ocrConfig, "pinned Tika PDFParserConfig.getOcr() must be non-null");
+        Object strategy = ocrConfig.getClass().getMethod("getStrategy").invoke(ocrConfig);
+        assertNotNull(strategy, "OcrConfig.getStrategy() must return a strategy");
+        assertEquals("NO_OCR", ((Enum<?>) strategy).name(),
+            "PDF OCR strategy must be NO_OCR after forceNoOcr(), was: " + strategy);
+    }
 }

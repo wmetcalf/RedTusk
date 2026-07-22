@@ -210,54 +210,9 @@ public final class ParserRunner {
         // entries via Pass1ImageCapture → image-module's Tesseract pipeline,
         // so the only thing we lose is OCR over scanned-PDF text — and any
         // genuinely-scanned PDF surfaces its page images as embedded
-        // entries that path can handle. Use reflection so older Tika
-        // snapshots that don't expose OcrConfig.Strategy still build.
-        try {
-            Class<?> ocrCfgClass = Class.forName("org.apache.tika.parser.pdf.OcrConfig");
-            Class<?> strategyClass = null;
-            for (Class<?> c : ocrCfgClass.getDeclaredClasses()) {
-                if (c.getSimpleName().equals("Strategy")) { strategyClass = c; break; }
-            }
-            if (strategyClass != null && strategyClass.isEnum()) {
-                Object noOcr = null;
-                for (Object e : strategyClass.getEnumConstants()) {
-                    if ("NO_OCR".equals(((Enum<?>) e).name())) { noOcr = e; break; }
-                }
-                if (noOcr != null) {
-                    // TIKA-4748 moved the OCR strategy off the flat PDFParserConfig
-                    // setter into the nested OcrConfig (pdfCfg.getOcr().setStrategy).
-                    // Try the nested path first, fall back to the pre-4748 flat
-                    // setter, so we force NO_OCR against either Tika API. Getting
-                    // this wrong silently reverts PDF to the AUTO strategy, which
-                    // renders every page through PDFBox+Tesseract and crashes on a
-                    // long tail of malformed PDFs (see comment above) — so a total
-                    // failure to disable OCR is logged, not swallowed.
-                    try {
-                        Object ocrConfig = pdfCfg.getClass().getMethod("getOcr").invoke(pdfCfg);
-                        if (ocrConfig == null) {
-                            // getOcr() is a non-null field getter in the pinned Tika, but
-                            // this block is reflective/version-tolerant by design — guard
-                            // against a null return (NPE isn't a ReflectiveOperationException
-                            // and would escape) and fall back to the pre-4748 flat setter.
-                            throw new NoSuchMethodException("getOcr() returned null");
-                        }
-                        ocrConfig.getClass()
-                                 .getMethod("setStrategy", strategyClass)
-                                 .invoke(ocrConfig, noOcr);
-                    } catch (NoSuchMethodException preTika4748) {
-                        pdfCfg.getClass()
-                              .getMethod("setOcrStrategy", strategyClass)
-                              .invoke(pdfCfg, noOcr);
-                    }
-                }
-            }
-        } catch (ReflectiveOperationException e) {
-            // Could not force NO_OCR on the PDF parser — it will fall back to the
-            // AUTO strategy (per-page PDFBox render + Tesseract), which is both slow
-            // and crash-prone on adversarial PDFs. Surface it instead of hiding it.
-            LOG.warning("Could not disable PDF-page OCR (setOcrStrategy/getOcr unavailable): "
-                    + e.getMessage() + " — PDF parsing may fall back to AUTO OCR.");
-        }
+        // entries that path can handle. Reflection keeps us tolerant of Tika API
+        // moves (TIKA-4748); see forceNoOcr().
+        forceNoOcr(pdfCfg);
         context.set(PDFParserConfig.class, pdfCfg);
 
         // Office: surface hidden/empty rows in Excel workbooks — a common lure technique.
@@ -892,6 +847,71 @@ public final class ParserRunner {
      * executes macros regardless — this only makes the documented hardening
      * level explicit on the config object.
      */
+    /**
+     * Force the PDF parser's per-page OCR strategy to NO_OCR, reflectively, so we
+     * stay tolerant of Tika API moves (TIKA-4748 relocated the strategy off the flat
+     * {@code PDFParserConfig.setOcrStrategy} setter into the nested {@code OcrConfig}).
+     *
+     * <p>Behaviour-critical: a silent failure here reverts PDF to the AUTO strategy,
+     * which renders every page through PDFBox+Tesseract and bombs on a long tail of
+     * malformed PDFs. So a total failure to disable OCR is logged, not swallowed.
+     *
+     * <p>Returns whether NO_OCR was actually applied — {@code false} means the config
+     * was left at its default (AUTO). Package-private + a real return value so a test
+     * can assert the reflection still lands NO_OCR against the pinned Tika, turning a
+     * future API bump that breaks it into a red build instead of a silent regression.
+     *
+     * @return true iff NO_OCR was set on {@code pdfCfg}
+     */
+    static boolean forceNoOcr(PDFParserConfig pdfCfg) {
+        try {
+            Class<?> ocrCfgClass = Class.forName("org.apache.tika.parser.pdf.OcrConfig");
+            Class<?> strategyClass = null;
+            for (Class<?> c : ocrCfgClass.getDeclaredClasses()) {
+                if (c.getSimpleName().equals("Strategy")) { strategyClass = c; break; }
+            }
+            if (strategyClass == null || !strategyClass.isEnum()) {
+                return false;
+            }
+            Object noOcr = null;
+            for (Object e : strategyClass.getEnumConstants()) {
+                if ("NO_OCR".equals(((Enum<?>) e).name())) { noOcr = e; break; }
+            }
+            if (noOcr == null) {
+                return false;
+            }
+            // TIKA-4748 moved the OCR strategy off the flat PDFParserConfig setter
+            // into the nested OcrConfig (pdfCfg.getOcr().setStrategy). Try the nested
+            // path first, fall back to the pre-4748 flat setter, so we force NO_OCR
+            // against either Tika API.
+            try {
+                Object ocrConfig = pdfCfg.getClass().getMethod("getOcr").invoke(pdfCfg);
+                if (ocrConfig == null) {
+                    // getOcr() is a non-null field getter in the pinned Tika, but this
+                    // block is reflective/version-tolerant by design — guard against a
+                    // null return (NPE isn't a ReflectiveOperationException and would
+                    // escape) and fall back to the pre-4748 flat setter.
+                    throw new NoSuchMethodException("getOcr() returned null");
+                }
+                ocrConfig.getClass()
+                         .getMethod("setStrategy", strategyClass)
+                         .invoke(ocrConfig, noOcr);
+            } catch (NoSuchMethodException preTika4748) {
+                pdfCfg.getClass()
+                      .getMethod("setOcrStrategy", strategyClass)
+                      .invoke(pdfCfg, noOcr);
+            }
+            return true;
+        } catch (ReflectiveOperationException e) {
+            // Could not force NO_OCR on the PDF parser — it will fall back to the
+            // AUTO strategy (per-page PDFBox render + Tesseract), which is both slow
+            // and crash-prone on adversarial PDFs. Surface it instead of hiding it.
+            LOG.warning("Could not disable PDF-page OCR (setOcrStrategy/getOcr unavailable): "
+                    + e.getMessage() + " — PDF parsing may fall back to AUTO OCR.");
+            return false;
+        }
+    }
+
     private static void applyMacroSecurity(OfficeParserConfig officeCfg) {
         // Try a few known setter shapes across Tika/POI versions.
         if (trySetIntMethod(officeCfg, "setMacroSecurityLevel", 3)) return;
