@@ -28,9 +28,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Cold worker needs blastbox CORE only; pin it (0.1.7 = first release with
-# blastbox.worker.cold). redtusk installed --no-deps (engine needs only blastbox).
-ARG BLASTBOX_VERSION=0.1.7
+# Cold worker needs blastbox CORE only; pin it to the current release. redtusk is
+# installed --no-deps (engine needs only blastbox), so this exact pin is the ONLY
+# thing setting the worker's blastbox — bump it in lockstep with every blastbox
+# release or the worker silently skews behind the api/dispatcher tier.
+# (worker.cold has existed since 0.1.7; the deployed floor is the pyproject >=0.1.25.)
+ARG BLASTBOX_VERSION=0.1.25
 RUN python3.12 -m venv /opt/redtusk \
     && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/redtusk/bin/pip install --no-cache-dir "blastbox==${BLASTBOX_VERSION}"
