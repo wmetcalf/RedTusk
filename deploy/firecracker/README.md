@@ -195,6 +195,43 @@ The wrapper pre-flight-checks that the FC assets exist; if not, it tells you
 how to build them. The `docker-compose.firecracker.yml` overlay is the single
 source of truth for what FC needs at compose time.
 
+## Adding a node to the fleet (provisioning + per-host GIDs)
+
+Two helpers make a fresh box join the fleet without hand-editing:
+
+* **`scripts/prepare_node_ubuntu.sh`** — OS-level provisioner. Installs Docker,
+  the `kvm` group, Firecracker + jailer, gVisor/runsc, the job/scratch/node-share
+  dirs, and host tuning; then hands off to `setup_firecracker_host.sh` for the
+  kernel + rootfs. Idempotent. Hosts/users are arguments, not baked in:
+
+  ```sh
+  sudo scripts/prepare_node_ubuntu.sh --deploy-user <user> \
+      --firecracker-from <user>@<reference-node>:/usr/local/bin/firecracker
+  ```
+
+* **`scripts/node_env_sync.sh`** — writes the per-HOST `DOCKER_GID` / `KVM_GID`
+  into every engine stack's compose `.env`. Compose `group_add:` needs NUMERIC
+  gids, and those differ per box (docker gid 110 on one node, 988 on another
+  were both seen in the wild). The compose defaults are wrong on any box that
+  doesn't match, and the failure is silent-but-fatal: the dispatcher starts,
+  can't reach `/var/run/docker.sock`, logs `runsc unavailable; falling back to
+  runc (insecure)`, and `REQUIRE_SECURE_RUNTIME` then refuses **every** job —
+  which reads like an engine bug, not a gid bug. `node_env_sync.sh` auto-detects
+  the gids (preferring the actual `docker.sock` gid over the group table) and
+  fails loud on a wrong value instead of a plausible default.
+
+  ```sh
+  scripts/node_env_sync.sh --dry-run     # show what would change
+  scripts/node_env_sync.sh --restart     # write + recreate the dispatchers
+  ```
+
+  Run it on any new node after provisioning **and** after any Docker/KVM
+  reinstall (which can renumber the groups). This is the multi-node, multi-engine
+  generalization of the single-node `KVM_GID`/`DOCKER_GID` auto-detection the
+  `--firecracker` wrapper does above.
+
+Order for a new node: `prepare_node_ubuntu.sh` → `node_env_sync.sh` → deploy.
+
 ## Building the host environment (manual, used by both modes)
 
 The `setup_firecracker_host.sh` script automates these steps. They're here in
