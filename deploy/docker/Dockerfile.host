@@ -31,14 +31,19 @@ https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.lis
 # fastapi/psycopg ingress + dispatch stack) AND the redtusk package (so the
 # ingress extension module imports). The WORKER image installs only blastbox
 # core + redtusk --no-deps; this tier needs the full host extra.
+#
+# `blastbox[s3]` (boto3) is added for multi-node deployments where the dispatcher
+# reads samples / seals results through an S3/MinIO BlobStore (BLASTBOX_BLOB_URL=
+# s3://...). It resolves against redtusk's blastbox>=0.1.25 pin, so this lands
+# blastbox 0.1.25 + boto3. Unset BLASTBOX_BLOB_URL leaves boto3 unused (local FS).
 WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/pyproject.toml
 COPY src /tmp/build/src
 RUN python3 -m venv /opt/redtusk \
     && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/redtusk/bin/pip install --no-cache-dir '/tmp/build[host]' \
+    && /opt/redtusk/bin/pip install --no-cache-dir '/tmp/build[host]' 'blastbox[s3]' \
     && rm -rf /tmp/build \
-    && /opt/redtusk/bin/python -c "import blastbox.host.ingress.app, redtusk.blastbox_ingress; print('host + ingress import OK')"
+    && /opt/redtusk/bin/python -c "import blastbox.host.ingress.app, redtusk.blastbox_ingress, boto3; print('host + ingress + s3 import OK')"
 
 ENV PATH=/opt/redtusk/bin:$PATH \
     BLASTBOX_ALLOWED_ENGINES=redtusk \
