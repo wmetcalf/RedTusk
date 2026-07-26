@@ -36,17 +36,32 @@ services:
     security_opt:
       - no-new-privileges:true
     networks:
-      - backend            # reach the shared Postgres queue (AWS egress is via the host NAT)
+      # backend reaches the shared Postgres queue + MinIO blob store (both internal=true, NO egress).
+      # frontend is REQUIRED for AWS egress: this dispatcher shells out to `aws` and POSTs job bytes to
+      # the microVM's public HTTPS endpoint, so it MUST have a route off-host. The backend network is
+      # internal, so without frontend the aws-lambda-snapstart availability probe fails and the tier is
+      # refused (observed: "aws-lambda-snapstart tier unavailable"). Keep BOTH.
+      - backend
+      - frontend
     volumes:
       # AWS CLI (installed by prepare_node_ubuntu.sh --aws-burst) + creds, READ-ONLY.
       # blastbox.host.runtime.aws_worker shells out to `aws`; the creds are the operator's.
       - /usr/local/aws-cli:/usr/local/aws-cli:ro
       - /usr/local/bin/aws:/usr/local/bin/aws:ro
       - ${AWS_CREDS_DIR:-/home/coz/.aws}:/aws:ro
+    tmpfs:
+      # Writable scratch for the job root. This dispatcher runs NO worker locally: for each claimed job
+      # it RE-MATERIALISES the sample from the MinIO blob store into BLASTBOX_JOB_ROOT, then PUSHES the
+      # bytes to the AWS worker. With read_only:true the default /var/lib/... job root is unwritable
+      # (observed: PermissionError → every job fails). A tmpfs is the right backing: fast, and the
+      # untrusted sample is RAM-only + wiped on restart — it never persists to this host's disk.
+      - /tmp/bbjobs:rw,nosuid,nodev,size=2g
     environment:
       # ── claim from the SAME queue the local dispatchers use (no worker runs here) ──
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
-      - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
+      # Writable tmpfs scratch (above) — NOT a persistent host path: the sample is re-fetched from MinIO
+      # per job and must never survive on spare hardware.
+      - BLASTBOX_JOB_ROOT=/tmp/bbjobs
       - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
       - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
       # ── AWS credentials (mounted read-only above) ──
