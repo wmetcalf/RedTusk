@@ -1,0 +1,99 @@
+# docker-compose.aws-burst.yml — AWS scale-out BURST tier (additive overlay).
+#
+# WHAT
+#   A demand-driven burst dispatcher that claims from the SAME shared Postgres queue as
+#   the local FC/gVisor dispatchers and — only when local capacity is saturated — spills
+#   overflow jobs to DISPOSABLE AWS workers. It PUSHES each job's input bytes to the
+#   worker's HTTPS /detonate endpoint and gets the sealed result tar back over the same
+#   connection (blastbox.host.runtime.remote_http). The AWS worker never connects back:
+#   NO inbound to this host, NO exposing the queue or blob store — pure OUTBOUND HTTPS.
+#
+# PREREQS (once, on THIS control-plane node)
+#   1. scripts/prepare_node_ubuntu.sh --aws-burst   # installs the AWS CLI system-wide
+#   2. ~/.aws/credentials placed by the operator     # mounted read-only below; never scripted
+#   3. AWS-side resources for the chosen tier (AMI/SG/IAM for EC2; ECR image + exec-role
+#      for Lambda). See the per-tier env below.
+#
+# DEPLOY
+#   docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
+#
+# FAIL-CLOSED: every AWS tier is refused at selection unless `aws sts get-caller-identity`
+# AND a read-only service probe pass — a half-configured burst node simply stays on the
+# local tiers instead of erroring, so this overlay is safe to deploy before AWS is fully set up.
+services:
+  dispatcher-aws-burst:
+    image: ${REDTUSK_IMAGE:-redtusk:dev}
+    command: ["blastbox", "dispatch"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      # backend reaches the shared Postgres queue + MinIO blob store (both internal=true, NO egress).
+      # frontend is REQUIRED for AWS egress: this dispatcher shells out to `aws` and POSTs job bytes to
+      # the microVM's public HTTPS endpoint, so it MUST have a route off-host. The backend network is
+      # internal, so without frontend the aws-lambda-snapstart availability probe fails and the tier is
+      # refused (observed: "aws-lambda-snapstart tier unavailable"). Keep BOTH.
+      - backend
+      - frontend
+    volumes:
+      # AWS CLI (installed by prepare_node_ubuntu.sh --aws-burst) + creds, READ-ONLY.
+      # blastbox.host.runtime.aws_worker shells out to `aws`; the creds are the operator's.
+      - /usr/local/aws-cli:/usr/local/aws-cli:ro
+      - /usr/local/bin/aws:/usr/local/bin/aws:ro
+      - ${AWS_CREDS_DIR:-/home/coz/.aws}:/aws:ro
+    tmpfs:
+      # Writable scratch for the job root. This dispatcher runs NO worker locally: for each claimed job
+      # it RE-MATERIALISES the sample from the MinIO blob store into BLASTBOX_JOB_ROOT, then PUSHES the
+      # bytes to the AWS worker. With read_only:true the default /var/lib/... job root is unwritable
+      # (observed: PermissionError → every job fails). A tmpfs is the right backing: fast, and the
+      # untrusted sample is RAM-only + wiped on restart — it never persists to this host's disk.
+      - /tmp/bbjobs:rw,nosuid,nodev,size=2g
+    environment:
+      # ── claim from the SAME queue the local dispatchers use (no worker runs here) ──
+      - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
+      # Writable tmpfs scratch (above) — NOT a persistent host path: the sample is re-fetched from MinIO
+      # per job and must never survive on spare hardware.
+      - BLASTBOX_JOB_ROOT=/tmp/bbjobs
+      - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
+      - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
+      # ── AWS credentials (mounted read-only above) ──
+      - AWS_SHARED_CREDENTIALS_FILE=/aws/credentials
+      - AWS_CONFIG_FILE=/aws/config
+      - BLASTBOX_AWS_REGION=${BLASTBOX_AWS_REGION:?set the AWS region in .env, e.g. us-east-1}
+      - BLASTBOX_AWS_PROFILE=${BLASTBOX_AWS_PROFILE:-default}
+      # ── which tier: aws-ec2 / aws-lambda-microvm (disposable) | aws-ec2-hibernate /
+      #    aws-lambda-snapstart (warm, C/R the same PID across jobs) ──
+      - BLASTBOX_POOL_RUNTIME=${BLASTBOX_AWS_TIER:-aws-ec2}
+      # ── demand-driven burst (pool.py): extra slots spawned after sustained demand
+      #    misses, drained back when idle so AWS instances/microVMs don't keep costing.
+      #    BURST_SIZE = extra AWS slots on demand; CEILING = hard cap on total slots
+      #    (bounds AWS spend); WARM_SIZE only matters for the warm tiers (-hibernate/
+      #    -snapstart). NOTE: the trigger/drain TIMING is fixed in blastbox (3 s / 60 s);
+      #    it is not yet env-tunable — see the burst_trigger_s/_drain_s defaults in pool.py. ──
+      - BLASTBOX_POOL_BURST_SIZE=${BLASTBOX_POOL_BURST_SIZE:-4}
+      - BLASTBOX_POOL_CEILING=${BLASTBOX_POOL_CEILING:-8}
+      - BLASTBOX_POOL_WARM_SIZE=${BLASTBOX_POOL_WARM_SIZE:-0}
+      # ── EC2 tiers (aws-ec2 / aws-ec2-hibernate) require these ──
+      - BLASTBOX_EC2_AMI=${BLASTBOX_EC2_AMI:-}
+      - BLASTBOX_EC2_INSTANCE_TYPE=${BLASTBOX_EC2_INSTANCE_TYPE:-c7g.large}
+      - BLASTBOX_EC2_SUBNET_ID=${BLASTBOX_EC2_SUBNET_ID:-}
+      - BLASTBOX_EC2_SECURITY_GROUPS=${BLASTBOX_EC2_SECURITY_GROUPS:-}
+      - BLASTBOX_EC2_IAM_PROFILE=${BLASTBOX_EC2_IAM_PROFILE:-}
+      - BLASTBOX_EC2_AGENT_TOKEN=${BLASTBOX_EC2_AGENT_TOKEN:-}
+      # ── Lambda tiers (aws-lambda-microvm / aws-lambda-snapstart) require these ──
+      - BLASTBOX_LAMBDA_IMAGE=${BLASTBOX_LAMBDA_IMAGE:-}
+      - BLASTBOX_LAMBDA_EXEC_ROLE_ARN=${BLASTBOX_LAMBDA_EXEC_ROLE_ARN:-}
+      - BLASTBOX_LAMBDA_EGRESS_CONNECTORS=${BLASTBOX_LAMBDA_EGRESS_CONNECTORS:-}
+      # ── dispatcher→worker mTLS (REQUIRED for the EC2-public path; the tier fails closed
+      #    without it when BLASTBOX_EC2_PUBLIC_IP is set) ──
+      - BLASTBOX_DISPATCH_TLS_CA=${BLASTBOX_DISPATCH_TLS_CA:-}
+      - BLASTBOX_DISPATCH_TLS_CERT=${BLASTBOX_DISPATCH_TLS_CERT:-}
+      - BLASTBOX_DISPATCH_TLS_KEY=${BLASTBOX_DISPATCH_TLS_KEY:-}

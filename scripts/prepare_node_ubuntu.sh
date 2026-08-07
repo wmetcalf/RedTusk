@@ -32,7 +32,14 @@
 #       [--firecracker-from <user>@<reference-node>:/usr/local/bin/firecracker] \
 #       [--no-gvisor] \
 #       [--no-fc-assets] [--with-kernel] [--kernel-from <user>@<reference-node>:/path/vmlinux] \
+#       [--aws-burst] \
 #       [--check]
+#
+# --aws-burst installs the AWS CLI v2 so THIS node can run the control-plane burst
+# dispatcher (BLASTBOX_POOL_RUNTIME=aws-*, the demand-driven AWS scale-out tier). It
+# installs tooling ONLY — AWS credentials are NEVER written by this script; place them
+# at ~/.aws/credentials on the burst node yourself, and the burst overlay mounts them
+# read-only. The AWS tiers fail closed unless `aws sts get-caller-identity` passes.
 set -euo pipefail
 
 # ── config / args ──────────────────────────────────────────────────────────
@@ -44,6 +51,7 @@ WITH_GVISOR=1
 FC_ASSETS=1                       # call setup_firecracker_host.sh at the end
 WITH_KERNEL=0                     # pass through to setup_firecracker_host.sh
 KERNEL_FROM=""                    # scp a known-good vmlinux from a reference node (skips the kernel build)
+AWS_BURST=0                       # also install the AWS CLI for the control-plane burst dispatcher
 CHECK_ONLY=0
 
 # Standard host paths (match deploy/docker/docker-compose.firecracker.yml defaults).
@@ -61,6 +69,7 @@ while [ $# -gt 0 ]; do
         --no-fc-assets)        FC_ASSETS=0; shift ;;
         --with-kernel)         WITH_KERNEL=1; shift ;;
         --kernel-from)         KERNEL_FROM=$2; shift 2 ;;
+        --aws-burst)           AWS_BURST=1; shift ;;
         --check)               CHECK_ONLY=1; shift ;;
         -h|--help)             sed -n '/^#/,/^set -euo/p' "$0" | sed 's/^# \?//;/^set -euo/d'; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -101,6 +110,8 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
         printf '  dir %-24s : %s\n' "$d" "$([ -d "$d" ] && echo present || echo MISSING)"
     done
     printf '  fc assets   : %s\n' "$([ -f "$REDTUSK_FC_DIR/vmlinux" ] && [ -f "$REDTUSK_FC_DIR/redtusk-rootfs.ext4" ] && echo present || echo INCOMPLETE)"
+    printf '  aws cli     : %s\n' "$(aws --version 2>/dev/null | head -1 || echo 'MISSING (--aws-burst)')"
+    printf '  aws creds   : %s\n' "$(have aws && aws sts get-caller-identity >/dev/null 2>&1 && echo 'valid (sts ok)' || echo 'absent/invalid — place ~/.aws/credentials')"
     exit 0
 fi
 
@@ -194,6 +205,43 @@ else
     log "skipping gVisor (--no-gvisor)"
 fi
 
+# ── 6b. AWS CLI v2 (control-plane burst tier, --aws-burst) ──────────────────
+# The AWS scale-out tier runs a burst dispatcher that claims from the shared queue
+# and PUSHES jobs to disposable AWS workers over HTTPS (blastbox aws_worker shells
+# out to `aws`). Install the CLI system-wide so the burst dispatcher container can
+# bind-mount it. TOOLING ONLY — credentials are the operator's to place at
+# ~/.aws/credentials; this script never reads or writes them.
+if [ "$AWS_BURST" -eq 1 ]; then
+    if have aws; then
+        log "aws cli present: $(aws --version 2>&1 | head -1)"
+    else
+        log "installing AWS CLI v2 (system-wide, for the burst dispatcher)"
+        case "$ARCH" in
+            x86_64)  AWS_ZIP_ARCH=x86_64 ;;
+            aarch64) AWS_ZIP_ARCH=aarch64 ;;
+            *) die "AWS CLI v2 has no bundle for arch $ARCH" ;;
+        esac
+        have unzip || $SUDO apt-get install -y -q unzip
+        tmpd=$(mktemp -d)
+        curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ZIP_ARCH}.zip" -o "$tmpd/awscliv2.zip" \
+            || die "AWS CLI download failed"
+        unzip -q -o "$tmpd/awscliv2.zip" -d "$tmpd"
+        # --update makes re-runs idempotent (in-place upgrade of an existing install).
+        $SUDO "$tmpd/aws/install" --update 2>&1 | tail -1
+        rm -rf "$tmpd"
+        have aws && log "installed: $(aws --version 2>&1 | head -1)" || warn "aws still not on PATH after install"
+    fi
+    # Provision-time entitlement check — friendlier than discovering it at first burst
+    # (the runtime ALSO fails closed on this). Warn, don't die: creds may be placed later.
+    if [ ! -r "${AWS_CREDS_HOME:-/home/$DEPLOY_USER}/.aws/credentials" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+        warn "no AWS credentials yet — place ~/.aws/credentials on this node, then re-run --check"
+    elif aws sts get-caller-identity >/dev/null 2>&1; then
+        log "aws entitlement OK (sts get-caller-identity passed)"
+    else
+        warn "AWS credentials present but 'aws sts get-caller-identity' FAILED — the burst tier will fail closed"
+    fi
+fi
+
 # ── 7. standard dirs (owned by the deploy user/group) ──────────────────────
 log "creating standard dirs"
 DGRP=$(id -gn "$DEPLOY_USER")
@@ -267,3 +315,19 @@ Notes:
   - Re-login (or use 'sg kvm') so the $DEPLOY_USER kvm-group membership is live.
   - FC assets at $REDTUSK_FC_DIR: $([ -f "$REDTUSK_FC_DIR/vmlinux" ] && echo 'vmlinux ✓' || echo 'vmlinux MISSING (--with-kernel or --kernel-from)') / $([ -e "$REDTUSK_FC_DIR/redtusk-rootfs.ext4" ] && echo 'rootfs ✓' || echo 'rootfs MISSING (run setup_firecracker_host.sh)')
 EOF
+
+if [ "$AWS_BURST" -eq 1 ]; then
+cat <<EOF
+
+AWS burst tier (this is the control-plane node):
+  aws cli   : $(aws --version 2>/dev/null | head -1 || echo 'MISSING')
+  aws creds : $(have aws && aws sts get-caller-identity >/dev/null 2>&1 && echo 'valid (sts ok)' || echo 'place ~/.aws/credentials, then re-run --check')
+  1. Put your AWS credentials at ~/.aws/credentials (this script never touches them).
+  2. Deploy the burst dispatcher with the overlay:
+       docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
+  3. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:
+       BLASTBOX_AWS_TIER, BLASTBOX_AWS_REGION, and the EC2/Lambda ids for that tier).
+  The AWS tiers fail CLOSED unless 'aws sts get-caller-identity' + a service probe pass,
+  so a half-configured burst node stays on the local FC/gVisor tiers rather than erroring.
+EOF
+fi
