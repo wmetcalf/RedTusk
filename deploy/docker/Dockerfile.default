@@ -55,7 +55,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # (wmetcalf/tika #7) + the audit-hardening PRs (#8/#9/#10) merged, plus the
 # regenerated metadata-field inventory (#11). Validated end-to-end through the
 # RedTusk worker; metadata-field-inventory CI green on the branch.
-ARG TIKA_FORK_SHA=f2b166c6facb3577ff92f40062bf9332d8b668ff
+ARG TIKA_FORK_SHA=5b1e70f8b64ae87d54d49b304b9fcf18d41b8c60
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
