@@ -59,6 +59,18 @@ tests/fixtures/**/corpus/
 
 # Per-host runtime config — set REDTUSK_STATE_DIR, POSTGRES_PASSWORD, etc.
 # locally; never commit. See deploy/docker/.env.example for the template.
+#
+# Match by SHAPE, not by one exact path. The single `deploy/docker/.env` rule below
+# ignored precisely one filename, so an ordinary editing habit — `cp .env .env.bak`
+# before a config experiment — produced `deploy/docker/.env.bak-tiertest`, which was
+# untracked but NOT ignored and one `git add -A` away from committing live MinIO and
+# Postgres credentials. The whole family is covered now; example templates are the
+# only env files that belong in the repo.
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
 deploy/docker/.env
 
 # corpus-derived bench output — never commit
