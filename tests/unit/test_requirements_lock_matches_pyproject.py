@@ -86,7 +86,10 @@ def test_the_s3_extra_reaches_the_dispatcher_image() -> None:
     """
     host_extra = tomllib.loads(PYPROJECT.read_text())["project"]["optional-dependencies"]["host"]
     blastbox = [r for r in map(Requirement, host_extra) if r.name == "blastbox"]
-    assert any("s3" in r.extras for r in blastbox), (
+    # Assert BOTH extras. Checking only `s3` would accept a bare `blastbox[s3]`, which
+    # drops `host` -- the entire FastAPI/dispatcher stack this tier exists to run -- while
+    # the failure message still claimed [host,s3] was required (upstream, PR #32).
+    assert any({"host", "s3"} <= r.extras for r in blastbox), (
         "the host extra must request blastbox[host,s3] so boto3 is a declared dependency"
     )
     assert "boto3" in _locked(), "boto3 is missing from the hashed lock"
