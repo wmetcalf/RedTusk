@@ -52,7 +52,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # Durable pin: `4.0-upstream-office-links` tip after the 200-commit upstream sync
 # (wmetcalf/tika #7) + audit-hardening PRs (#8/#9/#10) + inventory regen (#11) merged.
 # Validated end-to-end through the RedTusk worker; inventory CI green on the branch.
-ARG TIKA_FORK_SHA=de08f007adf6d51e10166dfb07ad9f9ab281c35b
+ARG TIKA_FORK_SHA=c4bcec9f09bd3e7b8c1d50f538d4729db7f2754b
 RUN git clone --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git /src/tika \
     && git -C /src/tika checkout "$TIKA_FORK_SHA"

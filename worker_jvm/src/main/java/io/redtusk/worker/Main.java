@@ -204,7 +204,11 @@ public final class Main {
                     // would throw UnsupportedOperationException if fh ever matched such an entry.
                     java.util.Map<String, Object> meta = new java.util.LinkedHashMap<>(e.metadata());
                     if (magic != null) {
-                        meta.put("Content-Type-Magic-Detected", magic);
+                        // 4.x key spelling. Upstream renamed this key in the 4.x
+                        // normalisation; we follow it forward rather than shimming back
+                        // to 3.x. Nothing consumes the old name (checked across blastbox,
+                        // titanarum and this repo), so this is a clean rename.
+                        meta.put("tk:content-type-magic-detected", magic);
                         if (contentType == null
                                 || "application/octet-stream".equals(contentType)
                                 || "application/x-tika-msoffice".equals(contentType)) {
