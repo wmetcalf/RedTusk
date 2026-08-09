@@ -34,16 +34,24 @@ dependencies = [
 [project.optional-dependencies]
 # The api/dispatcher tier runs `blastbox serve` / `blastbox dispatch` and loads
 # the ingress extension (which imports fastapi) — all provided by blastbox[host].
+# `[s3]` (boto3) comes with it: on a multi-node fleet the dispatcher reads samples
+# and seals results through an S3/MinIO BlobStore (BLASTBOX_BLOB_URL=s3://...), so
+# it is a real dependency of this tier, not an image-build detail. Declaring it
+# here rather than appending `blastbox[s3]` to the Dockerfile's pip line means a
+# plain `pip install redtusk[host]` outside Docker resolves the same closure.
+# Unset BLASTBOX_BLOB_URL simply leaves boto3 unused (local-filesystem blobs).
 host = [
-    "blastbox[host]>=0.1.25,<0.2",
+    "blastbox[host,s3]>=0.1.25,<0.2",
 ]
 dev = [
-    "blastbox[host]>=0.1.25,<0.2",
+    "blastbox[host,s3]>=0.1.25,<0.2",
     "pytest>=8.0.0,<9.0",
     "pytest-asyncio>=0.23.0,<1.0",
     "httpx>=0.27.0,<1.0",
     "ruff>=0.3.0,<1.0",
     "mypy>=1.9.0,<2.0",
+    # Version/requirement parsing for the lock-vs-pyproject consistency tests.
+    "packaging>=23.0,<27.0",
 ]
 
 [project.scripts]
