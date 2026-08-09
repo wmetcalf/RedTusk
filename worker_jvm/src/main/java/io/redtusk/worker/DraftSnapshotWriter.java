@@ -250,7 +250,11 @@ final class DraftSnapshotWriter {
 
         ObjectNode meta = n.putObject("metadata");
         for (String name : m.names()) {
-            if (name.startsWith("X-TIKA:") || name.equals("Content-Type")) continue;
+            // Tika-native keys. Upstream moved the prefix from "X-TIKA:" to "tk:" and
+            // demoted "X-TIKA:" to LEGACY_TIKA_META_PREFIX, so BOTH must be filtered --
+            // matching only the legacy one silently leaks tk:* internals into output.
+            if (name.startsWith("X-TIKA:") || name.startsWith("tk:")
+                    || name.equals("Content-Type")) continue;
             String v = m.get(name);
             if (v != null) meta.put(name, v);
         }

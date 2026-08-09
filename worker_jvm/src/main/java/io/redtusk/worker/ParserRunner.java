@@ -1109,7 +1109,11 @@ public final class ParserRunner {
     private static Map<String, Object> extractMetadata(Metadata m) {
         Map<String, Object> result = new LinkedHashMap<>();
         for (String name : m.names()) {
-            if (name.startsWith("X-TIKA:") || name.equals("Content-Type")) continue;
+            // Tika-native keys. Upstream moved the prefix from "X-TIKA:" to "tk:" and
+            // demoted "X-TIKA:" to LEGACY_TIKA_META_PREFIX, so BOTH must be filtered --
+            // matching only the legacy one silently leaks tk:* internals into output.
+            if (name.startsWith("X-TIKA:") || name.startsWith("tk:")
+                    || name.equals("Content-Type")) continue;
             // Preserve ALL values of multi-valued keys (dc:creator, relationship
             // targets, ...). m.get() kept only the first; m.getValues() keeps them
             // all. Emit a scalar for a single value, a list for several (the
