@@ -39,8 +39,19 @@ cd "$REPO_ROOT"
 EXCLUDE_FILE="scripts/deploy-exclude.txt"
 if [ ! -f "$EXCLUDE_FILE" ]; then
     cat > "$EXCLUDE_FILE" <<EOF
-# Per-host config — overwriting these will break the remote deployment.
+# The template hosts DO need — must precede the excludes below, because rsync
+# applies the FIRST matching rule and a later include never fires.
++ deploy/docker/.env.example
+# Per-host config — overwriting these will break the remote deployment, and a
+# stray copy (.env.bak, .env-backup, .env~) would SHIP CREDENTIALS to every host.
+# Kept in shape-sync with .gitignore: since those copies are now gitignored they no
+# longer show up in `git status`, so this list is the only thing standing between a
+# local backup file and a fleet-wide secret copy (review of PR #33).
 deploy/docker/.env
+deploy/docker/.env[-_.~]*
+deploy/**/*.env
+deploy/**/*.env[-_.~]*
+deploy/**/env[-_.~]*
 # Per-host state.
 var/
 # Build/source artifacts.
