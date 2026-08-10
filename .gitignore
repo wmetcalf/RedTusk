@@ -82,7 +82,9 @@ deploy/**/env[-_.~]*
 # Example templates are the one env shape that belongs in the repo. Deliberately
 # broad: `!*.env.example` only rescued the literal `.env.example` suffix, so a
 # namespaced template like `.env.aws-burst.example` was silently dropped.
-!*.example
+# Scoped to ENV templates specifically. A bare `!*.example` is repo-wide and would
+# re-include fixture/log/bench files that earlier rules deliberately ignore.
+!*.env*.example
 
 # corpus-derived bench output — never commit
 deploy/firecracker/bench_*.json

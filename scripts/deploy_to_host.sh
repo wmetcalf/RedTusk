@@ -38,20 +38,21 @@ cd "$REPO_ROOT"
 # kept in scripts/ next to this script.
 EXCLUDE_FILE="scripts/deploy-exclude.txt"
 if [ ! -f "$EXCLUDE_FILE" ]; then
-    cat > "$EXCLUDE_FILE" <<EOF
-# The template hosts DO need — must precede the excludes below, because rsync
-# applies the FIRST matching rule and a later include never fires.
-+ deploy/docker/.env.example
-# Per-host config — overwriting these will break the remote deployment, and a
-# stray copy (.env.bak, .env-backup, .env~) would SHIP CREDENTIALS to every host.
-# Kept in shape-sync with .gitignore: since those copies are now gitignored they no
-# longer show up in `git status`, so this list is the only thing standing between a
-# local backup file and a fleet-wide secret copy (review of PR #33).
-deploy/docker/.env
-deploy/docker/.env[-_.~]*
-deploy/**/*.env
-deploy/**/*.env[-_.~]*
-deploy/**/env[-_.~]*
+    cat > "$EXCLUDE_FILE" <<'EOF'
+# The example templates hosts DO need. rsync applies the FIRST matching rule, so these
+# must precede the excludes below or they never fire. Broad on purpose: a namespaced
+# template such as .env.aws-burst.example or deploy/remote/redtusk.env.example is
+# committed (see .gitignore) and must still reach the host.
++ *.example
+# Per-host config and every stray copy of it. TREE-WIDE on purpose, for two reasons:
+# rsync's ** requires a literal slash (unlike git), so deploy/**/*.env silently misses
+# deploy/.env; and a root-level .env is now gitignored, i.e. invisible in git status, so
+# this list is the only thing keeping it off every host.
+.env
+.env[-_.~]*
+*.env
+*.env[-_.~]*
+env[-_.~]*
 # Per-host state.
 var/
 # Build/source artifacts.
