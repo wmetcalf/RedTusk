@@ -561,13 +561,15 @@ class RedTuskEngine:
             env = {
                 **os.environ,
                 "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
-                # Make the JVM parse a synthetic document before it announces
-                # control.ready. A warm tier snapshots at READY, so whatever is not
-                # initialised by then is paid PER JOB: measured 775ms to boot but a
-                # further 1170ms for the first parse (Tika SPI discovery, MIME magic,
-                # JIT). Only warmup() sets this — the cold path serves one job, where
-                # a warmup parse would be pure added latency.
-                "REDTUSK_PREWARM": "1",
+                # OPT-IN, default OFF. Parsing before control.ready moves Tika's
+                # init ahead of the snapshot — but on the FC warm tier it MEASURED
+                # WORSE (fixed floor 2546ms -> 5367ms, 2026-08-14): the prewarm
+                # dirties an 800m pre-touched heap before the checkpoint, so every
+                # restored slot page-faults that working set back in, costing more
+                # than the init it saves. Keep the knob for tiers whose restore is
+                # cheap (CRaC checkpoints ~44MB, not a 2GB VM image) and measure
+                # with scripts/verify_warm_tier.sh before enabling it anywhere.
+                "REDTUSK_PREWARM": os.environ.get("REDTUSK_PREWARM", "0"),
             }
             started = time.monotonic()
             proc = subprocess.Popen(

@@ -141,3 +141,37 @@ static/push agents, CRaC restore). It is not a warm-FC optimisation.
 To revisit, attack the snapshot working set rather than the parse: a smaller warm-tier heap,
 dropping `AlwaysPreTouch` for the snapshot build, or a GC/compaction before the checkpoint —
 then re-measure with `scripts/verify_warm_tier.sh`, which is what caught this.
+
+## THE regression: the worker jar got 3.2x slower between 2026-06-11 and 2026-08-14
+
+Controlled measurement (same JVM, same flags, same file-IPC harness, same container image —
+**only the jar mounted in differs**):
+
+```
+old.jar (from redtusk-worker:crac, built 2026-06-11)  boot->ready 342ms   ready->DOC 1832ms
+new.jar (built from current source, 2026-08-14)       boot->ready 338ms   ready->DOC 5772ms
+```
+
+Boot is identical, so this is not JVM startup, AOT, CRaC, blastbox, or the tier. It is inside
+the worker jar — i.e. the Tika fork (`TIKA_FORK_SHA`, currently
+`de08f007adf6d51e10166dfb07ad9f9ab281c35b`) or the worker code built around it. A trivial 43-byte
+HTML document went from 1.8s to 5.8s.
+
+This dominates every other per-job cost on the fleet, and it is the reason the tier "used to be
+fast": the 2026-06-11 CRaC image does a full restore-plus-job in ~2.35s, while anything built
+from current source takes ~8.9s on the identical path.
+
+**Bisect range: 2026-06-11 -> now.** The Tika upstream sync landed inside that window and is the
+prime suspect. Reproduce with the jar-swap probe above — it isolates the jar in ~30 seconds and
+needs no fleet, no rootfs and no deploy.
+
+Two things ruled OUT by controlled A/B, so do not re-investigate them:
+
+- **The shared parser tree is neutral here.** Identical tree and Dockerfiles, only `sharedParser`
+  reverted: 8908/9077/8857ms vs 9050/8921/8865ms. A warm JVM on these tiers serves exactly one
+  job, so hoisting the parser saves nothing; it only pays off where one JVM serves many.
+- **Checkpoint size is not the cause.** Both images' `/app/checkpoint` are 43-44MB.
+
+Beware when comparing images: `redtusk-worker:crac` is two months old and was built from an older
+Dockerfile generation. Comparing it against a fresh build varies the jar AND the build recipe at
+once. Two conclusions were drawn wrongly in this session before the variables were separated.
