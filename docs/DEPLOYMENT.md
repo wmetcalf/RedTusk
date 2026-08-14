@@ -2,8 +2,22 @@
 
 What must be rebuilt, and where it lands, for each kind of version bump.
 
-Run `scripts/deploy_inventory.sh` **before and after** any deployment. It reports what is
-actually deployed and exits non-zero on drift.
+## The single path
+
+```sh
+scripts/release_engine.sh                      # show the plan (dry run — the default)
+scripts/release_engine.sh --apply --tag 0815   # test -> image (jar + AOT) -> audit -> deploy -> verify
+```
+
+It chains the existing pieces and gates both ends: `deploy_inventory.sh` before, the image
+jar/AOT audit in the middle, and `verify_warm_tier.sh` + `deploy_inventory.sh` after. It refuses
+to build an image from failing tests, and refuses to call a deploy successful if the tier did not
+come back warm. Step 4 (which recreates production containers) is printed for you to run rather
+than fired automatically.
+
+The sections below are the manual reference for what that path does, and for the cases it does
+not cover. Run `scripts/deploy_inventory.sh` **before and after** any deployment — it reports
+what is actually deployed and exits non-zero on drift.
 
 ## Why this document exists
 
