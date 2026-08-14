@@ -110,3 +110,34 @@ per-job in-guest 3.30s for a 3-byte input, of which ~2.2s was rebuilding the Tik
 - **Hand-set container env** does not survive `compose up` recreating the container.
 - **Two stacks share these hosts** (`redtusk-bb-*`, `titanarum-bb-*`) with independent images,
   rootfs images and blastbox versions. Always scope actions by stack prefix.
+
+## Measured: why prewarm did NOT ship to the FC snapshot tier (2026-08-14)
+
+Built, deployed and rolled back the same day. Recorded so the experiment is not repeated.
+
+| | floor (3-byte job) | marginal (200KB) | typical job |
+|---|---|---|---|
+| live rootfs | 2546 ms | 1168 ms | ~3.7 s |
+| prewarm build | 5367 ms | **140 ms** | ~5.5 s |
+
+Both halves behaved as designed, and instrumentation confirmed it: `using warm JVM` fired on
+every job, `warm JVM unavailable` never fired, and `warm JVM ready ... after 6.75s` showed the
+prewarm parse ran before the checkpoint. Marginal parse cost fell 8x.
+
+It still lost, because the two changes compose badly **on this tier specifically**:
+
+- A warm JVM here serves exactly ONE job, so sharing the parser tree saves nothing by itself —
+  a single parse constructs it once either way. The 140 ms only happens because the *prewarm*
+  parse already built it.
+- The prewarm parse dirties a large heap (`-Xms800m -XX:+AlwaysPreTouch`) **before** the
+  checkpoint. Every restored slot then page-faults that working set back in from the `.mem`
+  file, which costs more than the ~2.2 s of parser construction it removed.
+
+So the fixed floor grew by more than the marginal cost shrank. In-guest time went 3.3 s -> 5.0 s.
+
+Where the shared parser DOES pay off: tiers whose JVM serves many jobs (gVisor warm, the
+static/push agents, CRaC restore). It is not a warm-FC optimisation.
+
+To revisit, attack the snapshot working set rather than the parse: a smaller warm-tier heap,
+dropping `AlwaysPreTouch` for the snapshot build, or a GC/compaction before the checkpoint —
+then re-measure with `scripts/verify_warm_tier.sh`, which is what caught this.
