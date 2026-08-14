@@ -561,13 +561,21 @@ class RedTuskEngine:
             env = {
                 **os.environ,
                 "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+                # Make the JVM parse a synthetic document before it announces
+                # control.ready. A warm tier snapshots at READY, so whatever is not
+                # initialised by then is paid PER JOB: measured 775ms to boot but a
+                # further 1170ms for the first parse (Tika SPI discovery, MIME magic,
+                # JIT). Only warmup() sets this — the cold path serves one job, where
+                # a warmup parse would be pure added latency.
+                "REDTUSK_PREWARM": "1",
             }
+            started = time.monotonic()
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
             )
 
             # The JVM announces control.ready (loading Tika classes from the AOT
-            # cache along the way), then blocks on control.go.
+            # cache, then parsing the prewarm document), and blocks on control.go.
             ready = control_dir / "control.ready"
             deadline = time.monotonic() + _WARMUP_READY_TIMEOUT
             while time.monotonic() < deadline:
@@ -576,7 +584,13 @@ class RedTuskEngine:
                         proc=proc, scratch=scratch, in_dir=in_dir,
                         control_dir=control_dir, tmp=tmp,
                     )
-                    logger.info("redtusk warm JVM ready (blocked at READY)")
+                    # Elapsed is the cheap field check that the prewarm actually ran:
+                    # boot-only is ~0.8s, boot+first-parse ~2s. A warm tier reporting
+                    # ~0.8s here means REDTUSK_PREWARM never reached the JVM.
+                    logger.info(
+                        "redtusk warm JVM ready (blocked at READY) after %.2fs",
+                        time.monotonic() - started,
+                    )
                     return
                 if proc.poll() is not None:
                     break  # JVM exited before signalling ready
@@ -649,8 +663,21 @@ class RedTuskEngine:
         warm = self._warm
         self._warm = None  # one job per warm JVM; consume it
         if warm is None or warm.proc.poll() is not None:
+            # The one tier transition here that used to be SILENT. Every other path
+            # logs (warmup success/failure, CRaC cold fallback), so a warm tier that
+            # quietly degrades to a cold JVM looks identical to a healthy one in the
+            # logs while paying a full JVM boot per job. Measured on the FC warm tier:
+            # ~3.3s in-guest for a 3-byte input, i.e. the boot dominates every job.
+            logger.warning(
+                "redtusk warm JVM unavailable (%s); cold fallback — paying a JVM boot per job",
+                "no warm handle: warmup() never ran, or its handle did not survive "
+                "snapshot/restore"
+                if warm is None
+                else f"warm JVM already exited rc={warm.proc.returncode}",
+            )
             _run_worker(input, rmeta_dir, timeout=timeout)
             return
+        logger.info("redtusk using warm JVM (no per-job boot)")
         try:
             input_bytes = input.read_bytes()
             filename_hint = input.name or "input"

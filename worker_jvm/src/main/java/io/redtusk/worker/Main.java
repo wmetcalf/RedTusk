@@ -128,9 +128,72 @@ public final class Main {
     /** Package-private so MainIntegrationTest can call it directly. */
     static void runJob(File scratchDir) throws Exception {
         KsmHelper.markHeapMergeable();
+        // BEFORE announceReady(): a warm tier snapshots this JVM at READY, so
+        // anything not initialised by then is paid per job, forever.
+        prewarmParsers();
         IpcChannel ipc = IpcChannelFactory.forScratchDir(scratchDir);
         ipc.announceReady();
         processJob(scratchDir, ipc);
+    }
+
+    /** Synthetic document for {@link #prewarmParsers} — exercises detection + the HTML parser. */
+    private static final String PREWARM_DOC =
+        "<html><head><title>prewarm</title></head><body><h1>prewarm</h1>"
+        + "<p>Initialise the Tika parser stack before READY.</p></body></html>";
+
+    /**
+     * Parse a synthetic document BEFORE announcing READY, so a warm-tier snapshot
+     * captures a JVM whose Tika stack is already initialised.
+     *
+     * The AOT cache covers class LOADING/linking, but the first real parse still pays
+     * parser SPI discovery, MIME-magic table construction and JIT. Measured on the FC
+     * rootfs with the production flag bundle: JVM boot to READY = 775ms, but READY to
+     * first document = 1170ms. Because a warm JVM serves exactly ONE job, that 1170ms
+     * was paid on every job even though the slot was restored from a "warm" snapshot —
+     * the JVM was warm, Tika was not.
+     *
+     * Gated on REDTUSK_PREWARM (set only by the Python engine's warmup()): the COLD
+     * path must NOT pay it, because there the JVM serves one job and a warmup parse
+     * would be pure added latency. Fail-soft — warming is an optimisation, and a
+     * failure here must never fail the slot.
+     */
+    private static void prewarmParsers() {
+        prewarmParsers(System.getenv("REDTUSK_PREWARM"));
+    }
+
+    /**
+     * Package-private and returns whether a prewarm parse was ATTEMPTED, so the gate is
+     * testable — System.getenv() cannot be set in-process, and the property that matters
+     * (the cold path never pays this) is exactly the gate.
+     */
+    static boolean prewarmParsers(String flag) {
+        if (flag == null || !(flag.equals("1") || flag.equalsIgnoreCase("true"))) {
+            return false;
+        }
+        Path tmp = null;
+        try {
+            long t0 = System.currentTimeMillis();
+            tmp = Files.createTempFile("redtusk-prewarm", ".html");
+            Files.writeString(tmp, PREWARM_DOC);
+            var limits = new JobDescriptor.LimitsDescriptor(10, 500, 52428800L, 30);
+            var runner = new ParserRunner(limits, true, false, "eng", 3,
+                2000, true, "/usr/local/bin/ZXingReader", "tesseract");
+            runner.parse(tmp.toFile(), "prewarm.html", "0".repeat(64));
+            LOG.info("Prewarm parse complete in " + (System.currentTimeMillis() - t0) + "ms");
+        } catch (Throwable t) {
+            // Throwable, not Exception: a warmup problem (including a linkage error from
+            // an optional parser dependency) must not take the slot down with it.
+            LOG.warning("Prewarm parse failed (job will pay first-parse cost): " + t);
+        } finally {
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {
+                    // temp file in tmpfs; nothing actionable
+                }
+            }
+        }
+        return true;
     }
 
     private static void processJob(File scratchDir, IpcChannel ipc) throws Exception {

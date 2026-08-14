@@ -124,13 +124,7 @@ public final class ParserRunner {
 
     public ParseResult parse(File inputFile, String filenameHint, String rootSha256)
             throws Exception {
-        AutoDetectParser auto = new AutoDetectParser();
-        // AutoDetectParser wraps DefaultParser (itself a CompositeParser) — recurse to find
-        // the actual AbstractImageParser instances and enable perceptual hashing on each.
-        enableImageHashing(auto);
-        // JSoupParser.Config in ParseContext is ignored (parser reads instance field, not
-        // ParseContext).  Walk the tree to set extractScripts=true on the actual instance.
-        enableHtmlScriptExtraction(auto);
+        AutoDetectParser auto = sharedParser();
         BasicContentHandlerFactory chFactory = new BasicContentHandlerFactory(
                 BasicContentHandlerFactory.HANDLER_TYPE.TEXT, CHARS_PER_ENTRY);
         RecursiveParserWrapperHandler handler;
@@ -931,6 +925,41 @@ public final class ParserRunner {
         } catch (ReflectiveOperationException e) {
             LOG.fine("MacroSecurity: " + method + " failed: " + e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * The configured parser tree, built ONCE per JVM.
+     *
+     * {@code new AutoDetectParser()} costs ~2.1s — it resolves Tika's default config and
+     * service-loads the whole parser/detector set. It was being constructed per parse and
+     * discarded, which made it ~100% of a job's engine time: measured on a 43-byte HTML,
+     * parse = 2165ms of which newAutoDetectParser = 2159ms. Nothing about it is job-specific
+     * (both configure* helpers are static and take only the tree; the settings they apply
+     * are constants), and Tika parsers are designed to be reused across parses — per-parse
+     * state lives in the ParseContext and handler, which are still built fresh below.
+     */
+    private static volatile AutoDetectParser sharedParser;
+
+    private static AutoDetectParser sharedParser() {
+        AutoDetectParser p = sharedParser;
+        if (p != null) {
+            return p;
+        }
+        synchronized (ParserRunner.class) {
+            if (sharedParser == null) {
+                AutoDetectParser built = new AutoDetectParser();
+                // AutoDetectParser wraps DefaultParser (itself a CompositeParser) — recurse to
+                // find the actual AbstractImageParser instances and enable perceptual hashing.
+                enableImageHashing(built);
+                // JSoupParser.Config in ParseContext is ignored (parser reads instance field,
+                // not ParseContext). Walk the tree to set extractScripts=true on the instance.
+                enableHtmlScriptExtraction(built);
+                // Publish only after configuration, so no thread can observe a partly
+                // configured tree through the volatile read above.
+                sharedParser = built;
+            }
+            return sharedParser;
         }
     }
 
