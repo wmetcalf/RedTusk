@@ -175,3 +175,36 @@ Two things ruled OUT by controlled A/B, so do not re-investigate them:
 Beware when comparing images: `redtusk-worker:crac` is two months old and was built from an older
 Dockerfile generation. Comparing it against a fresh build varies the jar AND the build recipe at
 once. Two conclusions were drawn wrongly in this session before the variables were separated.
+
+### Bisected: the Tika sync broke default-config caching
+
+Timing `new AutoDetectParser()` twice in one JVM, same JDK/flags, only the jar differs:
+
+```
+b54f5612 (2026-06-15, pre-sync)  firstCtor  722ms   secondCtor   24ms
+de08f007 (2026-08-08, current)   firstCtor 4324ms   secondCtor 3094ms
+```
+
+Before the sync, `TikaConfig.getDefaultConfig()` handed back a cached singleton, so a second
+construction was nearly free. After it, EVERY construction redoes ~3.1s of work, and even the
+first regressed 722ms -> 4324ms. Parser count is identical (140 in both), so this is not a bigger
+parser set — it is lost caching.
+
+Bisect, by pin (jar-swap probe, ~2 min per build):
+
+```
+1a543d56 (~06-11)  1858 ms   FAST
+b54f5612 (06-15)   1828 ms   FAST      <- last good
+fe5933d1 (07-19)   -- SHA no longer exists in the fork (rebased away)
+0a0372e4 (07-19)   5621 ms   SLOW      <- first bad
+f2b166c6 (07-20)   5598 ms   SLOW
+de08f007 (08-08)   5772 ms   SLOW
+```
+
+**Culprit range: `b54f5612..0a0372e4` in wmetcalf/tika `4.0-upstream-office-links`** — the
+upstream sync merge. Remaining work is a git bisect inside that range in the fork itself.
+
+This also explains why hoisting the parser tree (`sharedParser`) measured as a 300x win in a
+microbenchmark but neutral on the fleet: these tiers construct exactly once per job, and the
+FIRST construction regressed too. Fixing the caching in the fork recovers ~3.6s per job on every
+tier at once — worth far more than any tier-level tuning.
