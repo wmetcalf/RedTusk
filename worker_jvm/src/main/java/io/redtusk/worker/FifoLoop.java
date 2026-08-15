@@ -59,8 +59,17 @@ public final class FifoLoop {
     public static String waitForSignal(File scratchDir) throws IOException {
         File goFile = new File(controlDir(scratchDir), GO_FILE);
         LOG.info("Waiting for go-signal at " + goFile.getAbsolutePath());
-        long deadline = System.currentTimeMillis() + JOB_SIGNAL_TIMEOUT_MS;
-        while (System.currentTimeMillis() < deadline) {
+        // MONOTONIC deadline, not wall clock. On a warm tier this JVM is parked in this
+        // very loop when the host snapshots it, and every slot restores that image later --
+        // minutes on a fresh pool, HOURS once the base has been up a while. A
+        // System.currentTimeMillis() deadline jumps forward by the suspended time and fires
+        // the instant the slot resumes, so the warm JVM exits and the engine silently falls
+        // back to a cold per-job JVM (measured: 962ms/job right after a base build, ~4000ms
+        // hours later). nanoTime does not advance across the suspend, so the wait survives
+        // restore and only counts time this JVM was actually running. Same hazard blastbox
+        // handles on the Python side with _RestoreAwareDeadline.
+        long deadlineNanos = System.nanoTime() + JOB_SIGNAL_TIMEOUT_MS * 1_000_000L;
+        while (System.nanoTime() - deadlineNanos < 0) {
             if (goFile.exists()) {
                 LOG.info("Go-signal received");
                 return "go";
