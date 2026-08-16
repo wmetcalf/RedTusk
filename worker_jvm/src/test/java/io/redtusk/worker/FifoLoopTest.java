@@ -58,4 +58,27 @@ class FifoLoopTest {
         );
         assertTrue(ex.getMessage().contains("capability dropper native library unavailable"));
     }
+
+    /**
+     * A warm slot that has not been handed a job is idle ON PURPOSE -- that is the whole
+     * point of a warm pool -- so it must never self-terminate. Slot lifetime belongs to the
+     * host reaper. Any finite default is just a cliff the tier falls off once the fleet is
+     * quiet that long, and it fails silently (JVM exits rc=2, engine reverts to a cold
+     * per-job JVM). 0 means wait indefinitely.
+     */
+    @Test
+    void goSignalWaitIsUnboundedUnlessExplicitlyConfigured() {
+        assertEquals(0L, FifoLoop.parseTimeoutMs(null), "unset must wait indefinitely");
+        assertEquals(0L, FifoLoop.parseTimeoutMs(""), "blank must wait indefinitely");
+        assertEquals(0L, FifoLoop.parseTimeoutMs("   "), "whitespace must wait indefinitely");
+        assertEquals(0L, FifoLoop.parseTimeoutMs("banana"), "garbage must wait indefinitely");
+        assertEquals(0L, FifoLoop.parseTimeoutMs("-1"), "negative must wait indefinitely");
+        assertEquals(0L, FifoLoop.parseTimeoutMs("0"), "zero must wait indefinitely");
+    }
+
+    @Test
+    void explicitPositiveTimeoutIsHonoured() {
+        assertEquals(5000L, FifoLoop.parseTimeoutMs("5000"));
+        assertEquals(5000L, FifoLoop.parseTimeoutMs("  5000  "));
+    }
 }
