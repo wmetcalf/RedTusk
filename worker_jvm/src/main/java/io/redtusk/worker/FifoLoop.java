@@ -30,7 +30,30 @@ public final class FifoLoop {
     // to an exited process — surfacing as exit-2 within milliseconds of
     // dispatch_start. 10 min lets the pool's natural eviction handle truly
     // stuck workers without losing live ones to a startup race.
-    private static final long JOB_SIGNAL_TIMEOUT_MS = 600_000L;
+    // Overridable because 10 min is far too short for a WARM POOL slot: it sits
+    // restored-and-idle until the dispatcher happens to send it a job, which on a
+    // lightly-loaded fleet is longer than 10 min. When it expires the JVM exits rc=2,
+    // and the engine silently falls back to a cold per-job JVM -- the tier decays with
+    // idleness rather than failing outright (measured: 940ms/job on a 2-min-old base,
+    // ~4000ms once slots had idled past the timeout). Warm tiers set this high, mirroring
+    // BLASTBOX_WARM_IDLE_TIMEOUT_S on the Python agent, which exists for the same reason.
+    private static final long JOB_SIGNAL_TIMEOUT_MS = timeoutMsFromEnv();
+
+    private static long timeoutMsFromEnv() {
+        String raw = System.getenv("REDTUSK_JOB_SIGNAL_TIMEOUT_MS");
+        if (raw != null && !raw.isBlank()) {
+            try {
+                long v = Long.parseLong(raw.trim());
+                if (v > 0) {
+                    return v;
+                }
+                LOG.warning("REDTUSK_JOB_SIGNAL_TIMEOUT_MS must be > 0; using default");
+            } catch (NumberFormatException e) {
+                LOG.warning("Bad REDTUSK_JOB_SIGNAL_TIMEOUT_MS=" + raw + "; using default");
+            }
+        }
+        return 600_000L;
+    }
 
     private FifoLoop() {}
 

@@ -638,6 +638,28 @@ class RedTuskEngine:
         finally:
             warm.tmp.cleanup()
 
+    @staticmethod
+    def _warm_exit_detail(warm: "_WarmWorker") -> str:
+        """Last line of the dead warm JVM's stderr, for the cold-fallback log.
+
+        warmup() starts the JVM with stderr=PIPE and nobody ever reads it, so when the
+        JVM dies its reason is discarded and the tier just gets slower with no
+        explanation. The process has already exited here, so the pipe is at EOF and this
+        cannot block. Diagnosing one such exit (a go-signal timeout, rc=2) took three
+        deploy cycles precisely because this string was missing.
+        """
+        try:
+            if warm.proc.stderr is None:
+                return "no stderr captured"
+            raw = warm.proc.stderr.read() or b""
+        except Exception as exc:  # noqa: BLE001
+            return f"stderr unreadable: {exc}"
+        text = raw.decode("utf-8", "replace").strip()
+        if not text:
+            return "stderr empty"
+        # Last non-blank line: the JVM's fatal message, not the banner above it.
+        return text.splitlines()[-1][:300]
+
     def _produce_rmeta(self, input: Path, rmeta_dir: Path, timeout: float) -> None:
         """Produce the rmeta document into *rmeta_dir*.
 
@@ -675,7 +697,8 @@ class RedTuskEngine:
                 "no warm handle: warmup() never ran, or its handle did not survive "
                 "snapshot/restore"
                 if warm is None
-                else f"warm JVM already exited rc={warm.proc.returncode}",
+                else f"warm JVM already exited rc={warm.proc.returncode}: "
+                f"{self._warm_exit_detail(warm)}",
             )
             _run_worker(input, rmeta_dir, timeout=timeout)
             return
