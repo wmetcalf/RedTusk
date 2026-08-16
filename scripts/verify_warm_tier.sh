@@ -31,7 +31,7 @@ printf 'hi' > "$tmp/tiny.txt"
   echo "</body></html>"; } > "$tmp/big.html"
 
 submit_and_time() {
-    local f="$1" start id st
+    local f="$1" start id st tier
     start=$(date +%s%N)
     id=$(curl -s -F "file=@$f" -F "engine=$ENGINE" "$API/v1/jobs" \
          | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("id") or d.get("job_id") or "")' 2>/dev/null)
@@ -42,17 +42,23 @@ submit_and_time() {
         case "$st" in done|failed|error) break ;; esac
         sleep 0.1
     done
-    echo "$(( ($(date +%s%N) - start) / 1000000 )) $st"
+    # Report the tier that actually SERVED the job. Without this the check silently
+    # samples whichever tier the dispatcher picked -- an aws burst job (~45s cold start)
+    # reads as a catastrophic warm-tier failure, which is exactly how a routing artifact
+    # got mistaken for a pool defect four separate times.
+    tier=$(curl -s "$API/v1/jobs/$id" \
+           | python3 -c 'import sys,json;print(json.load(sys.stdin).get("worker_tier") or "?")' 2>/dev/null)
+    echo "$(( ($(date +%s%N) - start) / 1000000 )) $st ${tier:-?}"
 }
 
 echo "api=$API engine=$ENGINE budget=${BUDGET}s"
-read -r tiny_ms tiny_st <<< "$(submit_and_time "$tmp/tiny.txt")"
-read -r big_ms  big_st  <<< "$(submit_and_time "$tmp/big.html")"
+read -r tiny_ms tiny_st tiny_tier <<< "$(submit_and_time "$tmp/tiny.txt")"
+read -r big_ms  big_st  big_tier <<< "$(submit_and_time "$tmp/big.html")"
 [ "$tiny_ms" = "SUBMIT_FAILED" ] || [ "$big_ms" = "SUBMIT_FAILED" ] && {
     echo "FAIL: could not submit jobs to $API"; exit 2; }
 
-printf '  %-22s %6s ms  (%s)\n' "3-byte input"  "$tiny_ms" "$tiny_st"
-printf '  %-22s %6s ms  (%s)\n' "200KB document" "$big_ms" "$big_st"
+printf '  %-22s %6s ms  (%s, tier=%s)\n' "3-byte input"  "$tiny_ms" "$tiny_st" "$tiny_tier"
+printf '  %-22s %6s ms  (%s, tier=%s)\n' "200KB document" "$big_ms" "$big_st" "$big_tier"
 
 budget_ms=$(python3 -c "print(int(float('$BUDGET')*1000))")
 # The 3-byte job IS the floor: whatever it costs is fixed overhead, because three bytes
@@ -65,6 +71,12 @@ echo
 printf '  fixed overhead (floor) : %s ms\n' "$tiny_ms"
 printf '  marginal cost of 200KB : %s ms\n' "$marginal"
 echo
+if [ -n "$tiny_tier" ] && [ "$tiny_tier" != "firecracker" ] && [ "$tiny_tier" != "gvisor" ] && [ "$tiny_tier" != "?" ]; then
+    echo "INCONCLUSIVE: the probe job was served by tier '$tiny_tier', not a local warm tier."
+    echo "              Its latency says nothing about warm-tier health (an aws burst job"
+    echo "              cold-starts in ~45s). Re-run, or drain the other tiers first."
+    exit 2
+fi
 if [ "$tiny_ms" -le "$budget_ms" ]; then
     echo "PASS: fixed overhead ${tiny_ms}ms is within the ${BUDGET}s budget — tier is warm."
     exit 0
