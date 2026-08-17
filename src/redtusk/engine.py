@@ -52,6 +52,17 @@ from redtusk.schema import validate_rmeta
 
 logger = logging.getLogger(__name__)
 
+
+class EngineTimeout(RuntimeError):
+    """The worker exceeded its time budget on THIS document.
+
+    Distinct from a warm-tier fault on purpose. A crashed warm JVM should fail closed to a fresh
+    cold JVM (that is what makes the warm tier safe to enable); a document that simply takes too
+    long must not be re-run there, because the cold path has the same parser and the same budget
+    and would only spend it twice.
+    """
+
+
 # Default locations of the JVM worker artifacts inside the cold-worker image.
 # All are env-overridable so a dev box / CI can point at a locally-built jar.
 _DEFAULT_JAVA_BIN = "java"
@@ -725,16 +736,36 @@ class RedTuskEngine:
             except subprocess.TimeoutExpired:
                 warm.proc.kill()
                 warm.proc.communicate()
-                raise RuntimeError(
-                    f"redtusk warm worker timed out after {timeout}s"
+                # A TIMEOUT IS NOT A WARM-TIER FAULT -- it is a slow document, and the cold path
+                # would be just as slow. Raising RuntimeError here fell into the enclosing
+                # `except Exception` below, which re-ran the SAME input on a fresh JVM with a FULL
+                # fresh `timeout`: total budget 2 x timeout, silently. On a document that sits near
+                # the limit (measured: an 8.4 MB PDF with 151 embedded entries, 84s of parse against
+                # a 120s budget) that doubling is what pushed it past the host's warm-stale cutoff
+                # (worker_timeout_s + requeue_grace_s), so instead of a clean engine_error the job
+                # was reaped as "warm worker abandoned: owning dispatcher gone" -- terminal, and
+                # holding a slot for the whole time.
+                #
+                # EngineTimeout is handled by its OWN except clause below, placed BEFORE the
+                # generic one, so it re-raises instead of being swallowed into a cold retry. A warm
+                # JVM that CRASHED (non-zero exit, or a staging error) still falls back to cold with
+                # a full budget -- the fail-closed behaviour tests/integration/test_warm_path.py pins.
+                raise EngineTimeout(
+                    f"redtusk worker timed out after {timeout}s"
                 ) from None
             if warm.proc.returncode != 0:
                 tail = (stderr or b"").decode(errors="replace")[-2000:]
                 raise RuntimeError(
                     f"redtusk-worker (warm jvm) exited {warm.proc.returncode}: {tail}"
                 )
+        except EngineTimeout:
+            # Slow document, not a broken warm tier. Do NOT re-run it on a cold JVM: same input,
+            # same parser, same budget -> same timeout, at twice the wall-clock and twice the slot
+            # occupancy. Surface it so the harness records a clean timeout.
+            raise
         except Exception as exc:  # noqa: BLE001
-            # Fail-closed to cold: a fresh JVM produces the rmeta into the same dir.
+            # Fail-closed to cold for a genuine warm FAULT (JVM crashed / staging failed): a fresh
+            # JVM produces the rmeta into the same dir. Pinned by tests/integration/test_warm_path.py.
             logger.warning("redtusk warm detonation failed (%s); cold fallback", exc)
             _run_worker(input, rmeta_dir, timeout=timeout)
             return
