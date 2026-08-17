@@ -208,3 +208,56 @@ This also explains why hoisting the parser tree (`sharedParser`) measured as a 3
 microbenchmark but neutral on the fleet: these tiers construct exactly once per job, and the
 FIRST construction regressed too. Fixing the caching in the fork recovers ~3.6s per job on every
 tier at once — worth far more than any tier-level tuning.
+
+## Measured scaling: slot count and spawn concurrency are COMPLEMENTARY (2026-08-17)
+
+Steady-state throughput, measured over the middle of each run (excluding warmup and the drain
+tail — a cumulative rate is dragged down badly by one straggler, see below):
+
+| config | steady-state |
+|---|---|
+| serial spawn, 16 warm slots | 1.67/s |
+| serial spawn, 24 warm slots | 1.81/s |
+| spawn concurrency 4, 16 slots | 1.85/s |
+| **spawn concurrency 4, 24 slots** | **2.60/s** |
+| spawn concurrency 8, 32 slots | 2.65/s (+2%, not worth the RAM) |
+
+Neither knob alone gets past ~1.85/s: more slots need a faster refill rate to stay fed, and
+serial spawning capped refill at ~1.74 slots/s. Judging the concurrency change at a fixed 16
+slots made it look worthless (1.85 vs 1.81 for simply running 24 serial slots) — it is worth
++44% once the slot count moves with it.
+
+**Do not measure with the harness's final cumulative rate.** In a 600-job run, 599 jobs completed
+at ~1.78/s and then ONE straggler hung ~90s, decaying the printed number to 1.17/s. Compute the
+rate over a mid-run window instead.
+
+### The next bottleneck is dispatcher-side, not the pool
+
+At 24 slots the spawn rate, job-start rate and completion rate are all pinned at ~1.7/s, and a
+freshly spawned slot waits **3.16s (p90 5.4s)** before it is handed work while in-guest time is
+~1.1s. Slot supply is no longer the constraint; per-job dispatcher work (claim, sample
+materialisation, staging, seal, upload) is.
+
+### The autosizer's per-slot footprint is ~8x too conservative
+
+`node_sizer` budgets `Σ ceiling_i · footprint_i ≤ budget` with
+`BLASTBOX_NODE_ENGINE_REDTUSK_RAM_MIB=2048`. Measured on a live 24-slot pool: **PSS 243 MB/slot**
+(RSS 318 MB), because every restored slot COW-shares ONE 2.0 GB snapshot `.mem` rather than
+owning 2 GB. The real model is "one 2 GB shared image + ~250 MB per slot", so the autosizer
+would under-provision a warm-snapshot FC tier by roughly 8x, and on a multi-engine node its
+water-fill would starve the other engines for RAM that is never actually used.
+
+`spawn_concurrency` itself needs no sizer change: in-flight spawns count against
+`concurrent_ceiling` (the gate inside `_gated_spawn`), so the ceiling still bounds total real
+workers. Verified under load — peak 25 firecracker processes against a ceiling of 32.
+
+### The 1-in-600 straggler is one pathological document
+
+`ransomeware-guide.pdf` (8.4 MB, 151 embedded entries) takes **111s end-to-end, 84s of it in the
+parse**, against the engine's 120s worker timeout. It sits ON the boundary, so it randomly either
+completes, trips `engine_error: timed out after 120.0 seconds`, or outlives its warm worker and is
+reaped as "warm worker abandoned: owning dispatcher gone". It failed 3 times in one afternoon and
+is the single job that ruined the 600-job run's headline number. Not a pool defect.
+
+Also note: `total_s` in the job store is dominated by QUEUE time during a burst (jobs showing
+~430s total had 1.6–13.7s of run time). Use `finished_at - started_at` to judge engine speed.
