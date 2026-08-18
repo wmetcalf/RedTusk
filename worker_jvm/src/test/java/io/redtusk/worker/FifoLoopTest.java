@@ -104,4 +104,29 @@ class FifoLoopTest {
         assertEquals(0L, FifoLoop.parseTimeoutMs("nonsense"));
         assertEquals(120_000L, FifoLoop.parseTimeoutMs("120000"));
     }
+
+    @Test
+    void goSignalWritesTheStartedMarkerBeforeReturning(@TempDir Path dir) throws Exception {
+        // The marker is the host's ONLY evidence that this JVM took the job. Without it a
+        // timeout cannot be told apart from "the JVM never got the job", and the host must
+        // guess -- either re-running a slow document on the cold path for a second full budget,
+        // or failing an infrastructure hang terminally with no fallback.
+        File scratch = dir.toFile();
+        File control = new File(scratch, FifoLoop.CONTROL_DIR);
+        control.mkdirs();
+        File started = new File(control, FifoLoop.STARTED_FILE);
+        assertFalse(started.exists(), "marker must not exist before the go-signal");
+
+        new File(control, FifoLoop.GO_FILE).createNewFile();
+        assertEquals("go", FifoLoop.waitForSignal(scratch));
+
+        assertTrue(started.exists(), "control.started must be written when the go-signal is taken");
+    }
+
+    @Test
+    void markStartedIsBestEffortAndNeverThrows() {
+        // A marker write that fails must not fail a job that is about to run fine: losing it
+        // only downgrades a later timeout to the conservative never-started answer.
+        assertDoesNotThrow(() -> FifoLoop.markStarted(new File("/proc/nonexistent-and-unwritable")));
+    }
 }

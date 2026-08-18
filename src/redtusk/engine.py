@@ -73,10 +73,12 @@ _DEFAULT_JAVA_LIBRARY_PATH = "/app"
 # JVM flags mirror the redtusk-worker image ENTRYPOINT.  They MUST match the
 # flags the AOT cache was built with (UseSerialGC / TieredStopAtLevel=1 / 800m
 # heap / native-access) or JDK 25 rejects the cache at load time.
-# Cap on the dead-JVM stderr read. Long enough that a real drain finishes, short enough that a
-# pipe held open by a surviving child cannot park a dispatcher thread: this runs on the failure
-# path, where the tier is already degraded and the cold fallback is waiting behind it.
-_WARM_EXIT_DETAIL_TIMEOUT_S = 5.0
+# The warm JVM's stdio lands here, inside its own scratch dir, so it is reaped with the slot.
+_WARM_STDOUT_LOG = "warm-stdout.log"
+_WARM_STDERR_LOG = "warm-stderr.log"
+# Only the tail is ever wanted (the fatal line), and a runaway log must not be read whole on a
+# failure path.
+_WARM_STDERR_TAIL_BYTES = 64 * 1024
 
 _DEFAULT_JVM_FLAGS: tuple[str, ...] = (
     "-XX:+UseSerialGC",
@@ -596,8 +598,21 @@ class RedTuskEngine:
                 "REDTUSK_PREWARM": os.environ.get("REDTUSK_PREWARM", "0"),
             }
             started = time.monotonic()
+            # FILES, not pipes. Nothing reads this process's output until communicate() at the
+            # FIRST JOB, so everything it emits before then -- boot, Tika class loading, and
+            # with REDTUSK_PREWARM a whole parser-tree build -- piles up in a 64 KiB kernel
+            # pipe buffer. Fill that and the JVM BLOCKS ON WRITE, never signals ready, and the
+            # tier silently degrades to cold with only "did not signal ready" to go on. The
+            # images bake REDTUSK_LOG_LEVEL=INFO, so the volume is not hypothetical. A file
+            # never blocks the writer, and it also makes the death diagnostic below a plain
+            # read instead of a race against a pipe some surviving child still holds open.
+            out_log = scratch / _WARM_STDOUT_LOG
+            err_log = scratch / _WARM_STDERR_LOG
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+                cmd,
+                stdout=out_log.open("wb"),
+                stderr=err_log.open("wb"),
+                env=env,
             )
 
             # The JVM announces control.ready (loading Tika classes from the AOT
@@ -664,43 +679,25 @@ class RedTuskEngine:
 
     @staticmethod
     def _warm_exit_detail(warm: "_WarmWorker") -> str:
-        """Last line of the dead warm JVM's stderr, for the cold-fallback log.
+        """Last line of the dead warm JVM's stderr log, for the cold-fallback log.
 
-        warmup() starts the JVM with stderr=PIPE and nobody ever reads it, so when the
-        JVM dies its reason is discarded and the tier just gets slower with no
-        explanation. Diagnosing one such exit (a go-signal timeout, rc=2) took three
-        deploy cycles precisely because this string was missing.
+        The JVM's stderr goes to a FILE in its scratch dir (see warmup), so this is a plain
+        bounded read that always terminates. It used to read a PIPE to EOF on the reasoning
+        that "the process has already exited, so this cannot block" -- which was wrong twice
+        over: EOF needs every WRITER to close, and Tika forks external scanners (ZXingReader,
+        tesseract) that inherit stderr, so one surviving child parked a dispatcher thread
+        inside a LOGGING HELPER, ahead of the very cold fallback this message annotates.
 
-        BOUNDED, on a daemon thread. An earlier version read to EOF on the reasoning that
-        "the process has already exited, so this cannot block" -- which is wrong: EOF needs
-        every WRITER to close, not just the JVM. Tika forks external scanners (ZXingReader,
-        tesseract) that inherit stderr, so one surviving child holds the write end open and
-        the read never returns. That parks a dispatcher thread inside a LOGGING HELPER,
-        ahead of the cold fallback this message is supposed to be annotating -- i.e. the
-        diagnostic for a degraded tier would itself be what takes the tier down.
+        Diagnosing one such exit (a go-signal timeout, rc=2) took three deploy cycles precisely
+        because this string was missing, so it stays -- just without the hazard.
         """
-        if warm.proc.stderr is None:
-            return "no stderr captured"
-
-        box: list[bytes] = []
-        err: list[str] = []
-
-        def _read() -> None:
-            try:
-                box.append(warm.proc.stderr.read() or b"")   # type: ignore[union-attr]
-            except Exception as exc:  # noqa: BLE001
-                err.append(str(exc))
-
-        t = threading.Thread(target=_read, daemon=True)
-        t.start()
-        t.join(_WARM_EXIT_DETAIL_TIMEOUT_S)
-        if t.is_alive():
-            # Deliberately leaked (daemon): the thread is parked in a read we cannot cancel,
-            # and the process will not wait on it. Losing the message beats losing the tier.
-            return "stderr still open (a child of the JVM holds the pipe)"
-        if err:
-            return f"stderr unreadable: {err[0]}"
-        raw = box[0] if box else b""
+        try:
+            log = Path(warm.scratch) / _WARM_STDERR_LOG
+            if not log.exists():
+                return "no stderr log"
+            raw = log.read_bytes()[-_WARM_STDERR_TAIL_BYTES:]
+        except OSError as exc:
+            return f"stderr unreadable: {exc}"
         text = raw.decode("utf-8", "replace").strip()
         if not text:
             return "stderr empty"
@@ -768,7 +765,9 @@ class RedTuskEngine:
             )
             (warm.control_dir / "control.go").touch()
             try:
-                _, stderr = warm.proc.communicate(timeout=timeout)
+                # Returns (None, None): stdout/stderr are FILES, not pipes (see warmup). It is
+                # still the right call -- it waits for exit and reaps the process.
+                warm.proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 warm.proc.kill()
                 warm.proc.communicate()
@@ -786,11 +785,28 @@ class RedTuskEngine:
                 # generic one, so it re-raises instead of being swallowed into a cold retry. A warm
                 # JVM that CRASHED (non-zero exit, or a staging error) still falls back to cold with
                 # a full budget -- the fail-closed behaviour tests/integration/test_warm_path.py pins.
+                #
+                # ...but ONLY when this JVM demonstrably TOOK the job. The two failures are
+                # indistinguishable at this call: a timeout is equally what you see when the
+                # JVM never received the go-signal at all (control dir not visible after a
+                # restore, a wedged process, a full stdio pipe). Nothing about the DOCUMENT is
+                # implicated there, so suppressing the cold fallback would fail a job
+                # terminally for a host-side fault -- trading the double-budget bug for a
+                # no-fallback one. The worker writes control.started the instant it takes the
+                # go-signal (FifoLoop.markStarted), so this is answerable rather than a guess.
+                if not (warm.control_dir / "control.started").exists():
+                    raise RuntimeError(
+                        f"warm JVM never started the job within {timeout}s (no control.started); "
+                        f"treating as an infrastructure fault, not a slow document"
+                    ) from None
                 raise EngineTimeout(
                     f"redtusk worker timed out after {timeout}s"
                 ) from None
             if warm.proc.returncode != 0:
-                tail = (stderr or b"").decode(errors="replace")[-2000:]
+                # From the LOG FILE, since communicate() no longer carries the bytes. Same
+                # reader as the cold-fallback diagnostic, so a crash message cannot rot in one
+                # place while staying correct in the other.
+                tail = self._warm_exit_detail(warm)
                 raise RuntimeError(
                     f"redtusk-worker (warm jvm) exited {warm.proc.returncode}: {tail}"
                 )

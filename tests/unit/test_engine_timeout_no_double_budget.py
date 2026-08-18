@@ -15,6 +15,10 @@ boundary document past the host's warm-stale cutoff (worker_timeout_s + requeue_
 Both directions matter, so both are pinned here:
   * TIMEOUT  -> no cold retry (the cold path has the same parser and the same budget)
   * CRASH    -> cold retry WITH a full budget (fail-closed; a broken warm tier must still serve)
+
+The TIMEOUT rule is conditional on the JVM having demonstrably taken the job (control.started);
+a timeout without it is an infrastructure fault and DOES fall back. That third case lives in
+tests/unit/test_warm_timeout_discriminator.py.
 """
 from __future__ import annotations
 
@@ -55,11 +59,21 @@ class _FakeProc:
         return self.returncode
 
 
-def _engine_with_warm(tmp_path, proc):
+def _engine_with_warm(tmp_path, proc, *, started: bool = True):
+    """*started* writes control.started, i.e. "this JVM took the job".
+
+    REFINED CONTRACT (see tests/unit/test_warm_timeout_discriminator.py): suppressing the cold
+    fallback is right only for a timeout the JVM ACTUALLY INCURRED. A timeout with no
+    control.started means it never received the go-signal -- an infrastructure fault, where
+    removing the fallback would trade the double-budget bug for a no-fallback one. This file
+    pins the slow-document case, so it writes the marker.
+    """
     eng = RedTuskEngine()
     scratch = tmp_path / "slot"
     (scratch / "in").mkdir(parents=True)
     (scratch / "control").mkdir(parents=True)
+    if started:
+        (scratch / "control" / "control.started").touch()
     eng._warm = engine_mod._WarmWorker(
         proc=proc,
         scratch=scratch,

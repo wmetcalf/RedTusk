@@ -21,6 +21,22 @@ public final class FifoLoop {
     static final String CONTROL_DIR = "control";
     static final String READY_FILE  = "control.ready";
     static final String GO_FILE     = "control.go";
+    /**
+     * Written the instant the go-signal is observed, BEFORE any parsing starts. It is the only
+     * evidence the host has that this JVM actually picked the job up, and it exists to let the
+     * host tell two failures apart that otherwise look identical at the timeout:
+     *
+     *   marker PRESENT  -- the JVM began the work and ran out of budget: a slow document. The
+     *                      cold path has the same parser and the same budget, so re-running it
+     *                      there just spends the budget twice.
+     *   marker ABSENT   -- the JVM never got the job at all (control dir not visible after a
+     *                      restore, a wedged process, a full stdio pipe). Nothing about the
+     *                      DOCUMENT is implicated, so the cold path is exactly the right answer.
+     *
+     * Additive on purpose: the go-file is left in place rather than consumed, so nothing about
+     * the existing handshake or its snapshot/restore behaviour changes.
+     */
+    static final String STARTED_FILE = "control.started";
 
     private static final long POLL_INTERVAL_MS      = 100L;
     // WAIT FOREVER by default. A worker that has not been handed a job yet is not
@@ -102,6 +118,23 @@ public final class FifoLoop {
     }
 
     /**
+     * Record that this JVM has taken the job, before it begins any work.
+     *
+     * Best-effort by design: a failure here must not fail a job that is about to run perfectly
+     * well. The cost of losing the marker is only that a subsequent TIMEOUT is treated as the
+     * conservative case (never-started -> cold fallback), which is the behaviour that predates
+     * the marker entirely.
+     */
+    static void markStarted(File scratchDir) {
+        try {
+            new File(controlDir(scratchDir), STARTED_FILE).createNewFile();
+        } catch (IOException | SecurityException e) {
+            LOG.warning("Could not write " + STARTED_FILE + " (" + e + "); a timeout on this job "
+                    + "will be treated as never-started");
+        }
+    }
+
+    /**
      * Block until the dispatcher creates control/control.go (polling at 100 ms intervals).
      *
      * Waits indefinitely by default — see {@link #JOB_SIGNAL_TIMEOUT_MS}. Returns "go" when
@@ -121,6 +154,7 @@ public final class FifoLoop {
         while (!bounded || System.nanoTime() - deadlineNanos < 0) {
             if (goFile.exists()) {
                 LOG.info("Go-signal received");
+                markStarted(scratchDir);
                 return "go";
             }
             try {

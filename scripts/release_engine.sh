@@ -90,14 +90,31 @@ if [ "$APPLY" -eq 1 ] && [ "$SKIP_IMAGE" -eq 0 ]; then
         AOT_STALE) die "AOT cache is older than the jar — it will fail to map and silently cost startup on every job" ;;
         *) die "image audit failed: $audit" ;;
     esac
-    # Prove the warm path works in the image before it reaches a rootfs: with REDTUSK_PREWARM
-    # the expensive work happens BEFORE control.ready, which is where the snapshot is taken.
-    echo "  checking the prewarm path is wired..."
-    docker run --rm -e REDTUSK_PREWARM=1 --entrypoint sh "$COLD_IMAGE" -c '
+    # Prove the AOT cache MAPS under the exact flags production uses. It is flag- and
+    # classpath-sensitive: a mismatch does not fail the job, it silently disables the cache and
+    # costs JVM startup on every single one.
+    #
+    # This does NOT exercise the prewarm path, and used to claim it did: it set
+    # REDTUSK_PREWARM=1, but that variable is only read on the `--run` path, while
+    # `--appcds-warmup` goes to runWarmup and exits immediately on a non-directory. Exercising
+    # prewarm for real needs a full job handshake (and, since the go-wait is unbounded by
+    # design, would park here forever), so it belongs in the Java tests that step 1 already
+    # runs -- MainIntegrationTest.prewarmIsSkippedUnlessExplicitlyEnabled and
+    # prewarmRunsWhenEnabledAndNeverThrows. A gate that says more than it checks is worse than
+    # no gate.
+    echo "  checking the AOT cache maps under the production JVM flags..."
+    aot_errs=$(docker run --rm --entrypoint sh "$COLD_IMAGE" -c '
         java -XX:AOTCache=/app/redtusk.aot -Djava.library.path=/app -XX:+UseSerialGC \
              -XX:TieredStopAtLevel=1 -Xms800m -Xmx800m --enable-native-access=ALL-UNNAMED \
-             -jar /app/redtusk-worker.jar --appcds-warmup /nonexistent 2>&1 | grep -ci "error.*aot" ' \
-        | grep -q '^0$' && echo "  AOT cache maps cleanly" || echo "  !! AOT cache did NOT map cleanly — check JVM flags vs the flags it was built with"
+             -jar /app/redtusk-worker.jar --appcds-warmup /nonexistent 2>&1 | grep -ci "error.*aot" ')
+    # ...and DIE on it. This used to only echo "!!", so the one thing it checked could fail and
+    # the release still walked past it.
+    if [ "${aot_errs:-1}" = "0" ]; then
+        echo "  AOT cache maps cleanly"
+    else
+        die "AOT cache did NOT map cleanly (${aot_errs} error line(s)) — the JVM flags here must
+     match the ones the cache was built with, or every job silently pays full startup"
+    fi
 else
     echo "  [dry-run] docker run --rm $COLD_IMAGE -> assert jar+AOT present, AOT newer than jar, AOT maps cleanly"
 fi

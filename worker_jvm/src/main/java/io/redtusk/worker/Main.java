@@ -80,6 +80,13 @@ public final class Main {
 
     private static void runCheckpoint(File scratchDir) throws Exception {
         KsmHelper.markHeapMergeable();
+        // BEFORE announceReady + checkpoint, which is the whole point on this tier: work done
+        // here lands INSIDE the checkpoint image, so a restored process starts with the parser
+        // tree already built. runJob() prewarms too, but the CRaC path never reached that call,
+        // so REDTUSK_PREWARM=1 on a CRaC deployment silently did nothing -- and this is the tier
+        // the knob is actually FOR (a CRaC checkpoint is ~44MB, so it does not pay the
+        // page-fault cost that made prewarm measure worse on the 2GB FC image).
+        prewarmParsers();
         IpcChannel ipc = IpcChannelFactory.forScratchDir(scratchDir);
         ipc.announceReady();
 
