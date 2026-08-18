@@ -71,21 +71,48 @@ run mvn -f "$REPO/worker_jvm/pom.xml" test \
 run python3 -m pytest "$REPO/tests" -q --ignore="$REPO/tests/http" --ignore="$REPO/tests/docker" \
     || die "python tests failed — not building an image from this"
 
-step "2. build the cold-worker image (compiles the jar AND regenerates the AOT cache from it)"
+step "2. build the cold-worker image (TWO stages — see below)"
+# The worker image is built in TWO stages and BOTH are required:
+#
+#   Dockerfile.localtika   -> redtusk-worker:<tag>       the JVM side: jar + AOT cache
+#   Dockerfile.cold-worker -> redtusk-cold-worker:<tag>  adds /opt/redtusk: the Python venv
+#                                                        with blastbox + redtusk
+#
+# This step used to run ONLY the first and tag its output as $COLD_IMAGE. The result looks
+# fine -- the jar is there, the AOT cache maps, the JVM starts and even signals control.ready
+# by hand -- but it has NO Python at all, so a rootfs built from it cannot run
+# /opt/blastbox/run_guest.py, the warm base never signals READY over vsock, and the FC tier
+# falls back to cold with "warm base did not signal READY within 120.0s". Deployed exactly
+# that on 2026-08-18 and had to roll back; the tell was the rootfs coming out 121 MB light.
+JVM_IMAGE="${ENGINE_NAME}-worker:${TAG}"
 if [ "$SKIP_IMAGE" -eq 1 ]; then
     echo "  --skip-image: reusing existing $COLD_IMAGE"
 else
-    run docker build -f "$REPO/deploy/docker/Dockerfile.localtika" -t "$COLD_IMAGE" "$REPO" \
-        || die "image build failed"
+    run docker build -f "$REPO/deploy/docker/Dockerfile.localtika" -t "$JVM_IMAGE" "$REPO" \
+        || die "stage 1 (jar + AOT) failed"
+    run docker build -f "$REPO/deploy/docker/Dockerfile.cold-worker" \
+        --build-arg "BASE_IMAGE=$JVM_IMAGE" -t "$COLD_IMAGE" "$REPO" \
+        || die "stage 2 (python venv: blastbox + redtusk) failed"
 fi
 
 step "3. audit the built image: the AOT cache must match the jar it was built from"
 if [ "$APPLY" -eq 1 ] && [ "$SKIP_IMAGE" -eq 0 ]; then
+    # The PYTHON checks are not optional padding: a stage-1-only image passes every jar/AOT
+    # check here and still cannot boot a guest, which is precisely how the two-stage build
+    # above went unnoticed. Check what the GUEST actually needs to run, not just what the JVM
+    # needs to start.
     audit=$(docker run --rm --entrypoint sh "$COLD_IMAGE" -c '
         [ -f /app/redtusk-worker.jar ] || { echo "JAR_MISSING"; exit 0; }
         [ -f /app/redtusk.aot ] || { echo "AOT_MISSING"; exit 0; }
+        [ -x /opt/redtusk/bin/python ] || { echo "PYTHON_MISSING"; exit 0; }
+        /opt/redtusk/bin/python -c "import blastbox" 2>/dev/null || { echo "BLASTBOX_MISSING"; exit 0; }
+        /opt/redtusk/bin/python -c "import redtusk"  2>/dev/null || { echo "REDTUSK_MISSING"; exit 0; }
         [ /app/redtusk.aot -ot /app/redtusk-worker.jar ] && echo "AOT_STALE" || echo "OK"' 2>/dev/null)
     case "$audit" in
+        PYTHON_MISSING|BLASTBOX_MISSING|REDTUSK_MISSING)
+            die "$audit — this is a stage-1 (Dockerfile.localtika) image, not a cold worker. A
+     rootfs built from it cannot run /opt/blastbox/run_guest.py and the warm base will never
+     signal READY. Run stage 2 (Dockerfile.cold-worker) on top of it." ;;
         OK) echo "  jar + AOT present and consistent" ;;
         AOT_STALE) die "AOT cache is older than the jar — it will fail to map and silently cost startup on every job" ;;
         *) die "image audit failed: $audit" ;;
