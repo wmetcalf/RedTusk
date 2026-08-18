@@ -58,6 +58,38 @@ These artifacts are generated *from* each other and must move together:
    the image rebuild does not reach it.
 4. Verify: `deploy_inventory.sh` → all containers in the stack on one image, one blastbox version.
 
+#### Shipping a blastbox that is not on PyPI yet
+
+`Dockerfile.host` pins a released blastbox. To run a host-side fix ahead of a release, do NOT
+build from a local source copy with the same version — everything then reports the release
+number for code that is not the release, and step 4 above (the whole point of the inventory)
+goes blind. Instead:
+
+```bash
+# in the blastbox repo — stamps a PEP 440 local version, 0.1.26+g<sha>[.dirty]
+WHEEL=$(deploy/build_dev_wheel.sh | tail -1)
+scp "$WHEEL" <host>:<redtusk>/deploy/docker/wheels/
+# on the host
+docker build -f deploy/docker/Dockerfile.host \
+    --build-arg BLASTBOX_WHEEL="$(basename "$WHEEL")" -t redtusk:<tag> .
+```
+
+The wheel installs over the pin with `--force-reinstall --no-deps`, and `pip show blastbox`
+(which is what `deploy_inventory.sh` reads) then reports `0.1.26+g<sha>` — impossible to
+confuse with PyPI. Leave `BLASTBOX_WHEEL` unset for a normal release build.
+
+### 1b. Reading where the slot cycle goes
+
+`scripts/slot_cycle_profile.sh` reports the per-phase breakdown from the dispatcher's
+`warm_phases` log line (one per warm job, host-side, keyed by `job_id`). `guest` is the only
+phase that is extraction; everything else is the cost of running it in a disposable sandbox.
+If the tier serves jobs but the script reports no `warm_phases` lines, the dispatcher image
+predates blastbox `2d88c70` — see §1.
+
+Do not resurrect per-job durations paired from the GUEST logs: those lines carry no correlation
+id, so under concurrency the k-th start and the k-th completion are different jobs. That method
+reported 0.67s and 5.48s for the same tier minutes apart.
+
 ### 2. RedTusk engine bump — python only (`src/redtusk/`)
 
 1. Rebuild the container image (cold/container tiers).

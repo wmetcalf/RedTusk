@@ -1,0 +1,4 @@
+# Pre-release blastbox wheels staged for a BLASTBOX_WHEEL build. Build artifacts, not source:
+# they are produced by blastbox deploy/build_dev_wheel.sh and are stamped with the commit they
+# came from, so committing one here would be a second, staler copy of that repo's history.
+*.whl
