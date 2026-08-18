@@ -63,6 +63,26 @@ services:
       - apparmor=unconfined
     environment:
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
+      - BLASTBOX_SCRATCH_MAX_AGE_S=${BLASTBOX_SCRATCH_MAX_AGE_S:-21600}
+      # Shared blob store. Samples land here so ANY dispatcher on ANY node can materialise
+      # them, and sealed results land here so the API can serve them. Declared in compose, not
+      # hand-set on the container, because a hand-set value dies silently on the next
+      # `compose up` recreate.
+      #
+      # This must be on EVERY dispatcher, not just some. When the gvisor and cold dispatchers
+      # were missing it while the api read from MinIO, they sealed results to a LocalBlobStore
+      # nobody else could see: their jobs went DONE and their results 404'd from the API --
+      # measured at 12/12 unfetchable across both tiers, ~50% of this fleet's completed work,
+      # with a green status the whole time.
+      - BLASTBOX_BLOB_URL=${BLASTBOX_BLOB_URL:-}
+      # The minio ALIAS, not a host IP: this service sits on the internal backend network
+      # and deliberately has no egress route.
+      - BLASTBOX_BLOB_ENDPOINT_URL=http://minio:9000
+      # Dispatcher-wide budget for concurrent result-artifact uploads (put_output costs one
+      # round-trip PER artifact). See docs/DEPLOYMENT.md; =1 restores the serial path.
+      - BLASTBOX_BLOB_UPLOAD_CONCURRENCY=${BLASTBOX_BLOB_UPLOAD_CONCURRENCY:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
       - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
       # Per-engine allowlist — MUST mirror the cold dispatcher. Without it this warm tier
