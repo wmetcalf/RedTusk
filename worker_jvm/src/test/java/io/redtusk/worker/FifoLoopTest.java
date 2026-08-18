@@ -81,4 +81,27 @@ class FifoLoopTest {
         assertEquals(5000L, FifoLoop.parseTimeoutMs("5000"));
         assertEquals(5000L, FifoLoop.parseTimeoutMs("  5000  "));
     }
+
+    @Test
+    void hugeTimeoutIsClampedInsteadOfOverflowingIntoThePast() {
+        // System.nanoTime() + ms * 1_000_000L wraps negative past ~9.2e12 ms, putting the
+        // deadline BEHIND now -- so a value an operator writes to mean "effectively forever"
+        // would fire instantly and self-terminate the slot, which is the failure this class was
+        // changed to remove. Clamp instead of honouring it literally.
+        assertEquals(FifoLoop.MAX_TIMEOUT_MS, FifoLoop.parseTimeoutMs("99999999999999"));
+        assertEquals(FifoLoop.MAX_TIMEOUT_MS, FifoLoop.parseTimeoutMs(Long.toString(Long.MAX_VALUE)));
+
+        // ...and the clamped value must actually produce a FUTURE deadline.
+        long deadline = System.nanoTime() + FifoLoop.parseTimeoutMs("99999999999999") * 1_000_000L;
+        assertTrue(System.nanoTime() - deadline < 0,
+                "clamped deadline must still be in the future");
+    }
+
+    @Test
+    void ordinaryValuesAreUnaffectedByTheClamp() {
+        assertEquals(0L, FifoLoop.parseTimeoutMs(null));
+        assertEquals(0L, FifoLoop.parseTimeoutMs(""));
+        assertEquals(0L, FifoLoop.parseTimeoutMs("nonsense"));
+        assertEquals(120_000L, FifoLoop.parseTimeoutMs("120000"));
+    }
 }

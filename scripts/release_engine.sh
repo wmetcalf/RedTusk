@@ -116,6 +116,31 @@ printf '    %q ' "${DEPLOY_CMD[@]}"; echo
 
 step "POST-GATE: prove the tier is actually warm, and that nothing drifted"
 if [ "$APPLY" -eq 1 ]; then
+    # PROVE the deploy happened before judging it. Step 4 above deliberately does not run
+    # (it recreates production containers), so an operator who runs --apply and stops there
+    # would otherwise get verify+inventory run against the STILL-OLD deployment and a
+    # "RELEASE OK: <image> is live" for a build that never reached the fleet -- the worst
+    # possible output, because it is a green that certifies the wrong thing.
+    #
+    # The engine image the dispatchers actually launch is in their BLASTBOX_ENGINES env, so
+    # this is checkable rather than assertable. No flag to forget, no operator to trust.
+    read -r -a _HOSTS <<< "${BLASTBOX_FLEET_HOSTS:-172.18.101.15}"
+    _live=""
+    for _h in "${_HOSTS[@]}"; do
+        _live+=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$_h" \
+            'for c in $(docker ps --format "{{.Names}}" | grep -E -- "-bb-dispatcher"); do
+                 docker exec "$c" printenv BLASTBOX_ENGINES 2>/dev/null; done' 2>/dev/null)
+    done
+    if [ -z "$_live" ]; then
+        die "could not read BLASTBOX_ENGINES from any dispatcher on ${_HOSTS[*]} — cannot prove
+     what is deployed, so refusing to certify this release. Check ssh/BLASTBOX_FLEET_HOSTS."
+    fi
+    if ! grep -qF -- "$COLD_IMAGE" <<< "$_live"; then
+        die "STEP 4 WAS NOT RUN: the dispatchers are still launching [$(tr '\n' ' ' <<< "$_live")],
+     not $COLD_IMAGE. Run the deploy command printed above, then re-run this script with
+     --apply --skip-image to execute the post-gate against the new deployment."
+    fi
+    echo "  confirmed: dispatchers launch $COLD_IMAGE"
     "$REPO/scripts/verify_warm_tier.sh" || die "warm-tier check FAILED — the deploy did not achieve a warm tier"
     "$REPO/scripts/deploy_inventory.sh" || die "drift detected after deploy"
     echo; echo "RELEASE OK: $COLD_IMAGE is live and the tier is warm."

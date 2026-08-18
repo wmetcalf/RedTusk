@@ -85,9 +85,24 @@ deploy/**/env[-_.~]*
 # Scoped to ENV templates specifically. A bare `!*.example` is repo-wide and would
 # re-include fixture/log/bench files that earlier rules deliberately ignore.
 !*.env*.example
+# ...and the same for a template with NO leading dot, which `deploy/**/env[-_.~]*` above
+# catches (`env.example`, `env.sample`). The negation demands a literal `.env` before
+# `.example`, so `deploy/docker/env.example` was ignored and silently uncommittable --
+# exactly the shape the comment block above says these rules exist to protect.
+# Verified with `git check-ignore`; both spellings are now committable.
+!**/env*.example
+!**/env*.sample
 
 # corpus-derived bench output — never commit
 deploy/firecracker/bench_*.json
 
 # stray tika NER model artifacts (maven dumps these in the wrong place)
 /src/test/
+
+# Local working checkouts of upstream Tika, used to build/compare the vendored parser jar.
+# Never tracked, ~5k files / 4.4M lines each -- a stray `git add -A` swept .tika-src into a
+# commit that was meant to touch six files, which is exactly how a scratch tree ends up in
+# somebody's history. Ignore them so the mistake is not available.
+.tika-src/
+.tika-baseline/
+.tika-fixed/

@@ -108,7 +108,11 @@ services:
       # Ingress is single-worker by default and its blob I/O is synchronous, so every
       # submit/collect serialises behind one event loop -- the 3.4 jobs/s ceiling a corpus run
       # hit. Horizontal uvicorn workers are the scale path.
-      - BLASTBOX_SERVE_WORKERS=${BLASTBOX_SERVE_WORKERS:-}
+      # `:-1`, not `:-`. Compose renders the list form `VAR=${VAR:-}` as the empty STRING,
+      # not as an absent variable, so a bare int() on the reader side sees "" and the
+      # code's own default never applies. (The reader is defensive now too; this keeps the
+      # intended value visible here instead of hiding it in a fallback.)
+      - BLASTBOX_SERVE_WORKERS=${BLASTBOX_SERVE_WORKERS:-1}
       - BLASTBOX_DB_POOL_MAX=${BLASTBOX_DB_POOL_MAX:-}
       # Shared blob store. Samples land here so ANY dispatcher on ANY node can materialise
       # them, and sealed results land here so the API can serve them. Declared in compose, not

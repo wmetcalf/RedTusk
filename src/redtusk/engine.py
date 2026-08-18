@@ -73,6 +73,11 @@ _DEFAULT_JAVA_LIBRARY_PATH = "/app"
 # JVM flags mirror the redtusk-worker image ENTRYPOINT.  They MUST match the
 # flags the AOT cache was built with (UseSerialGC / TieredStopAtLevel=1 / 800m
 # heap / native-access) or JDK 25 rejects the cache at load time.
+# Cap on the dead-JVM stderr read. Long enough that a real drain finishes, short enough that a
+# pipe held open by a surviving child cannot park a dispatcher thread: this runs on the failure
+# path, where the tier is already degraded and the cold fallback is waiting behind it.
+_WARM_EXIT_DETAIL_TIMEOUT_S = 5.0
+
 _DEFAULT_JVM_FLAGS: tuple[str, ...] = (
     "-XX:+UseSerialGC",
     "-XX:TieredStopAtLevel=1",
@@ -455,6 +460,14 @@ def _run_worker(
         env = {
             **os.environ,
             "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+            # PINNED off. REDTUSK_PREWARM is the WARM JVM's knob -- warmup() sets it on the
+            # long-lived process, where building the parser tree once before the snapshot pays
+            # for itself. This process is one-shot: it would prewarm and then parse exactly
+            # once, so the ~1.2s is pure added latency on every cold job AND on every
+            # warm->cold fallback. Inheriting it also breaks the promise Main.prewarmParsers'
+            # javadoc makes ("set only by the Python engine's warmup()"), which is not
+            # something the operator setting it on a container would ever expect.
+            "REDTUSK_PREWARM": "0",
         }
 
         logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
@@ -655,16 +668,39 @@ class RedTuskEngine:
 
         warmup() starts the JVM with stderr=PIPE and nobody ever reads it, so when the
         JVM dies its reason is discarded and the tier just gets slower with no
-        explanation. The process has already exited here, so the pipe is at EOF and this
-        cannot block. Diagnosing one such exit (a go-signal timeout, rc=2) took three
+        explanation. Diagnosing one such exit (a go-signal timeout, rc=2) took three
         deploy cycles precisely because this string was missing.
+
+        BOUNDED, on a daemon thread. An earlier version read to EOF on the reasoning that
+        "the process has already exited, so this cannot block" -- which is wrong: EOF needs
+        every WRITER to close, not just the JVM. Tika forks external scanners (ZXingReader,
+        tesseract) that inherit stderr, so one surviving child holds the write end open and
+        the read never returns. That parks a dispatcher thread inside a LOGGING HELPER,
+        ahead of the cold fallback this message is supposed to be annotating -- i.e. the
+        diagnostic for a degraded tier would itself be what takes the tier down.
         """
-        try:
-            if warm.proc.stderr is None:
-                return "no stderr captured"
-            raw = warm.proc.stderr.read() or b""
-        except Exception as exc:  # noqa: BLE001
-            return f"stderr unreadable: {exc}"
+        if warm.proc.stderr is None:
+            return "no stderr captured"
+
+        box: list[bytes] = []
+        err: list[str] = []
+
+        def _read() -> None:
+            try:
+                box.append(warm.proc.stderr.read() or b"")   # type: ignore[union-attr]
+            except Exception as exc:  # noqa: BLE001
+                err.append(str(exc))
+
+        t = threading.Thread(target=_read, daemon=True)
+        t.start()
+        t.join(_WARM_EXIT_DETAIL_TIMEOUT_S)
+        if t.is_alive():
+            # Deliberately leaked (daemon): the thread is parked in a read we cannot cancel,
+            # and the process will not wait on it. Losing the message beats losing the tier.
+            return "stderr still open (a child of the JVM holds the pipe)"
+        if err:
+            return f"stderr unreadable: {err[0]}"
+        raw = box[0] if box else b""
         text = raw.decode("utf-8", "replace").strip()
         if not text:
             return "stderr empty"

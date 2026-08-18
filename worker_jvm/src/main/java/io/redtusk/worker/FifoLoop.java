@@ -55,10 +55,25 @@ public final class FifoLoop {
      *     value every unset/blank/garbage/non-positive input must map to. A parse slip that
      *     silently produced a finite bound would reintroduce the self-terminating warm slot.
      */
+    /**
+     * Largest bound that can still be converted to nanoseconds without overflowing a long.
+     * Beyond this, {@code System.nanoTime() + ms * 1_000_000L} wraps NEGATIVE and the deadline
+     * lands in the past, so the wait fires IMMEDIATELY -- an operator writing a huge number to
+     * mean "effectively forever" would get the exact self-terminating slot this class exists to
+     * prevent. ~292 years; anything larger is clamped, not honoured literally.
+     */
+    static final long MAX_TIMEOUT_MS = Long.MAX_VALUE / 1_000_000L;
+
     static long parseTimeoutMs(String raw) {
         if (raw != null && !raw.isBlank()) {
             try {
-                return Math.max(0L, Long.parseLong(raw.trim()));
+                long ms = Math.max(0L, Long.parseLong(raw.trim()));
+                if (ms > MAX_TIMEOUT_MS) {
+                    LOG.warning("REDTUSK_JOB_SIGNAL_TIMEOUT_MS=" + ms + " overflows the nanosecond"
+                            + " deadline; clamping to " + MAX_TIMEOUT_MS + " ms");
+                    return MAX_TIMEOUT_MS;
+                }
+                return ms;
             } catch (NumberFormatException e) {
                 LOG.warning("Bad REDTUSK_JOB_SIGNAL_TIMEOUT_MS=" + raw + "; waiting indefinitely");
             }
