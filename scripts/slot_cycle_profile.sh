@@ -91,7 +91,7 @@ if not phase_rows:
 
 # ORDER of the breakdown is the order of the slot cycle, not sorted by size: reading it top to
 # bottom is reading one job's life, and that is what makes a fat phase obvious in context.
-ORDER = ["slot_claim", "stage", "go", "guest", "rdump", "validate",
+ORDER = ["slot_claim", "fetch", "stage", "go", "guest", "rdump", "validate",
          "seal", "upload", "commit", "release", "purge"]
 ok = [r for outcome, r in phase_rows if outcome == "done"]
 print()
@@ -102,19 +102,23 @@ if not ok:
     raise SystemExit(0)
 
 tot = [float(r["total"]) for r in ok if "total" in r]
-tot_p50 = pctl(tot, 0.50)
+tot_p50, tot_sum = pctl(tot, 0.50), sum(tot)
+# SHARE is sum-of-phase over sum-of-total, i.e. "what fraction of all job-seconds went here" --
+# the question a capacity decision actually asks, and the only version that sums to 100%. An
+# earlier draft used phase-p50/total-p50: independent percentiles of different distributions,
+# which summed to 59% and quietly understated every long-tailed phase.
 for name in ORDER:
     xs = [float(r[name]) for r in ok if name in r]
     if not xs:
         continue
-    p50, p95 = pctl(xs, 0.50), pctl(xs, 0.95)
-    share = (p50 / tot_p50 * 100) if tot_p50 else 0
-    bar = "#" * int(round(share / 4))
-    print(f"    {name:<11} p50 {p50:7.3f}s  p95 {p95:7.3f}s  {share:5.1f}%  {bar}")
-print(f"    {'TOTAL':<11} p50 {tot_p50:7.3f}s  p95 {pctl(tot, 0.95):7.3f}s")
+    share = (sum(xs) / tot_sum * 100) if tot_sum else 0
+    print(f"    {name:<11} p50 {pctl(xs, 0.50):7.3f}s  p95 {pctl(xs, 0.95):7.3f}s"
+          f"  {share:5.1f}%  {'#' * int(round(share / 2))}")
+print(f"    {'TOTAL':<11} p50 {tot_p50:7.3f}s  p95 {pctl(tot, 0.95):7.3f}s  100.0%")
 print()
-print("  `guest` is the ONLY phase that is extraction. If the others outweigh it, the engine is")
-print("  the wrong thing to tune -- the sandbox around it is the cost.")
+print("  `guest` is the ONLY phase that is extraction. `fetch` + `upload` are blob-store I/O")
+print("  (MinIO/S3), which is a STORAGE problem, not a dispatcher or engine one. If those two")
+print("  outweigh `guest`, tuning the engine cannot move throughput.")
 
 # The dispatcher line covers ONE THREAD's view of a job. It does NOT include the time a job
 # spent QUEUED before a thread claimed it, so TOTAL p50 is legitimately smaller than the

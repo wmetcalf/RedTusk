@@ -90,6 +90,17 @@ Do not resurrect per-job durations paired from the GUEST logs: those lines carry
 id, so under concurrency the k-th start and the k-th completion are different jobs. That method
 reported 0.67s and 5.48s for the same tier minutes apart.
 
+**Result-upload fan-out.** `BLASTBOX_BLOB_UPLOAD_CONCURRENCY` (default 16) is the dispatcher-wide
+budget for concurrent `put_object` calls, because `put_output` costs one round-trip PER ARTIFACT
+and a result tree is often hundreds of them. It is a **per-dispatcher** budget, not per-job: one
+`S3BlobStore` — one connection pool — is shared by every concurrent job, so a per-job fan-out
+would put ~`slots x budget` threads on a pool sized for `budget` alone. `=1` restores the
+original fully serial path and is the escape hatch for an A/B.
+
+The knob must be listed in each dispatcher's compose `environment:` block to reach the container;
+setting it only in `.env` does nothing, and setting it with `docker exec` does not survive a
+`compose up` recreate.
+
 ### 2. RedTusk engine bump — python only (`src/redtusk/`)
 
 1. Rebuild the container image (cold/container tiers).
