@@ -11,7 +11,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.ServiceLoader;
 import java.util.logging.*;
+import org.apache.tika.detect.EncodingDetector;
+import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * Entry point for the RedTusk worker JVM.
@@ -169,6 +174,58 @@ public final class Main {
     }
 
     /**
+     * Byte probe for {@link #prewarmEncodingDetectors}. Deliberately NOT plain ASCII: mixed
+     * Windows-1252 / UTF-8 high bytes with no BOM and no declared charset, so the cheap
+     * detectors cannot answer and the statistical ones must actually run.
+     */
+    private static final byte[] ENCODING_PROBE = buildEncodingProbe();
+
+    private static byte[] buildEncodingProbe() {
+        StringBuilder sb = new StringBuilder();
+        // Text long enough that a statistical detector does not bail on "too little data",
+        // and mixed enough that it cannot shortcut.
+        for (int i = 0; i < 40; i++) {
+            sb.append("caf\u00e9 na\u00efve \u00fcber Stra\u00dfe \u0440\u0443\u0441\u0441\u043a\u0438\u0439 ")
+              .append("\u65e5\u672c\u8a9e mojibake \u00c3\u00a9\u00c3\u00a8\u00c3\u00aa test line ")
+              .append(i).append('\n');
+        }
+        return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Force EVERY registered EncodingDetector to load its models before READY.
+     *
+     * The prewarm document above is pure ASCII with a declared charset, so BOM/metadata/HTML
+     * detectors answer first and the STATISTICAL ones never engage -- which means their models
+     * are still unloaded when the snapshot is taken, and a warm JVM (which serves exactly ONE
+     * job) pays that load on the job instead. Measured on Tika 4.x with the ML detectors
+     * registered: 7.8s of model loading, of which prewarm captured only ~5.4s, leaving 4.4s on
+     * every single job -- a 5.7x warm-tier regression that looked like an engine bug and was
+     * really an un-prewarmed model.
+     *
+     * Iterates the SERVICE LOADER rather than naming detectors, deliberately: the registered
+     * set is upstream's to change (it went from Html/Icu4j/Universal to
+     * BOM/MetadataCharset/Html/Mojibuster/JunkFilter between two builds of this very engine),
+     * and a prewarm that names them by hand goes stale silently the next time that happens.
+     */
+    static void prewarmEncodingDetectors() {
+        int warmed = 0;
+        long t0 = System.currentTimeMillis();
+        for (EncodingDetector det : ServiceLoader.load(EncodingDetector.class)) {
+            try (TikaInputStream tis = TikaInputStream.get(ENCODING_PROBE)) {
+                det.detect(tis, new Metadata(), new ParseContext());
+                warmed++;
+            } catch (Throwable t) {
+                // Same fail-soft contract as the parse above: warming is an optimisation, and a
+                // detector that cannot load must not take the slot down with it.
+                LOG.warning("Prewarm of " + det.getClass().getSimpleName() + " failed: " + t);
+            }
+        }
+        LOG.info("Prewarmed " + warmed + " encoding detector(s) in "
+                 + (System.currentTimeMillis() - t0) + "ms");
+    }
+
+    /**
      * Package-private and returns whether a prewarm parse was ATTEMPTED, so the gate is
      * testable — System.getenv() cannot be set in-process, and the property that matters
      * (the cold path never pays this) is exactly the gate.
@@ -186,6 +243,7 @@ public final class Main {
             var runner = new ParserRunner(limits, true, false, "eng", 3,
                 2000, true, "/usr/local/bin/ZXingReader", "tesseract");
             runner.parse(tmp.toFile(), "prewarm.html", "0".repeat(64));
+            prewarmEncodingDetectors();
             LOG.info("Prewarm parse complete in " + (System.currentTimeMillis() - t0) + "ms");
         } catch (Throwable t) {
             // Throwable, not Exception: a warmup problem (including a linkage error from

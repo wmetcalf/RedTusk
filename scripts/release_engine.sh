@@ -108,29 +108,27 @@ if [ "$APPLY" -eq 1 ] && [ "$SKIP_IMAGE" -eq 0 ]; then
         /opt/redtusk/bin/python -c "import blastbox" 2>/dev/null || { echo "BLASTBOX_MISSING"; exit 0; }
         /opt/redtusk/bin/python -c "import redtusk"  2>/dev/null || { echo "REDTUSK_MISSING"; exit 0; }
         [ /app/redtusk.aot -ot /app/redtusk-worker.jar ] && echo "AOT_STALE" || echo "OK"' 2>/dev/null)
-    # WHICH TIKA went in. This is not a nicety: the fat jar's encoding-detector set is what
-    # made a rebuilt engine 5.7x slower than the one it replaced (firecracker floor 977ms ->
-    # 5598ms, measured 2026-08-18). Production registers three NON-ML detectors; a jar built
-    # from a context that also registers MojibusterEncodingDetector + JunkFilterEncodingDetector
-    # reloads ML models during parser construction, which is the same 3.2x regression this
-    # engine was bisected against months earlier.
+    # WHICH TIKA went in, and WHAT IT COSTS. Reported, not vetoed: the detector set is
+    # upstream's to choose (it moved from Html/Icu4j/Universal to
+    # BOM/MetadataCharset/Html/Mojibuster/JunkFilter), the ML detectors are WANTED, and an
+    # earlier version of this gate rejected them outright -- which would have blocked the
+    # engine we actually want to run.
     #
-    # It is silent, too. Dockerfile.localtika pins TIKA_FORK_SHA and builds the fork in a
-    # `tika-build` stage whose output NOTHING EVER COPIES -- the jar is assembled from
-    # `COPY ${TIKA_CTX_DIR}`, an untracked directory in the build context. So the SHA pin does
-    # not determine what ships; the contents of somebody's working tree does, and two machines
-    # at the same git commit can produce different engines. Until that is fixed, gate on the
-    # artifact instead of trusting the recipe.
-    # Read the jar with the image's own python (zipfile): there is no `unzip` in the JRE
-    # runtime image, and an unzip that is not there exits non-zero into an EMPTY string --
-    # which a naive `case` reads as "no ML detectors, ship it". A check whose failure mode is
-    # a PASS is worse than no check, so an unreadable list is fatal here, not a shrug.
+    # The number is what matters. Measured 2026-08-18 on a 3-byte input, cold JVM:
+    #
+    #     production Tika (no ML)      ready  284ms   job 1689ms
+    #     current Tika  (ML, cached)   ready 5760ms   job 4264ms
+    #
+    # The ML models load once per JVM (the caching fix in the fork is real and works), but a
+    # WARM JVM serves exactly ONE job, so "once per JVM" is "once per job" unless prewarm puts
+    # it inside the snapshot. That is why this prints the fixed cost rather than trusting the
+    # component list: the same detector set can be fine or catastrophic depending on whether
+    # the snapshot captured its initialisation.
     dets=$(docker run --rm --entrypoint /opt/redtusk/bin/python "$COLD_IMAGE" -c '
 import zipfile, sys
 svc = "META-INF/services/org.apache.tika.detect.EncodingDetector"
 try:
-    z = zipfile.ZipFile("/app/redtusk-worker.jar")
-    body = z.read(svc).decode("utf-8", "replace")
+    body = zipfile.ZipFile("/app/redtusk-worker.jar").read(svc).decode("utf-8", "replace")
 except Exception as exc:
     print("UNREADABLE:" + str(exc)); sys.exit(0)
 names = [l.strip().rsplit(".", 1)[-1] for l in body.splitlines()
@@ -141,10 +139,12 @@ print(",".join(sorted(names)) or "EMPTY")' 2>/dev/null)
         ""|UNREADABLE*|EMPTY)
             die "could not read the jar's encoding-detector list (${dets:-no output}) — refusing
      to certify a build whose Tika content is unknown" ;;
+    esac
+    case "$dets" in
         *Mojibuster*|*JunkFilter*)
-            die "the jar registers ML encoding detectors (${dets}). They reload their models
-     during parser construction -- the measured cost is a ~5.7x slower warm tier. Build against
-     the Tika context production uses, or unregister them, before shipping this." ;;
+            echo "  note: ML encoding detectors present — their init MUST land inside the warm"
+            echo "        snapshot, or every job pays it. The post-gate warm-tier check is what"
+            echo "        actually proves that; do not skip it." ;;
     esac
 
     case "$audit" in
