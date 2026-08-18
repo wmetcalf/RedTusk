@@ -146,7 +146,13 @@ services:
       # tax to remove — so this is gVisor-tier-only). JAVA_TOOL_OPTIONS appends the one flag,
       # keeping the AOT-cache-matched default flags intact. Requires blastbox>=0.1.8 (the
       # EXTRA_ENV channel was a no-op in <=0.1.7 — same phantom-var class as WARM_ONLY).
-      - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2"]
+      # BLASTBOX_TIMEOUT is the GUEST's per-job budget, and it must be set per warm surface --
+      # the FC guest reads it from its baked rootfs env, and this tier from here. Raising it on
+      # the FC side alone (2026-08-17) left this tier on the inherited 120s default, and a
+      # corpus re-run then failed 7 samples here with "timed out after 120.0 seconds" that the
+      # FC tier completed. Ordering that must hold: guest 240 < host worker_timeout_s 300 <
+      # warm-stale cutoff 360. Raising it also widens the window a slow sample can hold a slot.
+      - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2","BLASTBOX_TIMEOUT=240"]
     volumes:
       # job_root (host-consistent, same path as the cold dispatcher) — read the staged input.
       - "${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs:${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs"
