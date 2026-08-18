@@ -22,6 +22,14 @@ import org.apache.tika.parser.html.JSoupParser;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
 import org.apache.tika.parser.pdf.PDFParserConfig;
+import org.apache.tika.parser.pdf.image.ImageGraphicsEngine;
+import org.apache.tika.parser.pdf.image.ImageGraphicsEngineFactory;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.pdfbox.cos.COSStream;
+import org.apache.pdfbox.pdmodel.PDPage;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.tika.sax.AbstractRecursiveParserWrapperHandler;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.RecursiveParserWrapperHandler;
@@ -194,6 +202,16 @@ public final class ParserRunner {
         PDFParserConfig pdfCfg = new PDFParserConfig();
         pdfCfg.setExtractMarkedContent(true);
         pdfCfg.setExtractUniqueInlineImagesOnly(false);
+        // ...BUT BOUNDED. Extracting every image instance is forensically right and, on a
+        // current Tika, genuinely expensive: measured on an 8.4 MB PDF, the engine finds 46
+        // DISTINCT images (dedup would save 6%, so this is not duplicate work) and spends ~1s
+        // per image decoding and perceptual-hashing them. That took one document from 2.6s to
+        // 61.9s -- a 20x throughput loss on the tier -- and it is unbounded: a PDF with a
+        // thousand images costs a thousand seconds and blows through the guest budget.
+        //
+        // An older Tika hid this by finding almost none of them (2 hashed images vs 200 hash
+        // fields on the same file), so the cap was never needed before.
+        pdfCfg.setImageGraphicsEngineFactory(new BoundedImageGraphicsEngineFactory(maxInlineImages()));
         // Disable PDFParser-side per-page OCR. The default AUTO strategy
         // renders every PDF page through PDFBox into an image, then feeds
         // each rendered page to Tesseract — and bombs on a long tail of
@@ -960,6 +978,119 @@ public final class ParserRunner {
                 sharedParser = built;
             }
             return sharedParser;
+        }
+    }
+
+    /**
+     * Per-document ceiling on PDF inline images that are decoded + hashed.
+     *
+     * Env, not a job limit, deliberately: it needs no change to the host/guest job JSON
+     * contract, so it can be tuned on a running fleet the same way REDTUSK_PREWARM is. 0 or
+     * negative means unbounded (the pre-cap behaviour), for an operator who would rather have
+     * the complete image inventory than a bounded parse.
+     */
+    static int maxInlineImages() {
+        return parseMaxInlineImages(System.getenv("REDTUSK_MAX_INLINE_IMAGES"));
+    }
+
+    /** Package-private for testing: System.getenv() cannot be set in-process. */
+    static int parseMaxInlineImages(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return DEFAULT_MAX_INLINE_IMAGES;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            LOG.warning("Bad REDTUSK_MAX_INLINE_IMAGES=" + raw + "; using "
+                        + DEFAULT_MAX_INLINE_IMAGES);
+            return DEFAULT_MAX_INLINE_IMAGES;
+        }
+    }
+
+    /**
+     * Chosen from a measured sweep on the 8.4 MB / 46-image PDF, not a guess:
+     *
+     *     cap=0 (unbounded)  60.6s   200 hash fields
+     *     cap=32             54.9s   128
+     *     cap=4              27.9s    16
+     *     cap=1              26.0s     4
+     *
+     * ~0.9s per image, and the curve flattens hard below ~4: going from 32 down to 4 buys 27s,
+     * going from 4 to 1 buys 2s. 8 sits just past the knee -- it still captures 4x the images
+     * the previous Tika found (2), while keeping the image budget near the floor.
+     *
+     * NOTE the floor itself is 26s on this document against production's 3.8s, so this cap is
+     * NOT the whole regression -- roughly 16s of non-image cost in the newer Tika is still
+     * unaccounted for. Do not read a fast tier after this change as "the Tika drift is fixed".
+     */
+    static final int DEFAULT_MAX_INLINE_IMAGES = 8;
+
+    /**
+     * Stops handing out image engines once the document's image budget is spent.
+     *
+     * The counter is Tika's own per-document {@code imageCounter}, so the budget is per
+     * DOCUMENT rather than per page -- a thousand-image PDF cannot spend it a page at a time.
+     */
+    static final class BoundedImageGraphicsEngineFactory extends ImageGraphicsEngineFactory {
+        private final int cap;
+
+        BoundedImageGraphicsEngineFactory(int cap) {
+            this.cap = cap;
+        }
+
+        @Override
+        public ImageGraphicsEngine newEngine(PDPage page, int pageNumber,
+                EmbeddedDocumentExtractor extractor, PDFParserConfig cfg,
+                Map<COSStream, Integer> processedInlineImages, AtomicInteger imageCounter,
+                AtomicBoolean thrownOOM, XHTMLContentHandler xhtml, Metadata parentMetadata,
+                ParseContext parseContext) {
+            if (cap <= 0) {             // explicitly unbounded
+                return super.newEngine(page, pageNumber, extractor, cfg, processedInlineImages,
+                        imageCounter, thrownOOM, xhtml, parentMetadata, parseContext);
+            }
+            return new BoundedImageGraphicsEngine(page, pageNumber, extractor, cfg,
+                    processedInlineImages, imageCounter, thrownOOM, xhtml, parentMetadata,
+                    parseContext, cap);
+        }
+    }
+
+    /** Skips its page's images once the document-wide budget is spent. */
+    static final class BoundedImageGraphicsEngine extends ImageGraphicsEngine {
+        private final AtomicInteger counter;
+        private final int cap;
+
+        BoundedImageGraphicsEngine(PDPage page, int pageNumber,
+                EmbeddedDocumentExtractor extractor, PDFParserConfig cfg,
+                Map<COSStream, Integer> processedInlineImages, AtomicInteger imageCounter,
+                AtomicBoolean thrownOOM, XHTMLContentHandler xhtml, Metadata parentMetadata,
+                ParseContext parseContext, int cap) {
+            super(page, pageNumber, extractor, cfg, processedInlineImages, imageCounter,
+                  thrownOOM, xhtml, parentMetadata, parseContext);
+            this.counter = imageCounter;
+            this.cap = cap;
+        }
+
+        @Override
+        public void run() throws java.io.IOException {
+            if (counter.get() >= cap) {
+                // Cheap short-circuit: the budget was already spent by earlier pages, so skip
+                // this page's content stream entirely.
+                return;
+            }
+            super.run();
+        }
+
+        @Override
+        public void drawImage(org.apache.pdfbox.pdmodel.graphics.image.PDImage pdImage)
+                throws java.io.IOException {
+            // PER IMAGE, not per page. Checking only in run() enforces the cap at PAGE
+            // boundaries, so a single page carrying hundreds of images still decodes all of
+            // them -- measured: a cap of 32 let 152 images through and saved only 6s of 61s.
+            // This is the check that actually bounds the work.
+            if (counter.get() >= cap) {
+                return;
+            }
+            super.drawImage(pdImage);
         }
     }
 
