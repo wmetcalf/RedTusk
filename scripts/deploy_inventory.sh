@@ -155,6 +155,16 @@ if [ "${SELFTEST:-0}" -eq 1 ]; then
     t "rootfs newer than image is quiet" CLEAN \
         "$(R dispatcher-fc redtusk:x /f.ext4 2026-08-19 -)"
 
+    # The exit code contract. check_rows is called DIRECTLY (not in a command substitution) on
+    # the real path, which is the only reason warn's DRIFT=1 reaches the caller and the script
+    # exits 1. Wrapping that call in $( ) later would still print every warning and still exit
+    # 0 -- a CI gate that reports drift and passes. Pin it.
+    DRIFT=0
+    check_rows "$(R dispatcher-fc redtusk:a - - -)
+$(R api redtusk:b - - -)" >/dev/null
+    if [ "$DRIFT" -eq 1 ]; then echo "  ok   drift sets the exit status"
+    else echo "  FAIL drift sets the exit status — warnings printed but the script would exit 0"; fails=$((fails+1)); fi
+
     echo
     [ "$fails" -gt 0 ] && { echo "SELFTEST: $fails failure(s)"; exit 1; }
     echo "SELFTEST: all checks fire when they should and stay quiet when they should"

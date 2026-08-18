@@ -58,6 +58,21 @@ These artifacts are generated *from* each other and must move together:
    the image rebuild does not reach it.
 4. Verify: `deploy_inventory.sh` → all containers in the stack on one image, one blastbox version.
 
+#### Every dispatcher needs the blob store
+
+A dispatcher with no `BLASTBOX_BLOB_URL` seals results into a `LocalBlobStore` the API never
+reads: its jobs reach **DONE** and their results **404**, with a healthy container, no error and
+no log line. That was live for the gvisor and cold tiers until 2026-08-18 — 17,617 completed
+jobs whose results are unfetchable and, after the terminal purge, mostly unrecoverable.
+
+The endpoint differs **per service**: the api reaches MinIO by host IP, but the dispatchers sit
+on the internal backend network with no egress route and must use the `http://minio:9000` ALIAS.
+Give a dispatcher the api's value and every job fails with `result upload failed after 3
+attempts` (fail-closed — the result is retained, not lost — but the tier produces nothing).
+
+`scripts/deploy_inventory.sh` now checks both this and whether the node's compose files still
+match the repo's. Run `--self-test` to see every check fire against a fixture.
+
 #### Shipping a blastbox that is not on PyPI yet
 
 `Dockerfile.host` pins a released blastbox. To run a host-side fix ahead of a release, do NOT
