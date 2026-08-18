@@ -194,7 +194,13 @@ services:
       # measured at 12/12 unfetchable across both tiers, ~50% of this fleet's completed work,
       # with a green status the whole time.
       - BLASTBOX_BLOB_URL=${BLASTBOX_BLOB_URL:-}
-      - BLASTBOX_BLOB_ENDPOINT_URL=${BLASTBOX_BLOB_ENDPOINT_URL:-}
+      # The minio ALIAS, not ${BLASTBOX_BLOB_ENDPOINT_URL} (which is the host IP for the api):
+      # this dispatcher sits on the internal backend network with no egress route, so the host
+      # IP is unreachable from here. Pointing it there fails EVERY job with "result upload
+      # failed after 3 attempts" -- fail-closed, so the result is retained rather than lost,
+      # but the tier produces nothing. Observed the first time this service was given a blob
+      # store at all.
+      - BLASTBOX_BLOB_ENDPOINT_URL=http://minio:9000
       # Dispatcher-wide budget for concurrent result-artifact uploads (put_output costs one
       # round-trip PER artifact). See docs/DEPLOYMENT.md; =1 restores the serial path.
       - BLASTBOX_BLOB_UPLOAD_CONCURRENCY=${BLASTBOX_BLOB_UPLOAD_CONCURRENCY:-}
