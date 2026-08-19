@@ -959,7 +959,19 @@ public final class ParserRunner {
      */
     private static volatile AutoDetectParser sharedParser;
 
-    private static AutoDetectParser sharedParser() {
+    /**
+     * Package-private, not private: EmbeddedFileExtractor's second extraction pass needs the
+     * SAME instance. It used to call {@code new AutoDetectParser()} itself, which re-ran the
+     * whole SPI discovery -- DefaultParser.<init> -> ServiceLoader.loadStaticServiceProviders
+     * -> DefaultEncodingDetector.<init> -> the ML encoding detectors -- on EVERY JOB. Measured
+     * on a 2-byte input, post-prewarm: 4314ms with the ML detectors registered vs 713ms
+     * without, and a job-phase profile put the time squarely in that constructor chain.
+     *
+     * This is the same defect sharedParser() was introduced to fix, surviving in a second code
+     * path. A warm snapshot cannot help with it: the construction happens AFTER the go-signal,
+     * so no amount of prewarming captures it.
+     */
+    static AutoDetectParser sharedParser() {
         AutoDetectParser p = sharedParser;
         if (p != null) {
             return p;

@@ -94,8 +94,15 @@ public final class EmbeddedFileExtractor {
             return hashes;
         }
 
-        AutoDetectParser parser = new AutoDetectParser();
-        enableImageHashing(parser);
+        // THE SHARED instance, not a fresh one. `new AutoDetectParser()` here re-ran full SPI
+        // discovery on every job -- and on a current Tika that chain builds the ML encoding
+        // detectors, costing ~3.6s on a 2-BYTE input (4314ms -> 713ms with them unregistered).
+        // It is paid after the go-signal, so the warm snapshot cannot absorb it.
+        //
+        // Sharing is safe for the same reason it is safe in pass 1: the parser tree is
+        // immutable once configured, and per-job state lives in the ParseContext and handler,
+        // both still built fresh below. sharedParser() already applies enableImageHashing().
+        AutoDetectParser parser = ParserRunner.sharedParser();
 
         ParseContext context = new ParseContext();
         // XXE / SSRF hardening — same secure JAXP factories Pass-1 uses, so the
