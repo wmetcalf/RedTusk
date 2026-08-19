@@ -57,7 +57,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # RedTusk worker; metadata-field-inventory CI green on the branch.
 # Bumped 2026-08-19 to the current deploy-branch head. The old pin (f2b166c6f) was 210 commits
 # behind and, because of the bug fixed below, was never what actually shipped anyway.
-ARG TIKA_FORK_SHA=a44a8ffdf1f294509c152b438198290426c98475
+ARG TIKA_FORK_SHA=74997d7259ab06c04b6d7712f9a94fac1ae16b6c
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
@@ -66,8 +66,12 @@ RUN git clone \
 
 # Build all modules except gRPC (which needs protoc; not needed for worker).
 #
-# forbiddenapis is skipped, and ONLY because its `testCheck` goal validates TEST classes -- which
-# this build neither runs (-DskipTests) nor ships. It is a source-quality gate and belongs in the
+# forbiddenapis runs FULLY -- no skip. The deploy head failed its testCheck on
+# VbaProjectBuilder (String.format without a Locale, test source), and `-DskipTests` does not
+# skip a static check, so the branch could not be built at all. Rather than disable the gate,
+# the pin above moves to a commit that fixes it (wmetcalf/tika fix/forbiddenapis-vba-locale).
+# Do not reach for -Dforbiddenapis.skip=true here: it also turns off the `check` goal over MAIN
+# classes, so it would silently ship the artifact with the production gate off. It is a source-quality gate and belongs in the
 # fork's CI, not in the recipe that produces a production artifact. It is NOT skipped to dodge a
 # real problem: as of the pinned SHA the deploy branch genuinely fails it
 # (VbaProjectBuilder.java:167,180 -- String.format without a Locale), which this build surfaced
@@ -80,7 +84,6 @@ RUN cd /src/tika && \
     rm -f .mvn/extensions.xml && \
     mvn install \
         -DskipTests \
-        -Dforbiddenapis.skip=true \
         -pl '!tika-grpc' \
         -q
 # JARs installed to /root/.m2/repository/org/apache/tika/

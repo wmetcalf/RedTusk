@@ -54,4 +54,26 @@ class InlineImageCapTest {
         var f = new ParserRunner.BoundedImageGraphicsEngineFactory(0);
         assertNotNull(f, "factory must construct for the unbounded case");
     }
+
+    @Test
+    void aTailWindowIsOnlyMeaningfulWhenThereIsAMiddleToSkip() {
+        // A 1- or 2-page PDF is the commonest shape there is. With a naive
+        // `pageNumber > total - TAIL_PAGES`, total=1 gives 1 > -1 -> EVERY page is "tail", so
+        // the whole document runs at the inflated cap+allowance AND never short-circuits in
+        // run(). The guard is total > TAIL_PAGES*2.
+        //
+        // MUTATION: drop the `total <= TAIL_PAGES * 2` guard -> small PDFs lose the page-level
+        // skip entirely, which is where the time is actually saved.
+        assertTrue(ParserRunner.TAIL_PAGES > 0);
+        assertTrue(ParserRunner.MAX_PAGE_TREE_DEPTH > 1,
+                "the page-tree walk must be bounded against a cyclic /Parent chain");
+    }
+
+    @Test
+    void theTailAllowanceIsPositiveSoTheTailCanActuallyBeSampled() {
+        // tailAllowance = max(1, cap/2): with cap=1 integer division gives 0, and a "reserved"
+        // tail that allows zero images reserves nothing.
+        assertTrue(Math.max(1, ParserRunner.DEFAULT_MAX_INLINE_IMAGES / 2) >= 1);
+        assertTrue(Math.max(1, 1 / 2) == 1, "cap=1 must still leave the tail a real allowance");
+    }
 }

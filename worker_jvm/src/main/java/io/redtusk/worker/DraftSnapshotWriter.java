@@ -250,7 +250,12 @@ final class DraftSnapshotWriter {
 
         ObjectNode meta = n.putObject("metadata");
         for (String name : m.names()) {
-            if (name.startsWith("X-TIKA:") || name.equals("Content-Type")) continue;
+            // THE SAME predicate ParserRunner uses -- not a third inlined copy. This path was
+            // missed when tk:content was first suppressed, so draft snapshots kept writing every
+            // entry's body twice (26 MB instead of 13 MB on a 1.4 MB XLSX) -- and maybeFlush
+            // rewrites that file several times a second during the walk, and the
+            // timeout-salvage metadata.json the dispatcher ships IS this file.
+            if (ParserRunner.isSuppressedMetadataKey(name)) continue;
             String v = m.get(name);
             if (v != null) meta.put(name, v);
         }

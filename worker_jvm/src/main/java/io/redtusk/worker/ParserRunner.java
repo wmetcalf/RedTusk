@@ -1065,6 +1065,9 @@ public final class ParserRunner {
     /** How many trailing pages keep their own image allowance. */
     static final int TAIL_PAGES = 2;
 
+    /** Bound on the page-tree walk in totalPages(); a cyclic /Parent chain must not spin. */
+    static final int MAX_PAGE_TREE_DEPTH = 64;
+
     /**
      * Stops handing out image engines once the document's image budget is spent.
      *
@@ -1126,22 +1129,65 @@ public final class ParserRunner {
          * exception on a hostile file.
          */
         private static boolean isTailPage(PDPage page, int pageNumber) {
-            try {
-                org.apache.pdfbox.cos.COSBase parent =
-                        page.getCOSObject().getDictionaryObject(org.apache.pdfbox.cos.COSName.PARENT);
-                if (parent instanceof org.apache.pdfbox.cos.COSDictionary pages) {
-                    int total = pages.getInt(org.apache.pdfbox.cos.COSName.COUNT, -1);
-                    return total > 0 && pageNumber > total - TAIL_PAGES;
-                }
-            } catch (RuntimeException e) {
-                // deliberately swallowed; see javadoc
+            int total = totalPages(page);
+            // A tail window only means anything when there is a middle to skip. Without this,
+            // a 1- or 2-page PDF -- the commonest shape there is -- has EVERY page classified
+            // as tail, which hands the whole document the inflated allowance and disables the
+            // page-level skip entirely.
+            if (total <= TAIL_PAGES * 2) {
+                return false;
             }
-            return false;
+            return pageNumber > total - TAIL_PAGES;
+        }
+
+        /**
+         * Total pages in the document, by walking the page tree to its ROOT.
+         *
+         * The immediate /Parent is NOT the answer: per PDF 7.7.3.2 an intermediate /Pages node's
+         * /Count is only its own leaf descendants, and Acrobat/InDesign routinely emit balanced
+         * trees of ~10 kids. Reading the immediate parent on a 100-page file yields total=10 for
+         * every page, so pages 9-100 all look like "tail" -- 92% of the document gets the
+         * inflated limit and never short-circuits, reinstating exactly the per-page decode this
+         * cap exists to prevent.
+         *
+         * Bounded walk: a malformed or cyclic page tree must not spin here.
+         */
+        private static int totalPages(PDPage page) {
+            try {
+                org.apache.pdfbox.cos.COSDictionary node = page.getCOSObject();
+                int best = -1;
+                for (int hops = 0; hops < MAX_PAGE_TREE_DEPTH; hops++) {
+                    org.apache.pdfbox.cos.COSBase parent =
+                            node.getDictionaryObject(org.apache.pdfbox.cos.COSName.PARENT);
+                    if (!(parent instanceof org.apache.pdfbox.cos.COSDictionary pages)) {
+                        break;
+                    }
+                    int count = pages.getInt(org.apache.pdfbox.cos.COSName.COUNT, -1);
+                    if (count > best) {
+                        best = count;       // the root carries the largest /Count
+                    }
+                    node = pages;
+                }
+                return best;
+            } catch (RuntimeException e) {
+                return -1;                  // hostile structure: no tail window, plain cap
+            }
+        }
+
+        /**
+         * The budget for THIS page. run() and drawImage() must agree: when run() tested `cap`
+         * while drawImage() allowed `cap + tailAllowance`, a tail page never skipped its content
+         * stream even after its allowance was spent -- so it decoded every image and discarded
+         * all but the allowance, losing the page-level skip that is where the time actually goes
+         * (113.6s vs 34.0s).
+         */
+        private int effectiveLimit() {
+            return inTail ? cap + tailAllowance : cap;
         }
 
         @Override
         public void run() throws java.io.IOException {
-            if (counter.get() >= cap && !inTail) {
+            if (counter.get() >= effectiveLimit()) {
                 // Budget spent by earlier pages and this is not a reserved tail page: skip the
                 // whole content stream. This is where the time is actually saved -- measured
                 // 113.6s unbounded vs 34.0s, because it avoids the per-image decode PDFBox does
@@ -1160,8 +1206,7 @@ public final class ParserRunner {
             //
             // Tail pages get their own allowance so the budget cannot be exhausted by the front
             // of the document.
-            int limit = inTail ? cap + tailAllowance : cap;
-            if (counter.get() >= limit) {
+            if (counter.get() >= effectiveLimit()) {
                 return;
             }
             super.drawImage(pdImage);
@@ -1354,7 +1399,18 @@ public final class ParserRunner {
      * tk:encoding-detector, tk:content-handler) are small and forensically useful, so only this
      * one is dropped rather than the whole namespace.
      */
-    static final String TIKA_CONTENT_KEY = "tk:content";
+    static final String TIKA_CONTENT_KEY = TikaCoreProperties.TIKA_CONTENT.getName();
+
+    /**
+     * Bulk internals that are not forensic signal.
+     *
+     * `tk:chunks` is the chunked copy of the body, i.e. the same duplication as tk:content by
+     * another name. The rest of the tk: namespace is KEPT on purpose -- tk:signature:*,
+     * tk:has-signature, tk:digest:*, tk:num-images and tk:embedded-resource-type are exactly the
+     * kind of thing this engine exists to surface.
+     */
+    private static final java.util.Set<String> SUPPRESSED_BULK_KEYS =
+            java.util.Set.of(TikaCoreProperties.TIKA_CONTENT.getName(), "tk:chunks");
 
     /**
      * Keys that must never reach the rmeta.
@@ -1366,12 +1422,18 @@ public final class ParserRunner {
      * honest unit-level check.
      */
     static boolean isSuppressedMetadataKey(String name) {
+        // X-TIKA: is retained for older pins only. On the current pin the whole namespace was
+        // renamed to tk:, so this branch matches NOTHING there -- keeping it costs nothing and
+        // means the filter does not silently invert if the pin moves back.
         if (name.startsWith("X-TIKA:") || name.equals("Content-Type")) {
             return true;
         }
-        // The entry's full body, duplicated into the metadata map by current Tika's
-        // output-provenance work. RedTusk already stores those exact bytes in `text`.
-        return name.equals(TIKA_CONTENT_KEY);
+        // The entry's full body (and its chunked twin), duplicated into the metadata map by
+        // current Tika's output-provenance work. RedTusk already stores those exact bytes in
+        // `text`. Names come from TikaCoreProperties, not string literals: the rename that
+        // created this bug (X-TIKA:content -> tk:content) is proof the name moves, and a literal
+        // would silently start double-storing every body at the next pin bump.
+        return SUPPRESSED_BULK_KEYS.contains(name);
     }
 
     static Map<String, Object> extractMetadata(Metadata m) {
