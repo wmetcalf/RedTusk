@@ -1040,22 +1040,27 @@ public final class ParserRunner {
     }
 
     /**
-     * Chosen from a measured sweep on the 8.4 MB / 46-image PDF, not a guess:
+     * Re-measured after the pass-2 fix, on the pinned Tika, 8.4 MB PDF (600 image instances):
      *
-     *     cap=0 (unbounded)  60.6s   200 hash fields
-     *     cap=32             54.9s   128
-     *     cap=4              27.9s    16
-     *     cap=1              26.0s     4
+     *     cap=0 (unbounded)  114.1s   600 hash fields
+     *     cap=32              55.5s   192
+     *     cap=8               19.3s    48
+     *     cap=4               ~13s     24   <- default
+     *     cap=2                9.9s    12
+     *     cap=1               10.4s     8
      *
-     * ~0.9s per image, and the curve flattens hard below ~4: going from 32 down to 4 buys 27s,
-     * going from 4 to 1 buys 2s. 8 sits just past the knee -- it still captures 4x the images
-     * the previous Tika found (2), while keeping the image budget near the floor.
+     * ~1.6s per image above a ~10s floor. The earlier default of 8 was chosen from a sweep taken
+     * while pass 2 was still uncapped, so those numbers were measuring the wrong thing.
      *
-     * NOTE the floor itself is 26s on this document against production's 3.8s, so this cap is
-     * NOT the whole regression -- roughly 16s of non-image cost in the newer Tika is still
-     * unaccounted for. Do not read a fast tier after this change as "the Tika drift is fixed".
+     * 4 is the balance point: production's Tika surfaces 2 image-hash fields on this document,
+     * so 24 is an order of magnitude more forensic coverage, for ~13s on the worst PDF in the
+     * corpus while ordinary documents run 3-3.7x FASTER than production. Raise it with
+     * REDTUSK_MAX_INLINE_IMAGES when a case needs the full inventory; <=0 disables the bound.
+     *
+     * The ~10s floor is NOT images and is not yet explained -- production does this document in
+     * 3.3s. Do not read a faster tier as "the Tika drift is fixed".
      */
-    static final int DEFAULT_MAX_INLINE_IMAGES = 8;
+    static final int DEFAULT_MAX_INLINE_IMAGES = 4;
 
     /** How many trailing pages keep their own image allowance. */
     static final int TAIL_PAGES = 2;
