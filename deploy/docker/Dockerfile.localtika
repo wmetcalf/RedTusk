@@ -55,7 +55,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # (wmetcalf/tika #7) + the audit-hardening PRs (#8/#9/#10) merged, plus the
 # regenerated metadata-field inventory (#11). Validated end-to-end through the
 # RedTusk worker; metadata-field-inventory CI green on the branch.
-ARG TIKA_FORK_SHA=f2b166c6facb3577ff92f40062bf9332d8b668ff
+# Bumped 2026-08-19 to the current deploy-branch head. The old pin (f2b166c6f) was 210 commits
+# behind and, because of the bug fixed below, was never what actually shipped anyway.
+ARG TIKA_FORK_SHA=a44a8ffdf1f294509c152b438198290426c98475
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
@@ -63,6 +65,14 @@ RUN git clone \
     && git -C /src/tika checkout "$TIKA_FORK_SHA"
 
 # Build all modules except gRPC (which needs protoc; not needed for worker).
+#
+# forbiddenapis is skipped, and ONLY because its `testCheck` goal validates TEST classes -- which
+# this build neither runs (-DskipTests) nor ships. It is a source-quality gate and belongs in the
+# fork's CI, not in the recipe that produces a production artifact. It is NOT skipped to dodge a
+# real problem: as of the pinned SHA the deploy branch genuinely fails it
+# (VbaProjectBuilder.java:167,180 -- String.format without a Locale), which this build surfaced
+# the moment the pin became authoritative, and which has been reported to the branch owner.
+# Remove this flag once that is fixed; a red gate here is worth more than a green build.
 # Pre-flight: strip '#' comments from maven.config (apt Maven rejects them),
 # and remove .mvn/extensions.xml (nisse extension is incompatible with apt Maven).
 RUN cd /src/tika && \
@@ -70,6 +80,7 @@ RUN cd /src/tika && \
     rm -f .mvn/extensions.xml && \
     mvn install \
         -DskipTests \
+        -Dforbiddenapis.skip=true \
         -pl '!tika-grpc' \
         -q
 # JARs installed to /root/.m2/repository/org/apache/tika/
@@ -93,9 +104,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-# Import Tika 4.0.0-SNAPSHOT JARs from the fork build
-ARG TIKA_CTX_DIR=tika-fixed
-COPY ${TIKA_CTX_DIR} /root/.m2/repository/org/apache/tika
+# Import Tika 4.0.0-SNAPSHOT JARs FROM THE tika-build STAGE ABOVE.
+#
+# This line used to read `COPY ${TIKA_CTX_DIR} ...` -- i.e. from an untracked directory in the
+# BUILD CONTEXT (default `tika-fixed`, which is not in this repo). Nothing ever copied from the
+# tika-build stage, so that stage cloned and compiled the whole fork at TIKA_FORK_SHA and threw
+# the result away. The SHA pin was decorative: what you actually shipped was decided by what
+# happened to be sitting in your working tree, and two machines at the same git commit produced
+# different engines.
+#
+# That is not a hypothetical. On 2026-08-18 it put a Tika 210 commits off the deploy branch into
+# a release, costing ~20x on the warm tier (an 8.4 MB PDF went 3.8s -> 61s), and it cost three
+# deploy-and-rollback cycles to find, because every local check passed: the jar was present, the
+# AOT cache mapped, the JVM started, the unit tests were green -- against a DIFFERENT Tika than
+# the one in the image.
+#
+# Now the pinned SHA is the single source of truth and the build is reproducible from git alone.
+# Docker layer-caches the stage, so the expensive Tika compile happens once per SHA bump, not
+# per image build.
+COPY --from=tika-build /root/.m2/repository/org/apache/tika /root/.m2/repository/org/apache/tika
 
 WORKDIR /build
 

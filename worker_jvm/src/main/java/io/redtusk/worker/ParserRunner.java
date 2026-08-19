@@ -28,7 +28,6 @@ import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.apache.pdfbox.cos.COSStream;
 import org.apache.pdfbox.pdmodel.PDPage;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.tika.sax.AbstractRecursiveParserWrapperHandler;
 import org.apache.tika.sax.BasicContentHandlerFactory;
@@ -1054,15 +1053,13 @@ public final class ParserRunner {
         public ImageGraphicsEngine newEngine(PDPage page, int pageNumber,
                 EmbeddedDocumentExtractor extractor, PDFParserConfig cfg,
                 Map<COSStream, Integer> processedInlineImages, AtomicInteger imageCounter,
-                AtomicBoolean thrownOOM, XHTMLContentHandler xhtml, Metadata parentMetadata,
-                ParseContext parseContext) {
+                XHTMLContentHandler xhtml, Metadata parentMetadata, ParseContext parseContext) {
             if (cap <= 0) {             // explicitly unbounded
                 return super.newEngine(page, pageNumber, extractor, cfg, processedInlineImages,
-                        imageCounter, thrownOOM, xhtml, parentMetadata, parseContext);
+                        imageCounter, xhtml, parentMetadata, parseContext);
             }
             return new BoundedImageGraphicsEngine(page, pageNumber, extractor, cfg,
-                    processedInlineImages, imageCounter, thrownOOM, xhtml, parentMetadata,
-                    parseContext, cap);
+                    processedInlineImages, imageCounter, xhtml, parentMetadata, parseContext, cap);
         }
     }
 
@@ -1074,10 +1071,10 @@ public final class ParserRunner {
         BoundedImageGraphicsEngine(PDPage page, int pageNumber,
                 EmbeddedDocumentExtractor extractor, PDFParserConfig cfg,
                 Map<COSStream, Integer> processedInlineImages, AtomicInteger imageCounter,
-                AtomicBoolean thrownOOM, XHTMLContentHandler xhtml, Metadata parentMetadata,
-                ParseContext parseContext, int cap) {
-            super(page, pageNumber, extractor, cfg, processedInlineImages, imageCounter,
-                  thrownOOM, xhtml, parentMetadata, parseContext);
+                XHTMLContentHandler xhtml, Metadata parentMetadata, ParseContext parseContext,
+                int cap) {
+            super(page, pageNumber, extractor, cfg, processedInlineImages, imageCounter, xhtml,
+                  parentMetadata, parseContext);
             this.counter = imageCounter;
             this.cap = cap;
         }
