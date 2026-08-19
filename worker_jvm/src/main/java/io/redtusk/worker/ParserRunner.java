@@ -198,9 +198,7 @@ public final class ParserRunner {
         // PDF: extract tagged/marked-content structure (headings, tables, lists in
         // accessibility-compliant PDFs) and all image instances, not just unique hashes
         // (duplicate images in malicious PDFs are forensically significant).
-        PDFParserConfig pdfCfg = new PDFParserConfig();
-        pdfCfg.setExtractMarkedContent(true);
-        pdfCfg.setExtractUniqueInlineImagesOnly(false);
+        PDFParserConfig pdfCfg = newPdfConfig();
         // ...BUT BOUNDED. Extracting every image instance is forensically right and, on a
         // current Tika, genuinely expensive: measured on an 8.4 MB PDF, the engine finds 46
         // DISTINCT images (dedup would save 6%, so this is not duplicate work) and spends ~1s
@@ -210,7 +208,6 @@ public final class ParserRunner {
         //
         // An older Tika hid this by finding almost none of them (2 hashed images vs 200 hash
         // fields on the same file), so the cap was never needed before.
-        pdfCfg.setImageGraphicsEngineFactory(new BoundedImageGraphicsEngineFactory(maxInlineImages()));
         // Disable PDFParser-side per-page OCR. The default AUTO strategy
         // renders every PDF page through PDFBox into an image, then feeds
         // each rendered page to Tesseract — and bombs on a long tail of
@@ -990,6 +987,30 @@ public final class ParserRunner {
             }
             return sharedParser;
         }
+    }
+
+    /**
+     * The PDF configuration BOTH extraction passes must use.
+     *
+     * Shared, not copy-pasted, because copy-paste already failed here twice: pass 2
+     * (EmbeddedFileExtractor) built its own PDFParserConfig with the same two flags and a
+     * comment claiming it "carries the same config as the first pass". When pass 1 gained the
+     * inline-image cap, pass 2 silently did not — so a capped pass 1 was followed by an
+     * UNBOUNDED pass 2 over the same document, and a job-phase profile put 55 of 60 samples in
+     * EmbeddedFileExtractor.extract even with the cap set to 1. (The same divergence, in the
+     * same two methods, previously left pass 2 constructing its own AutoDetectParser.)
+     *
+     * Anything PDF-shaped belongs here, so the two passes cannot drift again.
+     */
+    static PDFParserConfig newPdfConfig() {
+        PDFParserConfig cfg = new PDFParserConfig();
+        cfg.setExtractMarkedContent(true);
+        // Every image INSTANCE, not just unique ones: duplicates in a malicious PDF are
+        // forensically significant. Bounded by the factory below -- on a current Tika this
+        // finds 600 image instances in one 8.4 MB document.
+        cfg.setExtractUniqueInlineImagesOnly(false);
+        cfg.setImageGraphicsEngineFactory(new BoundedImageGraphicsEngineFactory(maxInlineImages()));
+        return cfg;
     }
 
     /**

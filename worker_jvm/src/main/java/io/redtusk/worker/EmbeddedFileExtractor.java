@@ -130,12 +130,11 @@ public final class EmbeddedFileExtractor {
         noOcr.setSkipOcr(true);
         context.set(TesseractOCRConfig.class, noOcr);
 
-        // Carry the same PDF and Office config as the first pass so embedded
-        // PDFs/Office docs get consistent extraction (marked content, missing rows).
-        PDFParserConfig pdfCfg = new PDFParserConfig();
-        pdfCfg.setExtractMarkedContent(true);
-        pdfCfg.setExtractUniqueInlineImagesOnly(false);
-        context.set(PDFParserConfig.class, pdfCfg);
+        // THE SAME config object pass 1 uses, from one factory method -- not a second copy of
+        // the same two lines. The old comment here said it carried the same config; it did not.
+        // Pass 1 gained the inline-image cap and this did not, so a capped first pass was
+        // followed by an UNBOUNDED second pass over the same document.
+        context.set(PDFParserConfig.class, ParserRunner.newPdfConfig());
         OfficeParserConfig officeCfg = new OfficeParserConfig();
         officeCfg.setIncludeMissingRows(true);
         context.set(OfficeParserConfig.class, officeCfg);
