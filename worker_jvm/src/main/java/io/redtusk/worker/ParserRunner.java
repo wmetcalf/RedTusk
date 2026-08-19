@@ -1340,10 +1340,44 @@ public final class ParserRunner {
         return text;
     }
 
-    private static Map<String, Object> extractMetadata(Metadata m) {
+    /**
+     * Tika metadata key carrying the FULL extracted body of an entry.
+     *
+     * Current Tika's output-provenance work puts the whole entry text into the metadata map as
+     * well as handing it to the content handler. RedTusk already stores those exact bytes in
+     * the entry's `text` field, so copying this through stores every document twice: measured
+     * on a 1.4 MB XLSX, metadata.json went 13.0 MB -> 26.1 MB and the job 10.1s -> 18.5s, with
+     * one VBA module's metadata weighing 67,092 B against a text field of 66,309 B -- the same
+     * content, byte for byte.
+     *
+     * The OTHER tk: provenance keys (tk:parsed-by, tk:encoding-detection-trace,
+     * tk:encoding-detector, tk:content-handler) are small and forensically useful, so only this
+     * one is dropped rather than the whole namespace.
+     */
+    static final String TIKA_CONTENT_KEY = "tk:content";
+
+    /**
+     * Keys that must never reach the rmeta.
+     *
+     * Package-private and separate from the loop ON PURPOSE: `Metadata.set("tk:...")` is
+     * SILENTLY DROPPED by Tika (the namespace is computed, not settable), so a test that builds
+     * a Metadata and asserts the key is absent passes whether or not the filter exists. The
+     * first version of this test did exactly that. Testing the predicate directly is the only
+     * honest unit-level check.
+     */
+    static boolean isSuppressedMetadataKey(String name) {
+        if (name.startsWith("X-TIKA:") || name.equals("Content-Type")) {
+            return true;
+        }
+        // The entry's full body, duplicated into the metadata map by current Tika's
+        // output-provenance work. RedTusk already stores those exact bytes in `text`.
+        return name.equals(TIKA_CONTENT_KEY);
+    }
+
+    static Map<String, Object> extractMetadata(Metadata m) {
         Map<String, Object> result = new LinkedHashMap<>();
         for (String name : m.names()) {
-            if (name.startsWith("X-TIKA:") || name.equals("Content-Type")) continue;
+            if (isSuppressedMetadataKey(name)) continue;
             // Preserve ALL values of multi-valued keys (dc:creator, relationship
             // targets, ...). m.get() kept only the first; m.getValues() keeps them
             // all. Emit a scalar for a single value, a list for several (the
