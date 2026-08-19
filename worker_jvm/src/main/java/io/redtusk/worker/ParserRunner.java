@@ -1036,6 +1036,9 @@ public final class ParserRunner {
      */
     static final int DEFAULT_MAX_INLINE_IMAGES = 8;
 
+    /** How many trailing pages keep their own image allowance. */
+    static final int TAIL_PAGES = 2;
+
     /**
      * Stops handing out image engines once the document's image budget is spent.
      *
@@ -1067,6 +1070,8 @@ public final class ParserRunner {
     static final class BoundedImageGraphicsEngine extends ImageGraphicsEngine {
         private final AtomicInteger counter;
         private final int cap;
+        private final int tailAllowance;
+        private final boolean inTail;
 
         BoundedImageGraphicsEngine(PDPage page, int pageNumber,
                 EmbeddedDocumentExtractor extractor, PDFParserConfig cfg,
@@ -1077,13 +1082,44 @@ public final class ParserRunner {
                   parentMetadata, parseContext);
             this.counter = imageCounter;
             this.cap = cap;
+            this.tailAllowance = Math.max(1, cap / 2);
+            this.inTail = isTailPage(page, pageNumber);
+        }
+
+        /**
+         * True for the last {@link #TAIL_PAGES} pages of the document.
+         *
+         * A pure first-N budget only ever sees the FRONT of a document -- page-one logos and
+         * letterhead -- while the payload in a weaponised PDF is as likely to sit at the end.
+         * Reserving an allowance for the tail costs one extra page-walk per document and buys
+         * coverage of both ends.
+         *
+         * The total page count is not handed to the factory, but it is reachable: a PDPage's
+         * parent /Pages node carries /Count. Best-effort -- any structural surprise (a damaged
+         * page tree, a missing parent) means "not a tail page", i.e. the plain cap, never an
+         * exception on a hostile file.
+         */
+        private static boolean isTailPage(PDPage page, int pageNumber) {
+            try {
+                org.apache.pdfbox.cos.COSBase parent =
+                        page.getCOSObject().getDictionaryObject(org.apache.pdfbox.cos.COSName.PARENT);
+                if (parent instanceof org.apache.pdfbox.cos.COSDictionary pages) {
+                    int total = pages.getInt(org.apache.pdfbox.cos.COSName.COUNT, -1);
+                    return total > 0 && pageNumber > total - TAIL_PAGES;
+                }
+            } catch (RuntimeException e) {
+                // deliberately swallowed; see javadoc
+            }
+            return false;
         }
 
         @Override
         public void run() throws java.io.IOException {
-            if (counter.get() >= cap) {
-                // Cheap short-circuit: the budget was already spent by earlier pages, so skip
-                // this page's content stream entirely.
+            if (counter.get() >= cap && !inTail) {
+                // Budget spent by earlier pages and this is not a reserved tail page: skip the
+                // whole content stream. This is where the time is actually saved -- measured
+                // 113.6s unbounded vs 34.0s, because it avoids the per-image decode PDFBox does
+                // before drawImage() ever gets a say.
                 return;
             }
             super.run();
@@ -1092,11 +1128,14 @@ public final class ParserRunner {
         @Override
         public void drawImage(org.apache.pdfbox.pdmodel.graphics.image.PDImage pdImage)
                 throws java.io.IOException {
-            // PER IMAGE, not per page. Checking only in run() enforces the cap at PAGE
-            // boundaries, so a single page carrying hundreds of images still decodes all of
-            // them -- measured: a cap of 32 let 152 images through and saved only 6s of 61s.
-            // This is the check that actually bounds the work.
-            if (counter.get() >= cap) {
+            // PER IMAGE, not just per page: checking only in run() enforces the cap at PAGE
+            // boundaries, so one page carrying hundreds of images still decodes all of them
+            // (measured: a cap of 32 let 152 through and saved 6s of 61s).
+            //
+            // Tail pages get their own allowance so the budget cannot be exhausted by the front
+            // of the document.
+            int limit = inTail ? cap + tailAllowance : cap;
+            if (counter.get() >= limit) {
                 return;
             }
             super.drawImage(pdImage);
