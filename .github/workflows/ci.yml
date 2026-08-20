@@ -27,15 +27,13 @@ jobs:
       # inventory. They were unlinted until 2026-08-20 and had 45 violations.
       - name: ruff
         run: ruff check src tests scripts deploy
-      # `mypy src` and NOT `mypy tests`, on evidence rather than convenience. Under strict,
-      # tests report 178 errors; 125 are "annotate your test function" and most of the rest are
-      # the test doubles doing their job -- SimpleNamespace standing in for _WarmWorker,
-      # monkeypatching engine_mod.subprocess. Gating there buys `# type: ignore` noise or,
-      # worse, pressure to weaken a fake into a real object. One flagged line
-      # (tests/fixtures/unicode_qr/generate.py:99) is mypy being wrong: `f` is bound text-mode
-      # at module scope on line 66, so a correct binary write later gets flagged.
+      # Both, since 2026-08-20. tests/ used to report 178 errors under strict and I argued for
+      # leaving it out; that was mostly wrong. 125 were missing annotations (mechanical), and the
+      # rest resolved into real fixes rather than ceremony -- see the commit for the two that
+      # were actual defects. Where a fake genuinely stands in for a real type the call is an
+      # explicit cast() with a comment, which documents the substitution instead of hiding it.
       - name: mypy
-        run: mypy src
+        run: mypy src tests
       # tests/http and tests/docker are excluded on purpose, not to dodge failures:
       # http needs a starlette/httpx pair this image does not pin, and docker needs a built
       # local image. Both are run by hand against a real environment. tests/unit and

@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+from collections.abc import Iterator
 
 import pytest
 import structlog
@@ -12,7 +13,7 @@ from redtusk.observability.logging import configure_logging, get_logger
 
 
 @pytest.fixture(autouse=True)
-def reset_structlog():
+def reset_structlog() -> Iterator[None]:
     """Each test starts from a clean structlog config."""
     structlog.reset_defaults()
     root = logging.getLogger()

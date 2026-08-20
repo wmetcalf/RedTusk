@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import subprocess
 import types
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -39,7 +41,7 @@ class _FakeProc:
         self.returncode = returncode
         self.killed = False
 
-    def poll(self):
+    def poll(self) -> int | None:
         # ALIVE at the pre-flight check. Returning the exit code here instead would send
         # _produce_rmeta down its "warm handle is already dead" branch at the top, which never
         # enters the try block at all -- an earlier version of this fake did exactly that, and the
@@ -47,19 +49,19 @@ class _FakeProc:
         # EngineTimeoutError clause to `except Exception` survived).
         return None
 
-    def communicate(self, timeout=None):
+    def communicate(self, timeout: float | None = None) -> tuple[bytes | None, bytes | None]:
         if self._timeout and timeout is not None:
             raise subprocess.TimeoutExpired(cmd="java", timeout=timeout)
         return (b"", b"boom")
 
-    def kill(self):
+    def kill(self) -> None:
         self.killed = True
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: float | None = None) -> int:
         return self.returncode
 
 
-def _engine_with_warm(tmp_path, proc, *, started: bool = True):
+def _engine_with_warm(tmp_path: Path, proc: Any, *, started: bool = True) -> RedTuskEngine:
     """*started* writes control.started, i.e. "this JVM took the job".
 
     REFINED CONTRACT (see tests/unit/test_warm_timeout_discriminator.py): suppressing the cold
@@ -79,12 +81,13 @@ def _engine_with_warm(tmp_path, proc, *, started: bool = True):
         scratch=scratch,
         in_dir=scratch / "in",
         control_dir=scratch / "control",
-        tmp=types.SimpleNamespace(cleanup=lambda: None),
+        tmp=cast(Any, types.SimpleNamespace(cleanup=lambda: None)),
     )
     return eng
 
 
-def test_warm_timeout_does_not_rerun_on_the_cold_path(tmp_path, monkeypatch):
+def test_warm_timeout_does_not_rerun_on_the_cold_path(tmp_path: Path,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
     """MUTATION: remove the `except EngineTimeoutError: raise` clause -> _run_worker is
     called with a second full budget, and this test fails on both assertions."""
     calls: list[float] = []
@@ -104,7 +107,9 @@ def test_warm_timeout_does_not_rerun_on_the_cold_path(tmp_path, monkeypatch):
     )
 
 
-def test_warm_crash_still_fails_closed_to_cold_with_a_full_budget(tmp_path, monkeypatch):
+def test_warm_crash_still_fails_closed_to_cold_with_a_full_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The other direction: a warm JVM that DIED must still get a working cold run.
 
     MUTATION: broaden the EngineTimeoutError clause to `except Exception: raise` -> a crashed
@@ -126,7 +131,7 @@ def test_warm_crash_still_fails_closed_to_cold_with_a_full_budget(tmp_path, monk
     )
 
 
-def test_engine_timeout_is_not_swallowed_by_the_generic_handler():
+def test_engine_timeout_is_not_swallowed_by_the_generic_handler() -> None:
     """EngineTimeoutError must remain distinguishable from a generic engine fault.
 
     It is a RuntimeError subclass, so ordering of the except clauses is the only thing keeping it

@@ -25,7 +25,7 @@ _COMPOSE_FILES = (
 )
 
 
-def test_every_dispatcher_declares_redtusk_reserved_keys():
+def test_every_dispatcher_declares_redtusk_reserved_keys() -> None:
     """The reserved floor (RCE knobs) is set on cold + FC + gVisor dispatchers, with a
     non-empty default so it holds even with no extra .env config. Dropped unconditionally."""
     for fname in _COMPOSE_FILES:
@@ -35,7 +35,7 @@ def test_every_dispatcher_declares_redtusk_reserved_keys():
             assert key in compose, f"{key} not reserved in {fname}"
 
 
-def test_warm_sidecars_also_set_the_allowlist():
+def test_warm_sidecars_also_set_the_allowlist() -> None:
     """The FC + gVisor warm dispatchers must ALSO set the per-engine allowlist (default-deny)
     — mirroring the cold dispatcher. Without it they fall back to denylist-only and forward
     every shape-valid non-reserved param to the warm worker."""
@@ -46,7 +46,7 @@ def test_warm_sidecars_also_set_the_allowlist():
         )
 
 
-def test_every_dispatcher_carries_default_params_passthrough():
+def test_every_dispatcher_carries_default_params_passthrough() -> None:
     """The operator DEFAULT-params knob must be wired on cold + FC + gVisor dispatchers (a
     .env-driven runtime default forwarded for any key a job omits). If a warm sidecar drops
     it, that tier silently can't receive the deployment's default enablement (e.g. QR-on) —
@@ -59,7 +59,7 @@ def test_every_dispatcher_carries_default_params_passthrough():
         ), f"{fname} dispatcher is missing the DEFAULT_PARAMS passthrough"
 
 
-def test_tier_routing_env_wired():
+def test_tier_routing_env_wired() -> None:
     """Tier routing is operator/test-gated: the API carries BLASTBOX_ALLOW_TIER_ROUTING (default
     off) and every dispatcher carries BLASTBOX_MAX_QUEUED_AGE_S (bound a down-tier-pinned job)."""
     base = (_DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")

@@ -17,6 +17,7 @@ import os
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -24,12 +25,12 @@ IMAGE = os.environ.get("REDTUSK_TEST_HIGHDENSITY_IMAGE", "")
 pytestmark = pytest.mark.docker
 
 
-def _skip_if_no_image():
+def _skip_if_no_image() -> None:
     if not IMAGE:
         pytest.skip("REDTUSK_TEST_HIGHDENSITY_IMAGE not set")
 
 
-def test_high_density_image_exists():
+def test_high_density_image_exists() -> None:
     _skip_if_no_image()
     result = subprocess.run(
         ["docker", "image", "inspect", IMAGE],
@@ -39,7 +40,7 @@ def test_high_density_image_exists():
     assert result.returncode == 0, f"Image {IMAGE!r} not found"
 
 
-def test_high_density_job_processes_txt(tmp_path):
+def test_high_density_job_processes_txt(tmp_path: Path) -> None:
     """Full end-to-end: restore from checkpoint, signal FIFO, verify metadata.json."""
     _skip_if_no_image()
 
@@ -114,7 +115,7 @@ def test_high_density_job_processes_txt(tmp_path):
     assert ready.exists(), "ready file not created — CRaC restore may have failed"
 
     # Signal the worker
-    def _signal():
+    def _signal() -> None:
         (in_dir / "control.go").touch()
 
     t = threading.Thread(target=_signal, daemon=True)

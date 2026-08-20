@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from blastbox.limits import Limits
+from blastbox.worker.engine import DetonationResult
 
 from redtusk.engine import _DEFAULT_WORKER_JAR, RedTuskEngine
 
@@ -45,13 +46,13 @@ _SKIP = _skip()
 pytestmark = pytest.mark.integration
 
 
-def _detonate(engine: RedTuskEngine) -> object:
+def _detonate(engine: RedTuskEngine) -> DetonationResult:
     with tempfile.TemporaryDirectory() as td:
         return engine.detonate(_DOCX, Path(td), Limits.from_env())
 
 
 @pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
-def test_warm_detonation_matches_cold():
+def test_warm_detonation_matches_cold() -> None:
     cold = _detonate(RedTuskEngine())
 
     warm_engine = RedTuskEngine()
@@ -70,7 +71,7 @@ def test_warm_detonation_matches_cold():
 
 
 @pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
-def test_warm_tier_fails_closed_to_cold():
+def test_warm_tier_fails_closed_to_cold() -> None:
     """A broken warmup must NOT break detonation — it falls back to the cold JVM."""
     engine = RedTuskEngine()
     # Point warmup at a non-existent jar so it can't boot a warm JVM.

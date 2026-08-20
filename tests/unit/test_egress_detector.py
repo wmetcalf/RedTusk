@@ -24,18 +24,18 @@ _LOOPBACK = (
 _UNIX = '12345 connect(4, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT'
 
 
-def test_external_inet_is_flagged():
+def test_external_inet_is_flagged() -> None:
     assert len(_external_connects(_EXTERNAL_V4)) == 1
     assert len(_external_connects(_EXTERNAL_V6)) == 1
 
 
-def test_loopback_and_unix_are_ignored():
+def test_loopback_and_unix_are_ignored() -> None:
     assert _external_connects(_LOOPBACK) == []
     assert _external_connects(_UNIX) == []
     assert _external_connects(f"{_LOOPBACK}\n{_UNIX}") == []
 
 
-def test_mixed_trace_flags_only_external():
+def test_mixed_trace_flags_only_external() -> None:
     trace = f"{_UNIX}\n{_LOOPBACK}\n{_EXTERNAL_V4}"
     flagged = _external_connects(trace)
     assert len(flagged) == 1

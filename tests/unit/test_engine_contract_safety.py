@@ -13,6 +13,7 @@ were latent until the engine started emitting ``DeclaredArtifact``/``Detection``
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from blastbox.contract import DeclaredArtifact, Detection
@@ -23,7 +24,7 @@ from redtusk.engine import _safe_artifact_id
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
-def test_safe_artifact_id_sanitizes_spaces_and_unicode():
+def test_safe_artifact_id_sanitizes_spaces_and_unicode() -> None:
     used: set[str] = set()
     aid = _safe_artifact_id("rmeta/embedded/Quarterly Report (café) №1.pdf", used)
     assert _ID_RE.match(aid)
@@ -31,7 +32,7 @@ def test_safe_artifact_id_sanitizes_spaces_and_unicode():
     DeclaredArtifact(id=aid, path="rmeta/embedded/x.pdf", kind="embedded_file")
 
 
-def test_safe_artifact_id_dedupes_collisions():
+def test_safe_artifact_id_dedupes_collisions() -> None:
     used: set[str] = set()
     a = _safe_artifact_id("rmeta/embedded/a b.pdf", used)
     b = _safe_artifact_id("rmeta/embedded/a_b.pdf", used)  # sanitizes to the same stem
@@ -40,7 +41,7 @@ def test_safe_artifact_id_dedupes_collisions():
     assert all(_ID_RE.match(x) for x in (a, b, c))
 
 
-def test_safe_artifact_id_truncates_overlong_with_hash():
+def test_safe_artifact_id_truncates_overlong_with_hash() -> None:
     used: set[str] = set()
     long1 = "rmeta/embedded/" + "x" * 300 + "_one.bin"
     long2 = "rmeta/embedded/" + "x" * 300 + "_two.bin"
@@ -51,13 +52,13 @@ def test_safe_artifact_id_truncates_overlong_with_hash():
     assert a != b  # distinct tails hashed distinctly
 
 
-def test_safe_artifact_id_all_disallowed_chars_is_nonempty():
+def test_safe_artifact_id_all_disallowed_chars_is_nonempty() -> None:
     used: set[str] = set()
     aid = _safe_artifact_id("///", used)
     assert _ID_RE.match(aid)
 
 
-def test_detection_label_cap_matches_contract():
+def test_detection_label_cap_matches_contract() -> None:
     # A real 71-char OOXML MIME exceeds the 64-char label cap; the engine slices
     # it. Prove the contract accepts a 64-char label and rejects 65.
     Detection(label="x" * 64, mime="m", confidence=1.0, source="redtusk")
@@ -65,7 +66,7 @@ def test_detection_label_cap_matches_contract():
         Detection(label="x" * 65, mime="m", confidence=1.0, source="redtusk")
 
 
-def test_reconstruct_rmeta_artifact_paths_from_entries(tmp_path):
+def test_reconstruct_rmeta_artifact_paths_from_entries(tmp_path: Path) -> None:
     """gVisor C/R fallback: when the restored worker's readdir is stale (rglob misses files
     is_file() confirms), detonate reconstructs the artifact manifest from the rmeta entries
     instead of a directory walk — declaring rmeta/metadata.json + each entry's embedded file that
@@ -90,7 +91,7 @@ def test_reconstruct_rmeta_artifact_paths_from_entries(tmp_path):
     assert not any("gone" in p for p in got)  # absent entry skipped
 
 
-def test_embedded_disk_relpath_replicates_jvm():
+def test_embedded_disk_relpath_replicates_jvm() -> None:
     """Mirrors EmbeddedFileExtractor.resolveOutFile + disambiguate(shortHash = SHA-256[:16])."""
     import hashlib
 
@@ -104,7 +105,7 @@ def test_embedded_disk_relpath_replicates_jvm():
     assert _embedded_disk_relpath("/a*b/c.png") == f"a_b/c_{tag2}.png"  # lossy parent → final hash
 
 
-def test_sanitize_embedded_component_matches_jvm():
+def test_sanitize_embedded_component_matches_jvm() -> None:
     from redtusk.engine import _sanitize_embedded_component
 
     assert _sanitize_embedded_component("image1.wmf") == "image1.wmf"  # normal: unchanged

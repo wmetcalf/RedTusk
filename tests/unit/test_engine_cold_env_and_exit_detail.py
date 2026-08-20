@@ -17,21 +17,26 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
 
 from redtusk import engine as engine_mod
 
 
-def test_cold_worker_never_inherits_prewarm(tmp_path, monkeypatch):
+def test_cold_worker_never_inherits_prewarm(tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
     """MUTATION: drop the REDTUSK_PREWARM pin from _run_worker's env -> the operator's warm-tier
     setting leaks into every cold job and this fails."""
-    seen = {}
+    seen: dict[str, str] = {}
 
-    def _fake_run(cmd, **kw):
+    def _fake_run(cmd: Any, **kw: Any) -> subprocess.CompletedProcess[bytes]:
         seen.update(kw.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setenv("REDTUSK_PREWARM", "1")          # operator enabled it for the warm tier
-    monkeypatch.setattr(engine_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
     monkeypatch.setattr(engine_mod, "_java_worker_argv", lambda scratch: ["java", "-jar", "x"])
 
     src = tmp_path / "in.doc"

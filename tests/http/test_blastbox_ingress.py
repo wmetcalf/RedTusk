@@ -70,7 +70,7 @@ def _make_done_job(tmp_path: Path, store: InMemoryJobStore, *, write_rmeta: bool
     return job
 
 
-def test_rmeta_route_served(tmp_path):
+def test_rmeta_route_served(tmp_path: Path) -> None:
     client, store = _make_client(tmp_path)
     job = _make_done_job(tmp_path, store)
     resp = client.get(f"/v1/jobs/{job.job_id}/rmeta")
@@ -79,14 +79,14 @@ def test_rmeta_route_served(tmp_path):
     assert resp.content == _RMETA_BYTES
 
 
-def test_rmeta_missing_returns_404(tmp_path):
+def test_rmeta_missing_returns_404(tmp_path: Path) -> None:
     client, store = _make_client(tmp_path)
     job = _make_done_job(tmp_path, store, write_rmeta=False)
     resp = client.get(f"/v1/jobs/{job.job_id}/rmeta")
     assert resp.status_code == 404
 
 
-def test_rmeta_409_when_not_done(tmp_path):
+def test_rmeta_409_when_not_done(tmp_path: Path) -> None:
     """The core DONE-gate (via serve_artifact_file) applies to the product route."""
     client, store = _make_client(tmp_path)
     job = Job.new(engine="redtusk", filename="test.docx")
@@ -95,19 +95,20 @@ def test_rmeta_409_when_not_done(tmp_path):
     assert resp.status_code == 409
 
 
-def test_rmeta_404_for_unknown_job(tmp_path):
+def test_rmeta_404_for_unknown_job(tmp_path: Path) -> None:
     client, _ = _make_client(tmp_path)
     resp = client.get("/v1/jobs/00000000-0000-0000-0000-000000000000/rmeta")
     assert resp.status_code == 404
 
 
-def test_make_extension_wires_rmeta_route():
+def test_make_extension_wires_rmeta_route() -> None:
     ext = make_extension()
-    paths = {r.path for router in ext.routers for r in router.routes}
+    # BaseRoute does not declare .path; every concrete route class that carries one does.
+    paths = {getattr(r, "path", None) for router in ext.routers for r in router.routes}
     assert "/v1/jobs/{job_id}/rmeta" in paths
 
 
-def test_serve_ui_toggle(monkeypatch):
+def test_serve_ui_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDTUSK_SERVE_UI", "0")
     assert make_extension().static_ui is None
     monkeypatch.setenv("REDTUSK_SERVE_UI", "1")

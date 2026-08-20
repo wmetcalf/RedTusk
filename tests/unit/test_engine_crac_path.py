@@ -10,19 +10,24 @@ the branch logic without a real CRaC JVM.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from redtusk import engine as eng_mod
 from redtusk.engine import RedTuskEngine
 
 
-def test_crac_env_routes_to_crac_then_falls_back_to_cold(monkeypatch, tmp_path):
-    calls: list[tuple] = []
+def test_crac_env_routes_to_crac_then_falls_back_to_cold(monkeypatch: pytest.MonkeyPatch,
+                                                         tmp_path: Path) -> None:
+    calls: list[tuple[Any, ...]] = []
 
-    def fake_crac(inp, rmeta, *, checkpoint_dir, scratch_dir, timeout):
+    def fake_crac(inp: Path, rmeta: Path, *, checkpoint_dir: Path,
+                  scratch_dir: Path, timeout: float) -> None:
         calls.append(("crac", checkpoint_dir, scratch_dir))
         raise RuntimeError("warp: cpu.features mismatch")  # e.g. restore under gVisor
 
-    def fake_cold(inp, rmeta, *, timeout):
+    def fake_cold(inp: Path, rmeta: Path, *, timeout: float) -> None:
         calls.append(("cold",))
         rmeta.mkdir(parents=True, exist_ok=True)
 
@@ -35,7 +40,7 @@ def test_crac_env_routes_to_crac_then_falls_back_to_cold(monkeypatch, tmp_path):
     assert calls == [("crac", "/app/checkpoint", "/tmp/redtusk-crac"), ("cold",)]
 
 
-def test_crac_env_honors_scratch_override(monkeypatch, tmp_path):
+def test_crac_env_honors_scratch_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     seen: list[str] = []
     monkeypatch.setattr(
         eng_mod, "_crac_restore_worker",
@@ -47,7 +52,7 @@ def test_crac_env_honors_scratch_override(monkeypatch, tmp_path):
     assert seen == ["/tmp/custom"]
 
 
-def test_no_crac_env_uses_cold(monkeypatch, tmp_path):
+def test_no_crac_env_uses_cold(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[str] = []
     monkeypatch.setattr(eng_mod, "_run_worker", lambda i, r, *, timeout: calls.append("cold"))
     monkeypatch.delenv("REDTUSK_CRAC_CHECKPOINT", raising=False)

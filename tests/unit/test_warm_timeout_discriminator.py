@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import subprocess
 import types
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -35,22 +37,22 @@ class _FakeProc:
         self.returncode = returncode
         self.killed = False
 
-    def poll(self):
+    def poll(self) -> int | None:
         return None                      # ALIVE at the pre-flight check
 
-    def communicate(self, timeout=None):
+    def communicate(self, timeout: float | None = None) -> tuple[bytes | None, bytes | None]:
         if self._timeout and timeout is not None:
             raise subprocess.TimeoutExpired(cmd="java", timeout=timeout)
         return (b"", b"boom")
 
-    def kill(self):
+    def kill(self) -> None:
         self.killed = True
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: float | None = None) -> int:
         return self.returncode
 
 
-def _engine_with_warm(tmp_path, proc, *, started: bool):
+def _engine_with_warm(tmp_path: Path, proc: Any, *, started: bool) -> RedTuskEngine:
     eng = RedTuskEngine()
     scratch = tmp_path / "slot"
     (scratch / "in").mkdir(parents=True)
@@ -60,12 +62,13 @@ def _engine_with_warm(tmp_path, proc, *, started: bool):
         (control / "control.started").touch()
     eng._warm = engine_mod._WarmWorker(
         proc=proc, scratch=scratch, in_dir=scratch / "in", control_dir=control,
-        tmp=types.SimpleNamespace(cleanup=lambda: None),
+        tmp=cast(Any, types.SimpleNamespace(cleanup=lambda: None)),
     )
     return eng
 
 
-def test_a_timeout_after_the_job_started_is_not_re_run(tmp_path, monkeypatch):
+def test_a_timeout_after_the_job_started_is_not_re_run(tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
     """MUTATION: ignore control.started and always raise EngineTimeoutError -> unchanged here, but
     the next test fails. Both directions are needed; neither alone pins the discriminator."""
     calls: list[float] = []
@@ -83,7 +86,9 @@ def test_a_timeout_after_the_job_started_is_not_re_run(tmp_path, monkeypatch):
     )
 
 
-def test_a_timeout_before_the_job_started_falls_back_to_cold(tmp_path, monkeypatch):
+def test_a_timeout_before_the_job_started_falls_back_to_cold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """MUTATION: raise EngineTimeoutError unconditionally (i.e. drop the marker check) -> a JVM that
     never picked the job up fails the job terminally with no fallback, and this fails."""
     calls: list[float] = []
@@ -100,7 +105,8 @@ def test_a_timeout_before_the_job_started_falls_back_to_cold(tmp_path, monkeypat
     )
 
 
-def test_the_warm_jvm_is_still_killed_either_way(tmp_path, monkeypatch):
+def test_the_warm_jvm_is_still_killed_either_way(tmp_path: Path,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
     """Whichever branch is taken, the slot's process must not be left running."""
     monkeypatch.setattr(engine_mod, "_run_worker", lambda i, o, timeout: None)
     src = tmp_path / "d.pdf"

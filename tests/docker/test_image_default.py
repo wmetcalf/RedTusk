@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -26,7 +27,7 @@ def _image_exists() -> bool:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def require_image():
+def require_image() -> None:
     if not _image_exists():
         pytest.skip(
             f"Image {IMAGE} not built — run: "
@@ -34,7 +35,7 @@ def require_image():
         )
 
 
-def run_worker(input_text: str, filename_hint: str = "test.txt") -> dict:
+def run_worker(input_text: str, filename_hint: str = "test.txt") -> dict[str, Any]:
     """Run the worker container against in-memory text; return parsed metadata.json."""
     with tempfile.TemporaryDirectory() as scratch_base:
         scratch = Path(scratch_base) / "slot"
@@ -83,7 +84,7 @@ def run_worker(input_text: str, filename_hint: str = "test.txt") -> dict:
         (scratch / "job.json").write_text(json.dumps(job))
 
         # Background thread: signal the file-based handshake after container starts.
-        def signal_worker():
+        def signal_worker() -> None:
             time.sleep(2)
             try:
                 (scratch / "control.go").touch()
@@ -118,10 +119,10 @@ def run_worker(input_text: str, filename_hint: str = "test.txt") -> dict:
 
         meta_path = scratch / "out" / "metadata.json"
         assert meta_path.exists(), "metadata.json must be written"
-        return json.loads(meta_path.read_text())
+        return cast(dict[str, Any], json.loads(meta_path.read_text()))
 
 
-def test_worker_produces_metadata_for_text_file():
+def test_worker_produces_metadata_for_text_file() -> None:
     meta = run_worker("Hello from the Docker image test.\n", "test.txt")
 
     assert meta["redtusk_version"] == "0.1.0"
@@ -144,21 +145,21 @@ def test_worker_produces_metadata_for_text_file():
     }
 
 
-def test_worker_sandbox_profile_is_default():
+def test_worker_sandbox_profile_is_default() -> None:
     meta = run_worker("sandbox profile test\n")
     assert meta["sandbox"]["profile"] == "default"
     assert meta["sandbox"]["appcds"] is True
     assert meta["sandbox"]["crac"] is False
 
 
-def test_worker_exits_zero_for_valid_input():
+def test_worker_exits_zero_for_valid_input() -> None:
     meta = run_worker("RedTusk Docker smoke test.\n")
     assert meta
     assert meta["extraction"]["duration_ms"] >= 0
     assert meta["truncated"] is None
 
 
-def test_worker_handles_html_input():
+def test_worker_handles_html_input() -> None:
     html = "<html><body><h1>RedTusk</h1><p>Docker image HTML test.</p></body></html>"
     meta = run_worker(html, "test.html")
     root = meta["extraction"]["entries"][0]

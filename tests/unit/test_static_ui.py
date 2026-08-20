@@ -38,13 +38,13 @@ _APP_JS_CODE = _strip_js_comments(_APP_JS)
 
 
 # ── dead routes the host does NOT serve ────────────────────────────────────
-def test_ui_does_not_call_unported_routes():
+def test_ui_does_not_call_unported_routes() -> None:
     for dead in ("/v1/convert", "/v1/jobs/counts", "/infected-zip"):
         assert dead not in _APP_JS_CODE, f"UI still calls unported route {dead}"
 
 
 # ── submit shape: multipart file + engine + params ─────────────────────────
-def test_upload_uses_multipart_form():
+def test_upload_uses_multipart_form() -> None:
     assert "new FormData()" in _APP_JS
     assert "fd.append('file'" in _APP_JS
     assert "fd.append('engine', 'redtusk')" in _APP_JS
@@ -53,7 +53,7 @@ def test_upload_uses_multipart_form():
     assert "optParams()" not in _APP_JS
 
 
-def test_forwarded_params_are_uppercase_redtusk_keys():
+def test_forwarded_params_are_uppercase_redtusk_keys() -> None:
     # dispatcher drops anything not ^[A-Z][A-Z0-9_]*$ before the allowlist
     for key in (
         "REDTUSK_ENABLE_THUMBNAILS", "REDTUSK_ENABLE_QR", "REDTUSK_ENABLE_OCR",
@@ -64,7 +64,7 @@ def test_forwarded_params_are_uppercase_redtusk_keys():
 
 
 # ── envelope-shaped data layer ─────────────────────────────────────────────
-def test_detail_reads_embedded_rmeta_and_normalizes_host_jobs():
+def test_detail_reads_embedded_rmeta_and_normalizes_host_jobs() -> None:
     assert "redtusk_rmeta" in _APP_JS                 # reads the embedded rmeta
     assert "/metadata" in _APP_JS                     # from the envelope endpoint
     assert "function normalizeJob" in _APP_JS         # host job-shape adapter
@@ -72,7 +72,7 @@ def test_detail_reads_embedded_rmeta_and_normalizes_host_jobs():
 
 
 # ── thumbnails resolved via the declared-artifact id map ───────────────────
-def test_thumbnails_resolved_via_artifact_map():
+def test_thumbnails_resolved_via_artifact_map() -> None:
     assert "_curArtMap" in _APP_JS
     assert "_entryThumbPath" in _APP_JS
     assert "rmeta/embedded/thumbnails/" in _APP_JS
@@ -81,21 +81,21 @@ def test_thumbnails_resolved_via_artifact_map():
 
 
 # ── assets under /assets/ (the StaticUI seam serves / + /assets only) ──────
-def test_index_references_assets_subdir_not_static():
+def test_index_references_assets_subdir_not_static() -> None:
     assert "/static/" not in _INDEX
     assert "/assets/app.js" in _INDEX
     assert "/assets/app.css" in _INDEX
 
 
 # ── packaging: static/ must ship in the wheel (the 404 root-cause) ─────────
-def test_pyproject_packages_static_assets():
+def test_pyproject_packages_static_assets() -> None:
     data = tomllib.loads((_ROOT / "pyproject.toml").read_text())
     pkg_data = data["tool"]["setuptools"]["package-data"]["redtusk"]
     assert "static/index.html" in pkg_data
     assert any("static/assets/" in p for p in pkg_data)
 
 
-def test_static_assets_present_on_disk():
+def test_static_assets_present_on_disk() -> None:
     assert (_STATIC / "index.html").is_file()
     assert (_STATIC / "assets" / "app.js").is_file()
     assert (_STATIC / "assets" / "app.css").is_file()

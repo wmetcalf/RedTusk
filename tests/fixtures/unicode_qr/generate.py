@@ -95,14 +95,14 @@ html_body = MIMEText(
     f"<html><body><p>Scan:</p><pre>{eml_art}</pre></body></html>", "html", "utf-8")
 msg.attach(plain)
 msg.attach(html_body)
-with open(f"{OUT}/qr_fixture.eml", "wb") as f:
-    f.write(msg.as_bytes())
+with open(f"{OUT}/qr_fixture.eml", "wb") as fb:
+    fb.write(msg.as_bytes())
 
 # ---- RTF (QR in plain text) ----
 rtf_url = "https://test.example/qr-rtf"
 rtf_art = render_qr_art(rtf_url)
 # Escape unicode for RTF — chars > 0x7F become \\uNNNNN?
-def rtf_escape(s):
+def rtf_escape(s: str) -> str:
     out = []
     for ch in s:
         c = ord(ch)
@@ -183,5 +183,5 @@ except Exception as e:
 
 print()
 print(f"Fixtures in {OUT}:")
-for f in sorted(os.listdir(OUT)):
-    print(f"  {f}  ({os.path.getsize(os.path.join(OUT, f))} bytes)")
+for name in sorted(os.listdir(OUT)):
+    print(f"  {name}  ({os.path.getsize(os.path.join(OUT, name))} bytes)")

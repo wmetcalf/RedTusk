@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 # Matches the warp restore error that names the compatible value, e.g.
 #   "... incompatible or missing CPU features, try using
@@ -71,7 +72,8 @@ def classify(
     return INCONCLUSIVE, None
 
 
-def _build_config(kernel: str, rootfs: str, boot_args: str, mem_mib: int, vcpu: int) -> dict:
+def _build_config(kernel: str, rootfs: str, boot_args: str, mem_mib: int,
+                  vcpu: int) -> dict[str, Any]:
     return {
         "boot-source": {"kernel_image_path": kernel, "boot_args": boot_args},
         "drives": [
@@ -148,7 +150,7 @@ def _read(path: Path) -> str:
         return ""
 
 
-def _kill(proc: subprocess.Popen) -> None:
+def _kill(proc: subprocess.Popen[bytes]) -> None:
     try:
         if proc.poll() is None:
             proc.kill()

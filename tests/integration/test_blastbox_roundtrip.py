@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from blastbox.contract import EmbeddedResource, ExtractedText, find_by_type
@@ -69,7 +70,7 @@ _SKIP_REASON = (
 
 
 @pytest.fixture(scope="module")
-def simple_txt(tmp_path_factory) -> Path:
+def simple_txt(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A small plain-text file used as the detonation input."""
     d = tmp_path_factory.mktemp("input")
     p = d / "hello.txt"
@@ -87,13 +88,18 @@ def simple_txt(tmp_path_factory) -> Path:
 
 
 @pytest.mark.skipif(_SKIP_LIVE, reason=_SKIP_REASON)
-def test_run_detonation_exits_zero(simple_txt, tmp_path):
+# cast: blastbox's Engine protocol declares `detect` as a required member, but its own harness
+# calls it behind `if hasattr(engine, "detect")` -- so it is optional in fact, and RedTuskEngine
+# (which has no detect) is a valid engine at runtime. The protocol overstates the requirement;
+# that is a blastbox-side fix, not something to paper over by bolting a no-op detect onto this
+# engine just to satisfy a type check.
+def test_run_detonation_exits_zero(simple_txt: Path, tmp_path: Path) -> None:
     """run_detonation returns 0 and produces metadata.json."""
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
 
     rc = run_detonation(
-        engine,
+        cast(Any, engine),
         input_path=simple_txt,
         output_dir=outdir,
         limits=Limits(),
@@ -108,14 +114,14 @@ def test_run_detonation_exits_zero(simple_txt, tmp_path):
 
 
 @pytest.mark.skipif(_SKIP_LIVE, reason=_SKIP_REASON)
-def test_validate_worker_output_accepts_ok(simple_txt, tmp_path):
+def test_validate_worker_output_accepts_ok(simple_txt: Path, tmp_path: Path) -> None:
     """Host trust validation accepts a well-formed detonation."""
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
     rc = run_detonation(
-        engine,
+        cast(Any, engine),
         input_path=simple_txt,
         output_dir=outdir,
         limits=Limits(),
@@ -134,13 +140,13 @@ def test_validate_worker_output_accepts_ok(simple_txt, tmp_path):
 
 
 @pytest.mark.skipif(_SKIP_LIVE, reason=_SKIP_REASON)
-def test_validate_worker_output_finds_embedded_resource(simple_txt, tmp_path):
+def test_validate_worker_output_finds_embedded_resource(simple_txt: Path, tmp_path: Path) -> None:
     """Payload must contain at least one EmbeddedResource (the root entry)."""
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
-    run_detonation(engine, input_path=simple_txt, output_dir=outdir, limits=Limits())
+    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
     env = validate_worker_output(
         output_dir=outdir,
         input_sha256=input_sha256,
@@ -158,13 +164,13 @@ def test_validate_worker_output_finds_embedded_resource(simple_txt, tmp_path):
 
 
 @pytest.mark.skipif(_SKIP_LIVE, reason=_SKIP_REASON)
-def test_validate_worker_output_finds_extracted_text(simple_txt, tmp_path):
+def test_validate_worker_output_finds_extracted_text(simple_txt: Path, tmp_path: Path) -> None:
     """ExtractedText node must be present and contain the doc's text."""
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
-    run_detonation(engine, input_path=simple_txt, output_dir=outdir, limits=Limits())
+    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
     env = validate_worker_output(
         output_dir=outdir,
         input_sha256=input_sha256,
@@ -181,12 +187,12 @@ def test_validate_worker_output_finds_extracted_text(simple_txt, tmp_path):
 
 
 @pytest.mark.skipif(_SKIP_LIVE, reason=_SKIP_REASON)
-def test_validate_worker_output_rejects_wrong_sha(simple_txt, tmp_path):
+def test_validate_worker_output_rejects_wrong_sha(simple_txt: Path, tmp_path: Path) -> None:
     """validate_worker_output must raise OutputTrustError on sha256 mismatch."""
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
 
-    run_detonation(engine, input_path=simple_txt, output_dir=outdir, limits=Limits())
+    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
 
     wrong_sha = "a" * 64
     with pytest.raises(OutputTrustError):
@@ -206,7 +212,7 @@ def test_validate_worker_output_rejects_wrong_sha(simple_txt, tmp_path):
 # contract is still exercised.
 
 
-_SAMPLE_RMETA: dict = {
+_SAMPLE_RMETA: dict[str, Any] = {
     "redtusk_version": "0.1.0",
     "input": {
         "sha256": "a" * 64,
@@ -319,7 +325,7 @@ _SAMPLE_RMETA: dict = {
 }
 
 
-def test_build_tree_root_is_embedded_resource():
+def test_build_tree_root_is_embedded_resource() -> None:
     entries = _SAMPLE_RMETA["extraction"]["entries"]
     root = _build_tree(entries)
     assert isinstance(root, EmbeddedResource)
@@ -328,7 +334,7 @@ def test_build_tree_root_is_embedded_resource():
     assert "application/vnd.openxmlformats" in root.content_type
 
 
-def test_build_tree_text_becomes_child():
+def test_build_tree_text_becomes_child() -> None:
     entries = _SAMPLE_RMETA["extraction"]["entries"]
     root = _build_tree(entries)
     # Root has text → ExtractedText child
@@ -337,7 +343,7 @@ def test_build_tree_text_becomes_child():
     assert "Hello" in texts[0].text
 
 
-def test_build_tree_depth1_children_attached_to_root():
+def test_build_tree_depth1_children_attached_to_root() -> None:
     entries = _SAMPLE_RMETA["extraction"]["entries"]
     root = _build_tree(entries)
     er_children = [c for c in root.children if isinstance(c, EmbeddedResource)]
@@ -349,7 +355,7 @@ def test_build_tree_depth1_children_attached_to_root():
     assert "/embedded/doc.docx" in paths
 
 
-def test_build_tree_depth2_nested_correctly():
+def test_build_tree_depth2_nested_correctly() -> None:
     entries = _SAMPLE_RMETA["extraction"]["entries"]
     root = _build_tree(entries)
     # Find the nested doc
@@ -364,14 +370,14 @@ def test_build_tree_depth2_nested_correctly():
     assert er_children[0].depth == 2
 
 
-def test_build_tree_metadata_preserved():
+def test_build_tree_metadata_preserved() -> None:
     entries = _SAMPLE_RMETA["extraction"]["entries"]
     root = _build_tree(entries)
     assert root.metadata is not None
     assert root.metadata.fields.get("dc:creator") == "Alice"
 
 
-def test_build_tree_find_by_type_counts():
+def test_build_tree_find_by_type_counts() -> None:
     entries = _SAMPLE_RMETA["extraction"]["entries"]
     root = _build_tree(entries)
     all_er = find_by_type(root, EmbeddedResource)
@@ -381,7 +387,7 @@ def test_build_tree_find_by_type_counts():
     assert len(all_text) == 2
 
 
-def test_build_tree_single_entry():
+def test_build_tree_single_entry() -> None:
     """A single root entry produces a valid root with no EmbeddedResource children."""
     entries = [_SAMPLE_RMETA["extraction"]["entries"][0]]
     root = _build_tree(entries)
@@ -391,7 +397,7 @@ def test_build_tree_single_entry():
     assert len(er_children) == 0
 
 
-def test_build_tree_empty_entries():
+def test_build_tree_empty_entries() -> None:
     """Empty entry list synthesises a minimal root node."""
     root = _build_tree([])
     assert isinstance(root, EmbeddedResource)

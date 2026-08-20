@@ -16,15 +16,18 @@ from __future__ import annotations
 import json
 import types
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
+from blastbox.limits import Limits
 
 from redtusk.engine import RedTuskEngine, _env_param_overrides
 
 
-def _entry(path, parent, depth, ct, sha, **extra):
+def _entry(path: str, parent: str | None, depth: int, ct: str, sha: str,
+           **extra: Any) -> dict[str, Any]:
     """A schema-valid extraction entry (all required fields present)."""
-    e = {
+    e: dict[str, Any] = {
         "path": path, "parent_path": parent, "depth": depth, "content_type": ct,
         "size_bytes": 10, "sha256": sha, "metadata": {}, "text": "", "language": None,
         "qr": {"codes": [], "skipped": None},
@@ -36,7 +39,7 @@ def _entry(path, parent, depth, ct, sha, **extra):
 
 
 # A schema-conformant rmeta (detonate now validates it via the restored trust gate).
-_RMETA_FIXTURE = {
+_RMETA_FIXTURE: dict[str, Any] = {
     "redtusk_version": "test",
     "input": {
         "filename_hint": "x.xlsx", "size_bytes": 10, "sha256": "ab" * 32,
@@ -71,7 +74,7 @@ def _write_fixture_rmeta(rmeta_dir: Path) -> None:
     (rmeta_dir / "embedded" / "thumbnails" / "image3.jpeg.jpg").write_bytes(b"\xff\xd8thumb")
 
 
-def _detonate(tmp_path: Path, monkeypatch):
+def _detonate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(
         RedTuskEngine, "_produce_rmeta",
         lambda self, input, rmeta_dir, timeout: _write_fixture_rmeta(rmeta_dir),
@@ -80,10 +83,11 @@ def _detonate(tmp_path: Path, monkeypatch):
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    return RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))
+    return RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
 
 
-def test_detonate_embeds_rmeta_and_drops_metadata_json(tmp_path, monkeypatch):
+def test_detonate_embeds_rmeta_and_drops_metadata_json(tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
     res = _detonate(tmp_path, monkeypatch)
     paths = [a.path for a in res.artifacts]
     # The wart: rmeta/metadata.json must NOT be a declared artifact (no second
@@ -96,7 +100,9 @@ def test_detonate_embeds_rmeta_and_drops_metadata_json(tmp_path, monkeypatch):
     assert embedded["extraction"]["entries"][1]["path"] == "/image3.jpeg"
 
 
-def test_detonate_declares_thumbnail_artifacts_servable_by_id(tmp_path, monkeypatch):
+def test_detonate_declares_thumbnail_artifacts_servable_by_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     res = _detonate(tmp_path, monkeypatch)
     paths = [a.path for a in res.artifacts]
     assert "rmeta/embedded/image3.jpeg" in paths                      # the embedded image
@@ -105,7 +111,7 @@ def test_detonate_declares_thumbnail_artifacts_servable_by_id(tmp_path, monkeypa
     assert len(ids) == len(set(ids)), "artifact ids must be unique (host serves by id)"
 
 
-def test_env_param_overrides_uppercase_only(monkeypatch):
+def test_env_param_overrides_uppercase_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDTUSK_ENABLE_THUMBNAILS", "true")
     monkeypatch.setenv("REDTUSK_ENABLE_QR", "false")
     monkeypatch.setenv("REDTUSK_MAX_RECURSION_DEPTH", "20")
@@ -116,14 +122,15 @@ def test_env_param_overrides_uppercase_only(monkeypatch):
     assert out["limits"]["max_recursion_depth"] == 20
 
 
-def test_detonate_fails_closed_on_malformed_rmeta(tmp_path, monkeypatch):
+def test_detonate_fails_closed_on_malformed_rmeta(tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
     """Trust gate: a worker rmeta that violates the schema fails the job (raises),
     not flows unvalidated to the UI."""
     from redtusk.schema import SchemaValidationError
 
     bad = {"redtusk_version": "x"}  # missing required input/extraction/...
 
-    def fake_produce(self, input, rmeta_dir, timeout):
+    def fake_produce(self: Any, input: Path, rmeta_dir: Path, timeout: float) -> None:
         (rmeta_dir / "embedded").mkdir(parents=True, exist_ok=True)
         (rmeta_dir / "metadata.json").write_text(json.dumps(bad))
 
@@ -133,10 +140,10 @@ def test_detonate_fails_closed_on_malformed_rmeta(tmp_path, monkeypatch):
     out = tmp_path / "out"
     out.mkdir()
     with pytest.raises(SchemaValidationError):
-        RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))
+        RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
 
 
-def test_thumbnails_default_on_when_no_param():
+def test_thumbnails_default_on_when_no_param() -> None:
     """ON is the default when a job sends no REDTUSK_ENABLE_THUMBNAILS — sensible for
     direct API callers and warm guests dispatched without the param. This is the
     DEFAULT, not a floor: an explicit per-job override still wins on every tier
@@ -146,7 +153,7 @@ def test_thumbnails_default_on_when_no_param():
     assert _DEFAULT_JOB["enable_thumbnails"] is True
 
 
-def test_qr_default_on_ocr_default_off():
+def test_qr_default_on_ocr_default_off() -> None:
     """QR defaults ON (forensic IOC — decoded QR payloads are commonly phishing URLs) and
     the zxing scan is cheap, so warm guests dispatched without a param still get it. OCR
     stays OFF by default (tesseract-per-image is heavier / image-bomb-sensitive). Both are
@@ -157,7 +164,9 @@ def test_qr_default_on_ocr_default_off():
     assert _DEFAULT_JOB["enable_ocr"] is False
 
 
-def test_env_param_overrides_can_disable_thumbnails_on_cold(monkeypatch):
+def test_env_param_overrides_can_disable_thumbnails_on_cold(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Cold honors an explicit per-job off (the override beats the default)."""
     monkeypatch.setenv("REDTUSK_ENABLE_THUMBNAILS", "false")
     assert _env_param_overrides()["enable_thumbnails"] is False
@@ -174,21 +183,21 @@ class _FakeWarmProc:
         self._done = False
         self.returncode = returncode
 
-    def poll(self):
+    def poll(self) -> int | None:
         return self.returncode if self._done else None
 
-    def communicate(self, timeout=None):
+    def communicate(self, timeout: float | None = None) -> tuple[bytes | None, bytes | None]:
         self._done = True
         return (b"", b"")
 
-    def kill(self):
+    def kill(self) -> None:
         self._done = True
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: float | None = None) -> int:
         return self.returncode
 
 
-def _warm_engine_with_fake_slot(tmp_path: Path):
+def _warm_engine_with_fake_slot(tmp_path: Path) -> tuple[RedTuskEngine, Path, Path]:
     """A RedTuskEngine wired to a fake warm slot (real control dir + fake JVM proc) and a
     staged input. Returns (engine, control_dir, input_path) for the warm _produce_rmeta path."""
     eng = RedTuskEngine()
@@ -196,16 +205,20 @@ def _warm_engine_with_fake_slot(tmp_path: Path):
     in_dir, ctrl = slot / "in", slot / "control"
     for d in (slot, in_dir, ctrl):
         d.mkdir(parents=True)
-    eng._warm = types.SimpleNamespace(
+    # cast: a hand-built stand-in for the warm slot. The point of this test is the warm
+    # _produce_rmeta path, not constructing a real _WarmWorker around a real JVM.
+    eng._warm = cast(Any, types.SimpleNamespace(
         proc=_FakeWarmProc(), scratch=slot, in_dir=in_dir, control_dir=ctrl,
         tmp=types.SimpleNamespace(cleanup=lambda: None),
-    )
+    ))
     inp = tmp_path / "input.docx"
     inp.write_bytes(b"warm doc bytes")
     return eng, ctrl, inp
 
 
-def test_warm_detonate_threads_per_job_thumbnail_toggle_into_jobjson(tmp_path, monkeypatch):
+def test_warm_detonate_threads_per_job_thumbnail_toggle_into_jobjson(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The warm JVM reads enable_thumbnails per job from the job.json the engine writes
     to control/. blastbox's warm worker injects the allowlisted REDTUSK_ENABLE_THUMBNAILS
     into os.environ BEFORE detonate, so an explicit per-job OFF disables thumbnails on the
@@ -221,7 +234,9 @@ def test_warm_detonate_threads_per_job_thumbnail_toggle_into_jobjson(tmp_path, m
     assert job["enable_thumbnails"] is False  # per-job OFF reached the warm JVM descriptor
 
 
-def test_warm_detonate_defaults_thumbnails_on_when_no_param(tmp_path, monkeypatch):
+def test_warm_detonate_defaults_thumbnails_on_when_no_param(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Converse of the toggle-off guard: with no param, the warm job.json keeps the ON default."""
     for v in ("REDTUSK_ENABLE_THUMBNAILS", "REDTUSK_ENABLE_QR", "REDTUSK_ENABLE_OCR"):
         monkeypatch.delenv(v, raising=False)
@@ -233,7 +248,7 @@ def test_warm_detonate_defaults_thumbnails_on_when_no_param(tmp_path, monkeypatc
     assert job["enable_thumbnails"] is True
 
 
-def test_env_param_overrides_absent_is_empty(monkeypatch):
+def test_env_param_overrides_absent_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     for v in (
         "REDTUSK_ENABLE_QR", "REDTUSK_ENABLE_OCR", "REDTUSK_ENABLE_THUMBNAILS",
         "REDTUSK_MAX_RECURSION_DEPTH", "REDTUSK_MAX_EMBEDDED_ENTRIES",
@@ -242,7 +257,7 @@ def test_env_param_overrides_absent_is_empty(monkeypatch):
     assert _env_param_overrides() == {}
 
 
-def test_env_param_overrides_clamps_out_of_range_limits(monkeypatch):
+def test_env_param_overrides_clamps_out_of_range_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     # Dispatcher-forwarded (potentially client-influenced) resource limits must be clamped to a
     # sane range: a negative value must not silently disable the recursion/embedded-entry DoS
     # guard, and an absurd value must not drive the worker toward unbounded recursion/allocation.
@@ -261,14 +276,15 @@ def test_env_param_overrides_clamps_out_of_range_limits(monkeypatch):
     assert lim2["max_embedded_entries"] == 5000
 
 
-def test_detonate_clips_huge_truncated_warning(tmp_path, monkeypatch):
+def test_detonate_clips_huge_truncated_warning(tmp_path: Path,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
     # truncated.observed is schema-valid but UNBOUNDED (integer, no max); the truncated-warning
     # f-string interpolated it into a max_length=2000 Warning.message -> pydantic ValidationError
     # crashed detonate. The message must be clipped like the sibling rmeta-warnings loop.
     hostile = {**_RMETA_FIXTURE, "truncated": {
         "reason": "max_embedded_entries", "limit": 5000, "observed": 10 ** 2000}}
 
-    def _write(self, input, rmeta_dir, timeout):
+    def _write(self: Any, input: Path, rmeta_dir: Path, timeout: float) -> None:
         (rmeta_dir / "embedded" / "thumbnails").mkdir(parents=True, exist_ok=True)
         (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
         (rmeta_dir / "embedded" / "image3.jpeg").write_bytes(b"\xff\xd8jpeg")
@@ -280,12 +296,13 @@ def test_detonate_clips_huge_truncated_warning(tmp_path, monkeypatch):
     out = tmp_path / "out"
     out.mkdir()
     # must NOT raise
-    res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))
+    res = RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
     tw = [w for w in res.warnings if w.code == "truncated"]
     assert tw and len(tw[0].message) <= 2000
 
 
-def test_detonate_clips_unbounded_rmeta_strings(tmp_path, monkeypatch):
+def test_detonate_clips_unbounded_rmeta_strings(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
     # rmeta entry path/content_type and root_content_type are schema-valid at ANY length (no
     # maxLength) but the blastbox contract RAISES: EmbeddedResource.embedded_path (4096) /
     # content_type (255), Detection.mime (255). Passing them unclipped crashed detonate. Every
@@ -301,7 +318,7 @@ def test_detonate_clips_unbounded_rmeta_strings(tmp_path, monkeypatch):
         ],
     }}
 
-    def _write(self, input, rmeta_dir, timeout):
+    def _write(self: Any, input: Path, rmeta_dir: Path, timeout: float) -> None:
         (rmeta_dir / "embedded").mkdir(parents=True, exist_ok=True)
         (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
 
@@ -311,11 +328,11 @@ def test_detonate_clips_unbounded_rmeta_strings(tmp_path, monkeypatch):
     out = tmp_path / "out"
     out.mkdir()
     # must NOT raise
-    res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))
+    res = RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
     assert len(res.detected.mime) <= 255
 
 
-def test_detonate_bounds_record_key_count(tmp_path, monkeypatch):
+def test_detonate_bounds_record_key_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # rmeta entry `metadata` is schema-typed {"type":"object"} with NO maxProperties, but the
     # contract Record.fields is Field(max_length=4096) which RAISES (caps key COUNT). A document
     # with >4096 metadata properties (XMP/OOXML custom props) must not crash the mapping.
@@ -326,7 +343,7 @@ def test_detonate_bounds_record_key_count(tmp_path, monkeypatch):
             _entry("/", None, 0, "application/vnd.ms-excel", "ab" * 32, metadata=huge_meta)],
     }}
 
-    def _write(self, input, rmeta_dir, timeout):
+    def _write(self: Any, input: Path, rmeta_dir: Path, timeout: float) -> None:
         (rmeta_dir / "embedded").mkdir(parents=True, exist_ok=True)
         (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
 
@@ -335,10 +352,11 @@ def test_detonate_bounds_record_key_count(tmp_path, monkeypatch):
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
+    RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))  # must NOT raise
 
 
-def test_detonate_clamps_out_of_range_entry_depth(tmp_path, monkeypatch):
+def test_detonate_clamps_out_of_range_entry_depth(tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
     # EmbeddedResource.depth is Field(ge=0, le=64) which RAISES; the rmeta schema only enforces
     # depth minimum:0 (no maximum), so a tampered/version-drifted worker entry with depth>64
     # (the trust-gate threat model is a compromised worker) must be clamped, not crash.
@@ -350,7 +368,7 @@ def test_detonate_clamps_out_of_range_entry_depth(tmp_path, monkeypatch):
         ],
     }}
 
-    def _write(self, input, rmeta_dir, timeout):
+    def _write(self: Any, input: Path, rmeta_dir: Path, timeout: float) -> None:
         (rmeta_dir / "embedded").mkdir(parents=True, exist_ok=True)
         (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
 
@@ -359,4 +377,4 @@ def test_detonate_clamps_out_of_range_entry_depth(tmp_path, monkeypatch):
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
+    RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))  # must NOT raise

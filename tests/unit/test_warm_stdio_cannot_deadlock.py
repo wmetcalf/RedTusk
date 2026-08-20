@@ -17,42 +17,46 @@ import subprocess
 import threading
 import types
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
 
 from redtusk import engine as engine_mod
 
 
-def test_warmup_does_not_hand_the_jvm_an_unread_pipe(tmp_path, monkeypatch):
+def test_warmup_does_not_hand_the_jvm_an_unread_pipe(tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     """MUTATION: restore stdout=PIPE/stderr=PIPE -> a JVM that emits >64 KiB before ready
     deadlocks, and this fails."""
-    seen = {}
+    seen: dict[str, Any] = {}
 
     class _P:
         """Announces control.ready immediately, so warmup() returns instead of spending the
         full _WARMUP_READY_TIMEOUT poll (60s) in a test that only cares about the stdio kwargs."""
 
-        def __init__(self, *a, **kw):
+        def __init__(self, *a: Any, **kw: Any) -> None:
             seen.update(kw)
             self.returncode = None
             for f in ("stdout", "stderr"):
                 h = kw.get(f)
-                if hasattr(h, "name"):
+                if h is not None and hasattr(h, "name"):
                     ready = Path(h.name).parent / "control" / "control.ready"
                     ready.parent.mkdir(parents=True, exist_ok=True)
                     ready.touch()
 
-        def poll(self):
+        def poll(self) -> int | None:
             return None
 
-        def kill(self):
+        def kill(self) -> None:
             pass
 
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int:
             return 0
 
-        def communicate(self, timeout=None):
+        def communicate(self, timeout: float | None = None) -> tuple[bytes | None, bytes | None]:
             return (None, None)
 
-    monkeypatch.setattr(engine_mod.subprocess, "Popen", _P)
+    monkeypatch.setattr(subprocess, "Popen", _P)
     monkeypatch.setattr(engine_mod, "_java_worker_argv", lambda scratch: ["java", "-jar", "x"])
 
     eng = engine_mod.RedTuskEngine()
@@ -65,7 +69,7 @@ def test_warmup_does_not_hand_the_jvm_an_unread_pipe(tmp_path, monkeypatch):
     assert seen.get("stderr") is not subprocess.PIPE, "warm stderr is an unread PIPE"
 
 
-def test_exit_detail_reads_the_file_and_needs_no_pipe(tmp_path):
+def test_exit_detail_reads_the_file_and_needs_no_pipe(tmp_path: Path) -> None:
     """The diagnostic survives the move -- and now cannot block at all, because a file read
     always terminates whatever else still holds the descriptor.
 
@@ -80,7 +84,7 @@ def test_exit_detail_reads_the_file_and_needs_no_pipe(tmp_path):
     class _HostilePipe:
         """If the diagnostic touches proc.stderr at all, this blocks -- exactly the production
         failure (a surviving ZXingReader/tesseract still holding the write end)."""
-        def read(self, *a):
+        def read(self, *a: Any) -> None:
             threading.Event().wait()
 
     warm = types.SimpleNamespace(
@@ -93,15 +97,18 @@ def test_exit_detail_reads_the_file_and_needs_no_pipe(tmp_path):
     # hanging tells CI nothing except that CI is stuck.
     box: list[str] = []
     t = threading.Thread(
-        target=lambda: box.append(engine_mod.RedTuskEngine._warm_exit_detail(warm)), daemon=True)
+        target=lambda: box.append(
+            engine_mod.RedTuskEngine._warm_exit_detail(cast(Any, warm))),
+        daemon=True)
     t.start()
     t.join(timeout=10.0)
     assert not t.is_alive(), "_warm_exit_detail touched proc.stderr and blocked on it"
     assert box and "go-signal timeout rc=2" in box[0]
 
 
-def test_exit_detail_is_graceful_when_there_is_no_log(tmp_path):
+def test_exit_detail_is_graceful_when_there_is_no_log(tmp_path: Path) -> None:
     scratch = tmp_path / "slot"
     scratch.mkdir(parents=True)
     warm = types.SimpleNamespace(proc=types.SimpleNamespace(stderr=None), scratch=scratch)
-    assert engine_mod.RedTuskEngine._warm_exit_detail(warm)      # a reason, not an exception
+    # a reason, not an exception
+    assert engine_mod.RedTuskEngine._warm_exit_detail(cast(Any, warm))

@@ -92,3 +92,16 @@ select = ["E", "F", "I", "B", "UP", "N", "ASYNC"]
 python_version = "3.12"
 strict = true
 warn_unused_ignores = true
+# tests/unit/test_fc_cpu_probe_cli.py imports fc_cpu_probe, which lives in scripts/ and is put
+# on sys.path by the test itself. Without this mypy cannot follow that and reports
+# import-not-found for a module that exists.
+mypy_path = "scripts"
+
+# These four are only imported by tests/fixtures/unicode_qr/generate.py, the one-shot generator
+# for the QR corpus fixtures. None of them ship type information (docx and pptx have no stubs at
+# all), and none are needed to RUN the suite -- only to regenerate fixtures. Ignoring the
+# missing imports keeps the generator inside the type gate without adding four packages to every
+# CI install for a script that runs about once a year.
+[[tool.mypy.overrides]]
+module = ["qrcode.*", "docx.*", "pptx.*", "fpdf.*"]
+ignore_missing_imports = true
