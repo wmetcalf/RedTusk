@@ -1,0 +1,15 @@
+# The build context is streamed to the docker daemon on EVERY build, including every
+# scripts/worker_build.sh run. Without this, ~0.5 GB of untracked local Tika checkouts
+# (.tika-src 292M, .tika-fixed 100M, .tika-baseline 99M) plus .git goes over the wire each
+# time, on what is meant to be an inner-loop test command.
+#
+# Nothing here is a build input: Dockerfile.localtika now takes Tika from its own tika-build
+# stage at the pinned SHA, not from the context.
+.git
+.tika-src/
+.tika-fixed/
+.tika-baseline/
+worker_jvm/target/
+**/__pycache__/
+.venv/
+*.ext4

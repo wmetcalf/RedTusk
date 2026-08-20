@@ -22,6 +22,13 @@ import org.apache.tika.parser.html.JSoupParser;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
 import org.apache.tika.parser.pdf.PDFParserConfig;
+import org.apache.tika.parser.pdf.image.ImageGraphicsEngine;
+import org.apache.tika.parser.pdf.image.ImageGraphicsEngineFactory;
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.sax.XHTMLContentHandler;
+import org.apache.pdfbox.cos.COSStream;
+import org.apache.pdfbox.pdmodel.PDPage;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.tika.sax.AbstractRecursiveParserWrapperHandler;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.RecursiveParserWrapperHandler;
@@ -124,13 +131,7 @@ public final class ParserRunner {
 
     public ParseResult parse(File inputFile, String filenameHint, String rootSha256)
             throws Exception {
-        AutoDetectParser auto = new AutoDetectParser();
-        // AutoDetectParser wraps DefaultParser (itself a CompositeParser) — recurse to find
-        // the actual AbstractImageParser instances and enable perceptual hashing on each.
-        enableImageHashing(auto);
-        // JSoupParser.Config in ParseContext is ignored (parser reads instance field, not
-        // ParseContext).  Walk the tree to set extractScripts=true on the actual instance.
-        enableHtmlScriptExtraction(auto);
+        AutoDetectParser auto = sharedParser();
         BasicContentHandlerFactory chFactory = new BasicContentHandlerFactory(
                 BasicContentHandlerFactory.HANDLER_TYPE.TEXT, CHARS_PER_ENTRY);
         RecursiveParserWrapperHandler handler;
@@ -197,9 +198,16 @@ public final class ParserRunner {
         // PDF: extract tagged/marked-content structure (headings, tables, lists in
         // accessibility-compliant PDFs) and all image instances, not just unique hashes
         // (duplicate images in malicious PDFs are forensically significant).
-        PDFParserConfig pdfCfg = new PDFParserConfig();
-        pdfCfg.setExtractMarkedContent(true);
-        pdfCfg.setExtractUniqueInlineImagesOnly(false);
+        PDFParserConfig pdfCfg = newPdfConfig();
+        // ...BUT BOUNDED. Extracting every image instance is forensically right and, on a
+        // current Tika, genuinely expensive: measured on an 8.4 MB PDF, the engine finds 46
+        // DISTINCT images (dedup would save 6%, so this is not duplicate work) and spends ~1s
+        // per image decoding and perceptual-hashing them. That took one document from 2.6s to
+        // 61.9s -- a 20x throughput loss on the tier -- and it is unbounded: a PDF with a
+        // thousand images costs a thousand seconds and blows through the guest budget.
+        //
+        // An older Tika hid this by finding almost none of them (2 hashed images vs 200 hash
+        // fields on the same file), so the cap was never needed before.
         // Disable PDFParser-side per-page OCR. The default AUTO strategy
         // renders every PDF page through PDFBox into an image, then feeds
         // each rendered page to Tesseract — and bombs on a long tail of
@@ -216,8 +224,7 @@ public final class ParserRunner {
         context.set(PDFParserConfig.class, pdfCfg);
 
         // Office: surface hidden/empty rows in Excel workbooks — a common lure technique.
-        OfficeParserConfig officeCfg = new OfficeParserConfig();
-        officeCfg.setIncludeMissingRows(true);
+        OfficeParserConfig officeCfg = newOfficeConfig();
         // Macro security: the worker NEVER executes macros — it extracts them as
         // inert embedded entries for forensic review (preserved by the standard
         // VBA/XLM extraction path that surfaces "/macros/..." entries). Set the
@@ -934,6 +941,307 @@ public final class ParserRunner {
         }
     }
 
+    /**
+     * The configured parser tree, built ONCE per JVM.
+     *
+     * {@code new AutoDetectParser()} costs ~2.1s — it resolves Tika's default config and
+     * service-loads the whole parser/detector set. It was being constructed per parse and
+     * discarded, which made it ~100% of a job's engine time: measured on a 43-byte HTML,
+     * parse = 2165ms of which newAutoDetectParser = 2159ms. Nothing about it is job-specific
+     * (both configure* helpers are static and take only the tree; the settings they apply
+     * are constants), and Tika parsers are designed to be reused across parses — per-parse
+     * state lives in the ParseContext and handler, which are still built fresh below.
+     */
+    private static volatile AutoDetectParser sharedParser;
+
+    /**
+     * Package-private, not private: EmbeddedFileExtractor's second extraction pass needs the
+     * SAME instance. It used to call {@code new AutoDetectParser()} itself, which re-ran the
+     * whole SPI discovery -- DefaultParser.<init> -> ServiceLoader.loadStaticServiceProviders
+     * -> DefaultEncodingDetector.<init> -> the ML encoding detectors -- on EVERY JOB. Measured
+     * on a 2-byte input, post-prewarm: 4314ms with the ML detectors registered vs 713ms
+     * without, and a job-phase profile put the time squarely in that constructor chain.
+     *
+     * This is the same defect sharedParser() was introduced to fix, surviving in a second code
+     * path. A warm snapshot cannot help with it: the construction happens AFTER the go-signal,
+     * so no amount of prewarming captures it.
+     */
+    static AutoDetectParser sharedParser() {
+        AutoDetectParser p = sharedParser;
+        if (p != null) {
+            return p;
+        }
+        synchronized (ParserRunner.class) {
+            if (sharedParser == null) {
+                AutoDetectParser built = new AutoDetectParser();
+                // AutoDetectParser wraps DefaultParser (itself a CompositeParser) — recurse to
+                // find the actual AbstractImageParser instances and enable perceptual hashing.
+                enableImageHashing(built);
+                // JSoupParser.Config in ParseContext is ignored (parser reads instance field,
+                // not ParseContext). Walk the tree to set extractScripts=true on the instance.
+                enableHtmlScriptExtraction(built);
+                // Publish only after configuration, so no thread can observe a partly
+                // configured tree through the volatile read above.
+                sharedParser = built;
+            }
+            return sharedParser;
+        }
+    }
+
+    /**
+     * Office configuration, shared by both extraction passes for the same reason the PDF one is.
+     *
+     * includeMissingRows is the expensive one. It emits a row for every GAP in a sheet's used
+     * range -- content-bearing rows are emitted either way -- so on a sparse workbook it is
+     * pure padding. Measured on a 1.8 MB xlsm: 3,885,164 lines of extracted text of which
+     * 3,882,321 (99.9%) were tab-only empty rows, 8 MB of output, and 203s of parse. Production
+     * "finished" the same file in 67s only because it hit the 8 MiB write limit and stopped
+     * before reaching the VBA -- 1 entry against this build's 44.
+     *
+     * DEFAULT OFF, matching Tika's own default. The forensic argument for it is row alignment
+     * (knowing content sits at row 1,000,000 rather than row 5), which the row indices already
+     * carry; that is not worth 3.9M blank lines on every sparse sheet. REDTUSK_INCLUDE_MISSING_ROWS=1
+     * restores it for a case that needs literal row-for-row fidelity.
+     */
+    static OfficeParserConfig newOfficeConfig() {
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        cfg.setIncludeMissingRows(includeMissingRows());
+        return cfg;
+    }
+
+    /** Package-private for testing: System.getenv() cannot be set in-process. */
+    static boolean parseIncludeMissingRows(String raw) {
+        return raw != null && (raw.equals("1") || raw.equalsIgnoreCase("true"));
+    }
+
+    static boolean includeMissingRows() {
+        return parseIncludeMissingRows(System.getenv("REDTUSK_INCLUDE_MISSING_ROWS"));
+    }
+
+    /**
+     * The PDF configuration BOTH extraction passes must use.
+     *
+     * Shared, not copy-pasted, because copy-paste already failed here twice: pass 2
+     * (EmbeddedFileExtractor) built its own PDFParserConfig with the same two flags and a
+     * comment claiming it "carries the same config as the first pass". When pass 1 gained the
+     * inline-image cap, pass 2 silently did not — so a capped pass 1 was followed by an
+     * UNBOUNDED pass 2 over the same document, and a job-phase profile put 55 of 60 samples in
+     * EmbeddedFileExtractor.extract even with the cap set to 1. (The same divergence, in the
+     * same two methods, previously left pass 2 constructing its own AutoDetectParser.)
+     *
+     * Anything PDF-shaped belongs here, so the two passes cannot drift again.
+     */
+    static PDFParserConfig newPdfConfig() {
+        PDFParserConfig cfg = new PDFParserConfig();
+        cfg.setExtractMarkedContent(true);
+        // Every image INSTANCE, not just unique ones: duplicates in a malicious PDF are
+        // forensically significant. Bounded by the factory below -- on a current Tika this
+        // finds 600 image instances in one 8.4 MB document.
+        cfg.setExtractUniqueInlineImagesOnly(false);
+        cfg.setImageGraphicsEngineFactory(new BoundedImageGraphicsEngineFactory(maxInlineImages()));
+        return cfg;
+    }
+
+    /**
+     * Per-document ceiling on PDF inline images that are decoded + hashed.
+     *
+     * Env, not a job limit, deliberately: it needs no change to the host/guest job JSON
+     * contract, so it can be tuned on a running fleet the same way REDTUSK_PREWARM is. 0 or
+     * negative means unbounded (the pre-cap behaviour), for an operator who would rather have
+     * the complete image inventory than a bounded parse.
+     */
+    static int maxInlineImages() {
+        return parseMaxInlineImages(System.getenv("REDTUSK_MAX_INLINE_IMAGES"));
+    }
+
+    /** Package-private for testing: System.getenv() cannot be set in-process. */
+    static int parseMaxInlineImages(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return DEFAULT_MAX_INLINE_IMAGES;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            LOG.warning("Bad REDTUSK_MAX_INLINE_IMAGES=" + raw + "; using "
+                        + DEFAULT_MAX_INLINE_IMAGES);
+            return DEFAULT_MAX_INLINE_IMAGES;
+        }
+    }
+
+    /**
+     * Re-measured after the pass-2 fix, on the pinned Tika, 8.4 MB PDF (600 image instances):
+     *
+     *     cap=0 (unbounded)  114.1s   600 hash fields
+     *     cap=32              55.5s   192
+     *     cap=8               19.3s    48
+     *     cap=4               ~13s     24   <- default
+     *     cap=2                9.9s    12
+     *     cap=1               10.4s     8
+     *
+     * ~1.6s per image above a ~10s floor. The earlier default of 8 was chosen from a sweep taken
+     * while pass 2 was still uncapped, so those numbers were measuring the wrong thing.
+     *
+     * 4 is the balance point: production's Tika surfaces 2 image-hash fields on this document,
+     * so 24 is an order of magnitude more forensic coverage, for ~13s on the worst PDF in the
+     * corpus while ordinary documents run 3-3.7x FASTER than production. Raise it with
+     * REDTUSK_MAX_INLINE_IMAGES when a case needs the full inventory; <=0 disables the bound.
+     *
+     * The ~10s floor is NOT images and is not yet explained -- production does this document in
+     * 3.3s. Do not read a faster tier as "the Tika drift is fixed".
+     */
+    static final int DEFAULT_MAX_INLINE_IMAGES = 4;
+
+    /** How many trailing pages keep their own image allowance. */
+    static final int TAIL_PAGES = 2;
+
+    /** Bound on the page-tree walk in totalPages(); a cyclic /Parent chain must not spin. */
+    static final int MAX_PAGE_TREE_DEPTH = 64;
+
+    /**
+     * Stops handing out image engines once the document's image budget is spent.
+     *
+     * The counter is Tika's own per-document {@code imageCounter}, so the budget is per
+     * DOCUMENT rather than per page -- a thousand-image PDF cannot spend it a page at a time.
+     */
+    static final class BoundedImageGraphicsEngineFactory extends ImageGraphicsEngineFactory {
+        private final int cap;
+
+        BoundedImageGraphicsEngineFactory(int cap) {
+            this.cap = cap;
+        }
+
+        @Override
+        public ImageGraphicsEngine newEngine(PDPage page, int pageNumber,
+                EmbeddedDocumentExtractor extractor, PDFParserConfig cfg,
+                Map<COSStream, Integer> processedInlineImages, AtomicInteger imageCounter,
+                XHTMLContentHandler xhtml, Metadata parentMetadata, ParseContext parseContext) {
+            if (cap <= 0) {             // explicitly unbounded
+                return super.newEngine(page, pageNumber, extractor, cfg, processedInlineImages,
+                        imageCounter, xhtml, parentMetadata, parseContext);
+            }
+            return new BoundedImageGraphicsEngine(page, pageNumber, extractor, cfg,
+                    processedInlineImages, imageCounter, xhtml, parentMetadata, parseContext, cap);
+        }
+    }
+
+    /** Skips its page's images once the document-wide budget is spent. */
+    static final class BoundedImageGraphicsEngine extends ImageGraphicsEngine {
+        private final AtomicInteger counter;
+        private final int cap;
+        private final int tailAllowance;
+        private final boolean inTail;
+
+        BoundedImageGraphicsEngine(PDPage page, int pageNumber,
+                EmbeddedDocumentExtractor extractor, PDFParserConfig cfg,
+                Map<COSStream, Integer> processedInlineImages, AtomicInteger imageCounter,
+                XHTMLContentHandler xhtml, Metadata parentMetadata, ParseContext parseContext,
+                int cap) {
+            super(page, pageNumber, extractor, cfg, processedInlineImages, imageCounter, xhtml,
+                  parentMetadata, parseContext);
+            this.counter = imageCounter;
+            this.cap = cap;
+            this.tailAllowance = Math.max(1, cap / 2);
+            this.inTail = isTailPage(page, pageNumber);
+        }
+
+        /**
+         * True for the last {@link #TAIL_PAGES} pages of the document.
+         *
+         * A pure first-N budget only ever sees the FRONT of a document -- page-one logos and
+         * letterhead -- while the payload in a weaponised PDF is as likely to sit at the end.
+         * Reserving an allowance for the tail costs one extra page-walk per document and buys
+         * coverage of both ends.
+         *
+         * The total page count is not handed to the factory, but it is reachable: a PDPage's
+         * parent /Pages node carries /Count. Best-effort -- any structural surprise (a damaged
+         * page tree, a missing parent) means "not a tail page", i.e. the plain cap, never an
+         * exception on a hostile file.
+         */
+        private static boolean isTailPage(PDPage page, int pageNumber) {
+            int total = totalPages(page);
+            // A tail window only means anything when there is a middle to skip. Without this,
+            // a 1- or 2-page PDF -- the commonest shape there is -- has EVERY page classified
+            // as tail, which hands the whole document the inflated allowance and disables the
+            // page-level skip entirely.
+            if (total <= TAIL_PAGES * 2) {
+                return false;
+            }
+            return pageNumber > total - TAIL_PAGES;
+        }
+
+        /**
+         * Total pages in the document, by walking the page tree to its ROOT.
+         *
+         * The immediate /Parent is NOT the answer: per PDF 7.7.3.2 an intermediate /Pages node's
+         * /Count is only its own leaf descendants, and Acrobat/InDesign routinely emit balanced
+         * trees of ~10 kids. Reading the immediate parent on a 100-page file yields total=10 for
+         * every page, so pages 9-100 all look like "tail" -- 92% of the document gets the
+         * inflated limit and never short-circuits, reinstating exactly the per-page decode this
+         * cap exists to prevent.
+         *
+         * Bounded walk: a malformed or cyclic page tree must not spin here.
+         */
+        private static int totalPages(PDPage page) {
+            try {
+                org.apache.pdfbox.cos.COSDictionary node = page.getCOSObject();
+                int best = -1;
+                for (int hops = 0; hops < MAX_PAGE_TREE_DEPTH; hops++) {
+                    org.apache.pdfbox.cos.COSBase parent =
+                            node.getDictionaryObject(org.apache.pdfbox.cos.COSName.PARENT);
+                    if (!(parent instanceof org.apache.pdfbox.cos.COSDictionary pages)) {
+                        break;
+                    }
+                    int count = pages.getInt(org.apache.pdfbox.cos.COSName.COUNT, -1);
+                    if (count > best) {
+                        best = count;       // the root carries the largest /Count
+                    }
+                    node = pages;
+                }
+                return best;
+            } catch (RuntimeException e) {
+                return -1;                  // hostile structure: no tail window, plain cap
+            }
+        }
+
+        /**
+         * The budget for THIS page. run() and drawImage() must agree: when run() tested `cap`
+         * while drawImage() allowed `cap + tailAllowance`, a tail page never skipped its content
+         * stream even after its allowance was spent -- so it decoded every image and discarded
+         * all but the allowance, losing the page-level skip that is where the time actually goes
+         * (113.6s vs 34.0s).
+         */
+        private int effectiveLimit() {
+            return inTail ? cap + tailAllowance : cap;
+        }
+
+        @Override
+        public void run() throws java.io.IOException {
+            if (counter.get() >= effectiveLimit()) {
+                // Budget spent by earlier pages and this is not a reserved tail page: skip the
+                // whole content stream. This is where the time is actually saved -- measured
+                // 113.6s unbounded vs 34.0s, because it avoids the per-image decode PDFBox does
+                // before drawImage() ever gets a say.
+                return;
+            }
+            super.run();
+        }
+
+        @Override
+        public void drawImage(org.apache.pdfbox.pdmodel.graphics.image.PDImage pdImage)
+                throws java.io.IOException {
+            // PER IMAGE, not just per page: checking only in run() enforces the cap at PAGE
+            // boundaries, so one page carrying hundreds of images still decodes all of them
+            // (measured: a cap of 32 let 152 through and saved 6s of 61s).
+            //
+            // Tail pages get their own allowance so the budget cannot be exhausted by the front
+            // of the document.
+            if (counter.get() >= effectiveLimit()) {
+                return;
+            }
+            super.drawImage(pdImage);
+        }
+    }
+
     private static void enableHtmlScriptExtraction(Parser root) {
         Set<Parser> seen = new java.util.HashSet<>();
         java.util.Deque<Parser> queue = new java.util.ArrayDeque<>();
@@ -1106,14 +1414,48 @@ public final class ParserRunner {
         return text;
     }
 
-    private static Map<String, Object> extractMetadata(Metadata m) {
+    /**
+     * Tika's current metadata namespace, read from TikaCoreProperties rather than hardcoded.
+     *
+     * The rename that made this matter (X-TIKA: -> tk:) is itself proof the name moves: a
+     * literal prefix silently starts leaking internals -- or, in the case that first exposed it
+     * here, storing every entry's body twice -- at the next pin bump.
+     */
+    static final String TIKA_NATIVE_PREFIX =
+            TikaCoreProperties.TIKA_CONTENT.getName().split(":")[0] + ":";
+
+    /**
+     * Keys that must never reach the rmeta. ONE definition, called from both writers.
+     *
+     * Policy is main's (84a6d8c): filter the whole Tika-native namespace, legacy and current.
+     * This branch arrived at the same bug from the other end -- tk:content duplicating every
+     * entry's body, turning 13 MB of rmeta into 26 MB and a 10s parse into 18s -- and the prefix
+     * rule subsumes that case.
+     *
+     * Package-private and separate from the loops ON PURPOSE, for two reasons. Both writers had
+     * independently inlined this rule, which is exactly how they drifted: DraftSnapshotWriter was
+     * missed when tk:content was first suppressed, and it is the file the timeout-salvage
+     * metadata.json is built from. And `Metadata.set("tk:...")` is SILENTLY DROPPED by Tika (the
+     * namespace is computed, not settable), so a test that builds a Metadata and asserts a key is
+     * absent passes whether or not the filter exists -- testing this predicate directly is the
+     * only honest unit-level check.
+     *
+     * KNOWN TRADE, to revisit deliberately rather than by accident: tk: is not purely internal.
+     * tk:signature:{name,date,reason,location,contact-info}, tk:has-signature, tk:num-images and
+     * tk:embedded-resource-type are real forensic signal and a blanket prefix drops them too.
+     * Digests are no loss (RedTusk computes its own md5/sha256 per entry). If signature metadata
+     * is wanted, allowlist those keys here rather than narrowing the prefix.
+     */
+    static boolean isSuppressedMetadataKey(String name) {
+        return name.startsWith("X-TIKA:")           // legacy namespace, for older pins
+                || name.startsWith(TIKA_NATIVE_PREFIX)
+                || name.equals("Content-Type");
+    }
+
+    static Map<String, Object> extractMetadata(Metadata m) {
         Map<String, Object> result = new LinkedHashMap<>();
         for (String name : m.names()) {
-            // Tika-native keys. Upstream moved the prefix from "X-TIKA:" to "tk:" and
-            // demoted "X-TIKA:" to LEGACY_TIKA_META_PREFIX, so BOTH must be filtered --
-            // matching only the legacy one silently leaks tk:* internals into output.
-            if (name.startsWith("X-TIKA:") || name.startsWith("tk:")
-                    || name.equals("Content-Type")) continue;
+            if (isSuppressedMetadataKey(name)) continue;
             // Preserve ALL values of multi-valued keys (dc:creator, relationship
             // targets, ...). m.get() kept only the first; m.getValues() keeps them
             // all. Emit a scalar for a single value, a list for several (the

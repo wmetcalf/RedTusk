@@ -96,6 +96,7 @@ services:
         condition: service_healthy
     environment:
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
+      - BLASTBOX_SCRATCH_MAX_AGE_S=${BLASTBOX_SCRATCH_MAX_AGE_S:-21600}
       - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
       - BLASTBOX_JOB_RETENTION_SECONDS=${BLASTBOX_JOB_RETENTION_SECONDS:-0}
       # RedTusk's rmeta inlines per-entry extracted text, so the envelope is larger
@@ -104,6 +105,32 @@ services:
       # MUST match the dispatcher (the trust gate there enforces it).
       - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
       - BLASTBOX_ALLOWED_ENGINES=redtusk
+      # Ingress is single-worker by default and its blob I/O is synchronous, so every
+      # submit/collect serialises behind one event loop -- the 3.4 jobs/s ceiling a corpus run
+      # hit. Horizontal uvicorn workers are the scale path.
+      # `:-1`, not `:-`. Compose renders the list form `VAR=${VAR:-}` as the empty STRING,
+      # not as an absent variable, so a bare int() on the reader side sees "" and the
+      # code's own default never applies. (The reader is defensive now too; this keeps the
+      # intended value visible here instead of hiding it in a fallback.)
+      - BLASTBOX_SERVE_WORKERS=${BLASTBOX_SERVE_WORKERS:-1}
+      - BLASTBOX_DB_POOL_MAX=${BLASTBOX_DB_POOL_MAX:-}
+      # Shared blob store. Samples land here so ANY dispatcher on ANY node can materialise
+      # them, and sealed results land here so the API can serve them. Declared in compose, not
+      # hand-set on the container, because a hand-set value dies silently on the next
+      # `compose up` recreate.
+      #
+      # This must be on EVERY dispatcher, not just some. When the gvisor and cold dispatchers
+      # were missing it while the api read from MinIO, they sealed results to a LocalBlobStore
+      # nobody else could see: their jobs went DONE and their results 404'd from the API --
+      # measured at 12/12 unfetchable across both tiers, ~50% of this fleet's completed work,
+      # with a green status the whole time.
+      - BLASTBOX_BLOB_URL=${BLASTBOX_BLOB_URL:-}
+      - BLASTBOX_BLOB_ENDPOINT_URL=${BLASTBOX_BLOB_ENDPOINT_URL:-}
+      # Dispatcher-wide budget for concurrent result-artifact uploads (put_output costs one
+      # round-trip PER artifact). See docs/DEPLOYMENT.md; =1 restores the serial path.
+      - BLASTBOX_BLOB_UPLOAD_CONCURRENCY=${BLASTBOX_BLOB_UPLOAD_CONCURRENCY:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - BLASTBOX_INGRESS_EXTENSION=redtusk.blastbox_ingress:make_extension
       # Per-job tier routing (target_tier pins which dispatcher tier claims a job) is an
       # OPERATOR/TEST knob — default OFF so a client can't pin/flood a pool. Set to 1 to let
@@ -159,6 +186,30 @@ services:
         condition: service_started
     environment:
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
+      - BLASTBOX_SCRATCH_MAX_AGE_S=${BLASTBOX_SCRATCH_MAX_AGE_S:-21600}
+      # Shared blob store. Samples land here so ANY dispatcher on ANY node can materialise
+      # them, and sealed results land here so the API can serve them. Declared in compose, not
+      # hand-set on the container, because a hand-set value dies silently on the next
+      # `compose up` recreate.
+      #
+      # This must be on EVERY dispatcher, not just some. When the gvisor and cold dispatchers
+      # were missing it while the api read from MinIO, they sealed results to a LocalBlobStore
+      # nobody else could see: their jobs went DONE and their results 404'd from the API --
+      # measured at 12/12 unfetchable across both tiers, ~50% of this fleet's completed work,
+      # with a green status the whole time.
+      - BLASTBOX_BLOB_URL=${BLASTBOX_BLOB_URL:-}
+      # The minio ALIAS, not ${BLASTBOX_BLOB_ENDPOINT_URL} (which is the host IP for the api):
+      # this dispatcher sits on the internal backend network with no egress route, so the host
+      # IP is unreachable from here. Pointing it there fails EVERY job with "result upload
+      # failed after 3 attempts" -- fail-closed, so the result is retained rather than lost,
+      # but the tier produces nothing. Observed the first time this service was given a blob
+      # store at all.
+      - BLASTBOX_BLOB_ENDPOINT_URL=http://minio:9000
+      # Dispatcher-wide budget for concurrent result-artifact uploads (put_output costs one
+      # round-trip PER artifact). See docs/DEPLOYMENT.md; =1 restores the serial path.
+      - BLASTBOX_BLOB_UPLOAD_CONCURRENCY=${BLASTBOX_BLOB_UPLOAD_CONCURRENCY:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
       - BLASTBOX_JOB_RETENTION_SECONDS=${BLASTBOX_JOB_RETENTION_SECONDS:-0}
       # Trust-gate cap on the worker's metadata.json. RedTusk's rmeta inlines

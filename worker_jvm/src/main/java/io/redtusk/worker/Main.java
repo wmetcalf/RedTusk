@@ -11,7 +11,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.ServiceLoader;
 import java.util.logging.*;
+import org.apache.tika.detect.EncodingDetector;
+import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
 
 /**
  * Entry point for the RedTusk worker JVM.
@@ -80,6 +85,13 @@ public final class Main {
 
     private static void runCheckpoint(File scratchDir) throws Exception {
         KsmHelper.markHeapMergeable();
+        // BEFORE announceReady + checkpoint, which is the whole point on this tier: work done
+        // here lands INSIDE the checkpoint image, so a restored process starts with the parser
+        // tree already built. runJob() prewarms too, but the CRaC path never reached that call,
+        // so REDTUSK_PREWARM=1 on a CRaC deployment silently did nothing -- and this is the tier
+        // the knob is actually FOR (a CRaC checkpoint is ~44MB, so it does not pay the
+        // page-fault cost that made prewarm measure worse on the 2GB FC image).
+        prewarmParsers();
         IpcChannel ipc = IpcChannelFactory.forScratchDir(scratchDir);
         ipc.announceReady();
 
@@ -128,9 +140,125 @@ public final class Main {
     /** Package-private so MainIntegrationTest can call it directly. */
     static void runJob(File scratchDir) throws Exception {
         KsmHelper.markHeapMergeable();
+        // BEFORE announceReady(): a warm tier snapshots this JVM at READY, so
+        // anything not initialised by then is paid per job, forever.
+        prewarmParsers();
         IpcChannel ipc = IpcChannelFactory.forScratchDir(scratchDir);
         ipc.announceReady();
         processJob(scratchDir, ipc);
+    }
+
+    /** Synthetic document for {@link #prewarmParsers} — exercises detection + the HTML parser. */
+    private static final String PREWARM_DOC =
+        "<html><head><title>prewarm</title></head><body><h1>prewarm</h1>"
+        + "<p>Initialise the Tika parser stack before READY.</p></body></html>";
+
+    /**
+     * Parse a synthetic document BEFORE announcing READY, so a warm-tier snapshot
+     * captures a JVM whose Tika stack is already initialised.
+     *
+     * The AOT cache covers class LOADING/linking, but the first real parse still pays
+     * parser SPI discovery, MIME-magic table construction and JIT. Measured on the FC
+     * rootfs with the production flag bundle: JVM boot to READY = 775ms, but READY to
+     * first document = 1170ms. Because a warm JVM serves exactly ONE job, that 1170ms
+     * was paid on every job even though the slot was restored from a "warm" snapshot —
+     * the JVM was warm, Tika was not.
+     *
+     * Gated on REDTUSK_PREWARM (set only by the Python engine's warmup()): the COLD
+     * path must NOT pay it, because there the JVM serves one job and a warmup parse
+     * would be pure added latency. Fail-soft — warming is an optimisation, and a
+     * failure here must never fail the slot.
+     */
+    private static void prewarmParsers() {
+        prewarmParsers(System.getenv("REDTUSK_PREWARM"));
+    }
+
+    /**
+     * Byte probe for {@link #prewarmEncodingDetectors}. Deliberately NOT plain ASCII: mixed
+     * Windows-1252 / UTF-8 high bytes with no BOM and no declared charset, so the cheap
+     * detectors cannot answer and the statistical ones must actually run.
+     */
+    private static final byte[] ENCODING_PROBE = buildEncodingProbe();
+
+    private static byte[] buildEncodingProbe() {
+        StringBuilder sb = new StringBuilder();
+        // Text long enough that a statistical detector does not bail on "too little data",
+        // and mixed enough that it cannot shortcut.
+        for (int i = 0; i < 40; i++) {
+            sb.append("caf\u00e9 na\u00efve \u00fcber Stra\u00dfe \u0440\u0443\u0441\u0441\u043a\u0438\u0439 ")
+              .append("\u65e5\u672c\u8a9e mojibake \u00c3\u00a9\u00c3\u00a8\u00c3\u00aa test line ")
+              .append(i).append('\n');
+        }
+        return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Force EVERY registered EncodingDetector to load its models before READY.
+     *
+     * The prewarm document above is pure ASCII with a declared charset, so BOM/metadata/HTML
+     * detectors answer first and the STATISTICAL ones never engage -- which means their models
+     * are still unloaded when the snapshot is taken, and a warm JVM (which serves exactly ONE
+     * job) pays that load on the job instead. Measured on Tika 4.x with the ML detectors
+     * registered: 7.8s of model loading, of which prewarm captured only ~5.4s, leaving 4.4s on
+     * every single job -- a 5.7x warm-tier regression that looked like an engine bug and was
+     * really an un-prewarmed model.
+     *
+     * Iterates the SERVICE LOADER rather than naming detectors, deliberately: the registered
+     * set is upstream's to change (it went from Html/Icu4j/Universal to
+     * BOM/MetadataCharset/Html/Mojibuster/JunkFilter between two builds of this very engine),
+     * and a prewarm that names them by hand goes stale silently the next time that happens.
+     */
+    static void prewarmEncodingDetectors() {
+        int warmed = 0;
+        long t0 = System.currentTimeMillis();
+        for (EncodingDetector det : ServiceLoader.load(EncodingDetector.class)) {
+            try (TikaInputStream tis = TikaInputStream.get(ENCODING_PROBE)) {
+                det.detect(tis, new Metadata(), new ParseContext());
+                warmed++;
+            } catch (Throwable t) {
+                // Same fail-soft contract as the parse above: warming is an optimisation, and a
+                // detector that cannot load must not take the slot down with it.
+                LOG.warning("Prewarm of " + det.getClass().getSimpleName() + " failed: " + t);
+            }
+        }
+        LOG.info("Prewarmed " + warmed + " encoding detector(s) in "
+                 + (System.currentTimeMillis() - t0) + "ms");
+    }
+
+    /**
+     * Package-private and returns whether a prewarm parse was ATTEMPTED, so the gate is
+     * testable — System.getenv() cannot be set in-process, and the property that matters
+     * (the cold path never pays this) is exactly the gate.
+     */
+    static boolean prewarmParsers(String flag) {
+        if (flag == null || !(flag.equals("1") || flag.equalsIgnoreCase("true"))) {
+            return false;
+        }
+        Path tmp = null;
+        try {
+            long t0 = System.currentTimeMillis();
+            tmp = Files.createTempFile("redtusk-prewarm", ".html");
+            Files.writeString(tmp, PREWARM_DOC);
+            var limits = new JobDescriptor.LimitsDescriptor(10, 500, 52428800L, 30);
+            var runner = new ParserRunner(limits, true, false, "eng", 3,
+                2000, true, "/usr/local/bin/ZXingReader", "tesseract");
+            runner.parse(tmp.toFile(), "prewarm.html", "0".repeat(64));
+            prewarmEncodingDetectors();
+            LOG.info("Prewarm parse complete in " + (System.currentTimeMillis() - t0) + "ms");
+        } catch (Throwable t) {
+            // Throwable, not Exception: a warmup problem (including a linkage error from
+            // an optional parser dependency) must not take the slot down with it.
+            LOG.warning("Prewarm parse failed (job will pay first-parse cost): " + t);
+        } finally {
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {
+                    // temp file in tmpfs; nothing actionable
+                }
+            }
+        }
+        return true;
     }
 
     private static void processJob(File scratchDir, IpcChannel ipc) throws Exception {

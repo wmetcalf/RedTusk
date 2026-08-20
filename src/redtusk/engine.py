@@ -52,6 +52,17 @@ from redtusk.schema import validate_rmeta
 
 logger = logging.getLogger(__name__)
 
+
+class EngineTimeout(RuntimeError):
+    """The worker exceeded its time budget on THIS document.
+
+    Distinct from a warm-tier fault on purpose. A crashed warm JVM should fail closed to a fresh
+    cold JVM (that is what makes the warm tier safe to enable); a document that simply takes too
+    long must not be re-run there, because the cold path has the same parser and the same budget
+    and would only spend it twice.
+    """
+
+
 # Default locations of the JVM worker artifacts inside the cold-worker image.
 # All are env-overridable so a dev box / CI can point at a locally-built jar.
 _DEFAULT_JAVA_BIN = "java"
@@ -62,6 +73,13 @@ _DEFAULT_JAVA_LIBRARY_PATH = "/app"
 # JVM flags mirror the redtusk-worker image ENTRYPOINT.  They MUST match the
 # flags the AOT cache was built with (UseSerialGC / TieredStopAtLevel=1 / 800m
 # heap / native-access) or JDK 25 rejects the cache at load time.
+# The warm JVM's stdio lands here, inside its own scratch dir, so it is reaped with the slot.
+_WARM_STDOUT_LOG = "warm-stdout.log"
+_WARM_STDERR_LOG = "warm-stderr.log"
+# Only the tail is ever wanted (the fatal line), and a runaway log must not be read whole on a
+# failure path.
+_WARM_STDERR_TAIL_BYTES = 64 * 1024
+
 _DEFAULT_JVM_FLAGS: tuple[str, ...] = (
     "-XX:+UseSerialGC",
     "-XX:TieredStopAtLevel=1",
@@ -444,6 +462,14 @@ def _run_worker(
         env = {
             **os.environ,
             "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+            # PINNED off. REDTUSK_PREWARM is the WARM JVM's knob -- warmup() sets it on the
+            # long-lived process, where building the parser tree once before the snapshot pays
+            # for itself. This process is one-shot: it would prewarm and then parse exactly
+            # once, so the ~1.2s is pure added latency on every cold job AND on every
+            # warm->cold fallback. Inheriting it also breaks the promise Main.prewarmParsers'
+            # javadoc makes ("set only by the Python engine's warmup()"), which is not
+            # something the operator setting it on a container would ever expect.
+            "REDTUSK_PREWARM": "0",
         }
 
         logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
@@ -561,13 +587,36 @@ class RedTuskEngine:
             env = {
                 **os.environ,
                 "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
+                # OPT-IN, default OFF. Parsing before control.ready moves Tika's
+                # init ahead of the snapshot — but on the FC warm tier it MEASURED
+                # WORSE (fixed floor 2546ms -> 5367ms, 2026-08-14): the prewarm
+                # dirties an 800m pre-touched heap before the checkpoint, so every
+                # restored slot page-faults that working set back in, costing more
+                # than the init it saves. Keep the knob for tiers whose restore is
+                # cheap (CRaC checkpoints ~44MB, not a 2GB VM image) and measure
+                # with scripts/verify_warm_tier.sh before enabling it anywhere.
+                "REDTUSK_PREWARM": os.environ.get("REDTUSK_PREWARM", "0"),
             }
+            started = time.monotonic()
+            # FILES, not pipes. Nothing reads this process's output until communicate() at the
+            # FIRST JOB, so everything it emits before then -- boot, Tika class loading, and
+            # with REDTUSK_PREWARM a whole parser-tree build -- piles up in a 64 KiB kernel
+            # pipe buffer. Fill that and the JVM BLOCKS ON WRITE, never signals ready, and the
+            # tier silently degrades to cold with only "did not signal ready" to go on. The
+            # images bake REDTUSK_LOG_LEVEL=INFO, so the volume is not hypothetical. A file
+            # never blocks the writer, and it also makes the death diagnostic below a plain
+            # read instead of a race against a pipe some surviving child still holds open.
+            out_log = scratch / _WARM_STDOUT_LOG
+            err_log = scratch / _WARM_STDERR_LOG
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+                cmd,
+                stdout=out_log.open("wb"),
+                stderr=err_log.open("wb"),
+                env=env,
             )
 
             # The JVM announces control.ready (loading Tika classes from the AOT
-            # cache along the way), then blocks on control.go.
+            # cache, then parsing the prewarm document), and blocks on control.go.
             ready = control_dir / "control.ready"
             deadline = time.monotonic() + _WARMUP_READY_TIMEOUT
             while time.monotonic() < deadline:
@@ -576,7 +625,13 @@ class RedTuskEngine:
                         proc=proc, scratch=scratch, in_dir=in_dir,
                         control_dir=control_dir, tmp=tmp,
                     )
-                    logger.info("redtusk warm JVM ready (blocked at READY)")
+                    # Elapsed is the cheap field check that the prewarm actually ran:
+                    # boot-only is ~0.8s, boot+first-parse ~2s. A warm tier reporting
+                    # ~0.8s here means REDTUSK_PREWARM never reached the JVM.
+                    logger.info(
+                        "redtusk warm JVM ready (blocked at READY) after %.2fs",
+                        time.monotonic() - started,
+                    )
                     return
                 if proc.poll() is not None:
                     break  # JVM exited before signalling ready
@@ -622,6 +677,33 @@ class RedTuskEngine:
         finally:
             warm.tmp.cleanup()
 
+    @staticmethod
+    def _warm_exit_detail(warm: "_WarmWorker") -> str:
+        """Last line of the dead warm JVM's stderr log, for the cold-fallback log.
+
+        The JVM's stderr goes to a FILE in its scratch dir (see warmup), so this is a plain
+        bounded read that always terminates. It used to read a PIPE to EOF on the reasoning
+        that "the process has already exited, so this cannot block" -- which was wrong twice
+        over: EOF needs every WRITER to close, and Tika forks external scanners (ZXingReader,
+        tesseract) that inherit stderr, so one surviving child parked a dispatcher thread
+        inside a LOGGING HELPER, ahead of the very cold fallback this message annotates.
+
+        Diagnosing one such exit (a go-signal timeout, rc=2) took three deploy cycles precisely
+        because this string was missing, so it stays -- just without the hazard.
+        """
+        try:
+            log = Path(warm.scratch) / _WARM_STDERR_LOG
+            if not log.exists():
+                return "no stderr log"
+            raw = log.read_bytes()[-_WARM_STDERR_TAIL_BYTES:]
+        except OSError as exc:
+            return f"stderr unreadable: {exc}"
+        text = raw.decode("utf-8", "replace").strip()
+        if not text:
+            return "stderr empty"
+        # Last non-blank line: the JVM's fatal message, not the banner above it.
+        return text.splitlines()[-1][:300]
+
     def _produce_rmeta(self, input: Path, rmeta_dir: Path, timeout: float) -> None:
         """Produce the rmeta document into *rmeta_dir*.
 
@@ -649,8 +731,22 @@ class RedTuskEngine:
         warm = self._warm
         self._warm = None  # one job per warm JVM; consume it
         if warm is None or warm.proc.poll() is not None:
+            # The one tier transition here that used to be SILENT. Every other path
+            # logs (warmup success/failure, CRaC cold fallback), so a warm tier that
+            # quietly degrades to a cold JVM looks identical to a healthy one in the
+            # logs while paying a full JVM boot per job. Measured on the FC warm tier:
+            # ~3.3s in-guest for a 3-byte input, i.e. the boot dominates every job.
+            logger.warning(
+                "redtusk warm JVM unavailable (%s); cold fallback — paying a JVM boot per job",
+                "no warm handle: warmup() never ran, or its handle did not survive "
+                "snapshot/restore"
+                if warm is None
+                else f"warm JVM already exited rc={warm.proc.returncode}: "
+                f"{self._warm_exit_detail(warm)}",
+            )
             _run_worker(input, rmeta_dir, timeout=timeout)
             return
+        logger.info("redtusk using warm JVM (no per-job boot)")
         try:
             input_bytes = input.read_bytes()
             filename_hint = input.name or "input"
@@ -669,20 +765,59 @@ class RedTuskEngine:
             )
             (warm.control_dir / "control.go").touch()
             try:
-                _, stderr = warm.proc.communicate(timeout=timeout)
+                # Returns (None, None): stdout/stderr are FILES, not pipes (see warmup). It is
+                # still the right call -- it waits for exit and reaps the process.
+                warm.proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 warm.proc.kill()
                 warm.proc.communicate()
-                raise RuntimeError(
-                    f"redtusk warm worker timed out after {timeout}s"
+                # A TIMEOUT IS NOT A WARM-TIER FAULT -- it is a slow document, and the cold path
+                # would be just as slow. Raising RuntimeError here fell into the enclosing
+                # `except Exception` below, which re-ran the SAME input on a fresh JVM with a FULL
+                # fresh `timeout`: total budget 2 x timeout, silently. On a document that sits near
+                # the limit (measured: an 8.4 MB PDF with 151 embedded entries, 84s of parse against
+                # a 120s budget) that doubling is what pushed it past the host's warm-stale cutoff
+                # (worker_timeout_s + requeue_grace_s), so instead of a clean engine_error the job
+                # was reaped as "warm worker abandoned: owning dispatcher gone" -- terminal, and
+                # holding a slot for the whole time.
+                #
+                # EngineTimeout is handled by its OWN except clause below, placed BEFORE the
+                # generic one, so it re-raises instead of being swallowed into a cold retry. A warm
+                # JVM that CRASHED (non-zero exit, or a staging error) still falls back to cold with
+                # a full budget -- the fail-closed behaviour tests/integration/test_warm_path.py pins.
+                #
+                # ...but ONLY when this JVM demonstrably TOOK the job. The two failures are
+                # indistinguishable at this call: a timeout is equally what you see when the
+                # JVM never received the go-signal at all (control dir not visible after a
+                # restore, a wedged process, a full stdio pipe). Nothing about the DOCUMENT is
+                # implicated there, so suppressing the cold fallback would fail a job
+                # terminally for a host-side fault -- trading the double-budget bug for a
+                # no-fallback one. The worker writes control.started the instant it takes the
+                # go-signal (FifoLoop.markStarted), so this is answerable rather than a guess.
+                if not (warm.control_dir / "control.started").exists():
+                    raise RuntimeError(
+                        f"warm JVM never started the job within {timeout}s (no control.started); "
+                        f"treating as an infrastructure fault, not a slow document"
+                    ) from None
+                raise EngineTimeout(
+                    f"redtusk worker timed out after {timeout}s"
                 ) from None
             if warm.proc.returncode != 0:
-                tail = (stderr or b"").decode(errors="replace")[-2000:]
+                # From the LOG FILE, since communicate() no longer carries the bytes. Same
+                # reader as the cold-fallback diagnostic, so a crash message cannot rot in one
+                # place while staying correct in the other.
+                tail = self._warm_exit_detail(warm)
                 raise RuntimeError(
                     f"redtusk-worker (warm jvm) exited {warm.proc.returncode}: {tail}"
                 )
+        except EngineTimeout:
+            # Slow document, not a broken warm tier. Do NOT re-run it on a cold JVM: same input,
+            # same parser, same budget -> same timeout, at twice the wall-clock and twice the slot
+            # occupancy. Surface it so the harness records a clean timeout.
+            raise
         except Exception as exc:  # noqa: BLE001
-            # Fail-closed to cold: a fresh JVM produces the rmeta into the same dir.
+            # Fail-closed to cold for a genuine warm FAULT (JVM crashed / staging failed): a fresh
+            # JVM produces the rmeta into the same dir. Pinned by tests/integration/test_warm_path.py.
             logger.warning("redtusk warm detonation failed (%s); cold fallback", exc)
             _run_worker(input, rmeta_dir, timeout=timeout)
             return

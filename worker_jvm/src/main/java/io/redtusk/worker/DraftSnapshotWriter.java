@@ -250,11 +250,14 @@ final class DraftSnapshotWriter {
 
         ObjectNode meta = n.putObject("metadata");
         for (String name : m.names()) {
-            // Tika-native keys. Upstream moved the prefix from "X-TIKA:" to "tk:" and
-            // demoted "X-TIKA:" to LEGACY_TIKA_META_PREFIX, so BOTH must be filtered --
-            // matching only the legacy one silently leaks tk:* internals into output.
-            if (name.startsWith("X-TIKA:") || name.startsWith("tk:")
-                    || name.equals("Content-Type")) continue;
+            // THE SAME predicate ParserRunner uses -- not a third inlined copy of the rule.
+            // Both sides of this merge had independently inlined it here, which is exactly how
+            // the two copies drifted in the first place: this path was missed when tk:content
+            // was first suppressed, so draft snapshots kept writing every entry's body twice
+            // (26 MB instead of 13 MB on a 1.4 MB xlsm) -- and maybeFlush rewrites that file
+            // several times a second during the walk, and the timeout-salvage metadata.json the
+            // dispatcher ships IS this file.
+            if (ParserRunner.isSuppressedMetadataKey(name)) continue;
             String v = m.get(name);
             if (v != null) meta.put(name, v);
         }

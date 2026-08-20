@@ -94,8 +94,15 @@ public final class EmbeddedFileExtractor {
             return hashes;
         }
 
-        AutoDetectParser parser = new AutoDetectParser();
-        enableImageHashing(parser);
+        // THE SHARED instance, not a fresh one. `new AutoDetectParser()` here re-ran full SPI
+        // discovery on every job -- and on a current Tika that chain builds the ML encoding
+        // detectors, costing ~3.6s on a 2-BYTE input (4314ms -> 713ms with them unregistered).
+        // It is paid after the go-signal, so the warm snapshot cannot absorb it.
+        //
+        // Sharing is safe for the same reason it is safe in pass 1: the parser tree is
+        // immutable once configured, and per-job state lives in the ParseContext and handler,
+        // both still built fresh below. sharedParser() already applies enableImageHashing().
+        AutoDetectParser parser = ParserRunner.sharedParser();
 
         ParseContext context = new ParseContext();
         // XXE / SSRF hardening — same secure JAXP factories Pass-1 uses, so the
@@ -123,14 +130,13 @@ public final class EmbeddedFileExtractor {
         noOcr.setSkipOcr(true);
         context.set(TesseractOCRConfig.class, noOcr);
 
-        // Carry the same PDF and Office config as the first pass so embedded
-        // PDFs/Office docs get consistent extraction (marked content, missing rows).
-        PDFParserConfig pdfCfg = new PDFParserConfig();
-        pdfCfg.setExtractMarkedContent(true);
-        pdfCfg.setExtractUniqueInlineImagesOnly(false);
-        context.set(PDFParserConfig.class, pdfCfg);
-        OfficeParserConfig officeCfg = new OfficeParserConfig();
-        officeCfg.setIncludeMissingRows(true);
+        // THE SAME config object pass 1 uses, from one factory method -- not a second copy of
+        // the same two lines. The old comment here said it carried the same config; it did not.
+        // Pass 1 gained the inline-image cap and this did not, so a capped first pass was
+        // followed by an UNBOUNDED second pass over the same document.
+        context.set(PDFParserConfig.class, ParserRunner.newPdfConfig());
+        // Shared with pass 1, same reasoning as the PDF config above.
+        OfficeParserConfig officeCfg = ParserRunner.newOfficeConfig();
         context.set(OfficeParserConfig.class, officeCfg);
         RFC822Parser.Config mailCfg = new RFC822Parser.Config();
         mailCfg.setExtractAllAlternatives(true);

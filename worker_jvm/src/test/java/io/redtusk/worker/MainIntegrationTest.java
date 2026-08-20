@@ -119,4 +119,26 @@ class MainIntegrationTest {
         assertDoesNotThrow(() ->
             Main.main(new String[]{"--appcds-warmup", corpusDir.getAbsolutePath()}));
     }
+
+    /**
+     * The COLD path must never pay the prewarm parse: there the JVM serves exactly one
+     * job, so warming Tika first would add ~1.2s of pure latency to every job. Only the
+     * warm tier (whose snapshot is taken at READY) sets REDTUSK_PREWARM.
+     */
+    @Test
+    void prewarmIsSkippedUnlessExplicitlyEnabled() {
+        assertFalse(Main.prewarmParsers(null), "unset must not prewarm (cold path)");
+        assertFalse(Main.prewarmParsers(""), "empty must not prewarm");
+        assertFalse(Main.prewarmParsers("0"), "0 must not prewarm");
+        assertFalse(Main.prewarmParsers("no"), "unrecognised value must not prewarm");
+    }
+
+    @Test
+    void prewarmRunsWhenEnabledAndNeverThrows() {
+        // Fail-soft is the contract: warming is an optimisation, and a failure inside it
+        // must never propagate and fail the slot.
+        assertDoesNotThrow(() -> assertTrue(Main.prewarmParsers("1")));
+        assertDoesNotThrow(() -> assertTrue(Main.prewarmParsers("true")));
+        assertDoesNotThrow(() -> assertTrue(Main.prewarmParsers("TRUE")));
+    }
 }

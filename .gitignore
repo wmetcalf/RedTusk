@@ -59,10 +59,50 @@ tests/fixtures/**/corpus/
 
 # Per-host runtime config — set REDTUSK_STATE_DIR, POSTGRES_PASSWORD, etc.
 # locally; never commit. See deploy/docker/.env.example for the template.
-deploy/docker/.env
+#
+# Match by SHAPE, not by one exact path. The single `deploy/docker/.env` rule below
+# ignored precisely one filename, so an ordinary editing habit — `cp .env .env.bak`
+# before a config experiment — produced `deploy/docker/.env.bak-tiertest`, which was
+# untracked but NOT ignored and one `git add -A` away from committing live MinIO and
+# Postgres credentials. The whole family is covered now; example templates are the
+# only env files that belong in the repo.
+# Dot-prefixed env files anywhere -- the classic secret shape. The separator class
+# covers the real editing habits: .env.bak, .env-backup, .env~, .env.save. A bare
+# `.env.*` missed the last three (review of PR #33).
+.env
+.env[-_.~]*
+
+# deploy/ is where the per-host secrets actually live, so match aggressively HERE
+# rather than repo-wide: an unanchored `*.env` hides legitimate compose env_file
+# fragments and test fixtures elsewhere in the tree for no security gain.
+deploy/**/*.env
+deploy/**/*.env[-_.~]*
+deploy/**/env[-_.~]*
+
+# Example templates are the one env shape that belongs in the repo. Deliberately
+# broad: `!*.env.example` only rescued the literal `.env.example` suffix, so a
+# namespaced template like `.env.aws-burst.example` was silently dropped.
+# Scoped to ENV templates specifically. A bare `!*.example` is repo-wide and would
+# re-include fixture/log/bench files that earlier rules deliberately ignore.
+!*.env*.example
+# ...and the same for a template with NO leading dot, which `deploy/**/env[-_.~]*` above
+# catches (`env.example`, `env.sample`). The negation demands a literal `.env` before
+# `.example`, so `deploy/docker/env.example` was ignored and silently uncommittable --
+# exactly the shape the comment block above says these rules exist to protect.
+# Verified with `git check-ignore`; both spellings are now committable.
+!**/env*.example
+!**/env*.sample
 
 # corpus-derived bench output — never commit
 deploy/firecracker/bench_*.json
 
 # stray tika NER model artifacts (maven dumps these in the wrong place)
 /src/test/
+
+# Local working checkouts of upstream Tika, used to build/compare the vendored parser jar.
+# Never tracked, ~5k files / 4.4M lines each -- a stray `git add -A` swept .tika-src into a
+# commit that was meant to touch six files, which is exactly how a scratch tree ends up in
+# somebody's history. Ignore them so the mistake is not available.
+.tika-src/
+.tika-baseline/
+.tika-fixed/

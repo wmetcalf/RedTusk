@@ -63,6 +63,26 @@ services:
       - apparmor=unconfined
     environment:
       - BLASTBOX_DATABASE_URL=postgresql://${POSTGRES_USER:-redtusk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-redtusk}
+      - BLASTBOX_SCRATCH_MAX_AGE_S=${BLASTBOX_SCRATCH_MAX_AGE_S:-21600}
+      # Shared blob store. Samples land here so ANY dispatcher on ANY node can materialise
+      # them, and sealed results land here so the API can serve them. Declared in compose, not
+      # hand-set on the container, because a hand-set value dies silently on the next
+      # `compose up` recreate.
+      #
+      # This must be on EVERY dispatcher, not just some. When the gvisor and cold dispatchers
+      # were missing it while the api read from MinIO, they sealed results to a LocalBlobStore
+      # nobody else could see: their jobs went DONE and their results 404'd from the API --
+      # measured at 12/12 unfetchable across both tiers, ~50% of this fleet's completed work,
+      # with a green status the whole time.
+      - BLASTBOX_BLOB_URL=${BLASTBOX_BLOB_URL:-}
+      # The minio ALIAS, not a host IP: this service sits on the internal backend network
+      # and deliberately has no egress route.
+      - BLASTBOX_BLOB_ENDPOINT_URL=http://minio:9000
+      # Dispatcher-wide budget for concurrent result-artifact uploads (put_output costs one
+      # round-trip PER artifact). See docs/DEPLOYMENT.md; =1 restores the serial path.
+      - BLASTBOX_BLOB_UPLOAD_CONCURRENCY=${BLASTBOX_BLOB_UPLOAD_CONCURRENCY:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - BLASTBOX_JOB_ROOT=${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs
       - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
       # Per-engine allowlist — MUST mirror the cold dispatcher. Without it this warm tier
@@ -126,7 +146,13 @@ services:
       # tax to remove — so this is gVisor-tier-only). JAVA_TOOL_OPTIONS appends the one flag,
       # keeping the AOT-cache-matched default flags intact. Requires blastbox>=0.1.8 (the
       # EXTRA_ENV channel was a no-op in <=0.1.7 — same phantom-var class as WARM_ONLY).
-      - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2"]
+      # BLASTBOX_TIMEOUT is the GUEST's per-job budget, and it must be set per warm surface --
+      # the FC guest reads it from its baked rootfs env, and this tier from here. Raising it on
+      # the FC side alone (2026-08-17) left this tier on the inherited 120s default, and a
+      # corpus re-run then failed 7 samples here with "timed out after 120.0 seconds" that the
+      # FC tier completed. Ordering that must hold: guest 240 < host worker_timeout_s 300 <
+      # warm-stale cutoff 360. Raising it also widens the window a slow sample can hold a slot.
+      - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2","BLASTBOX_TIMEOUT=240"]
     volumes:
       # job_root (host-consistent, same path as the cold dispatcher) — read the staged input.
       - "${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs:${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs"

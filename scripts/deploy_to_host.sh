@@ -38,9 +38,21 @@ cd "$REPO_ROOT"
 # kept in scripts/ next to this script.
 EXCLUDE_FILE="scripts/deploy-exclude.txt"
 if [ ! -f "$EXCLUDE_FILE" ]; then
-    cat > "$EXCLUDE_FILE" <<EOF
-# Per-host config — overwriting these will break the remote deployment.
-deploy/docker/.env
+    cat > "$EXCLUDE_FILE" <<'EOF'
+# The example templates hosts DO need. rsync applies the FIRST matching rule, so these
+# must precede the excludes below or they never fire. Broad on purpose: a namespaced
+# template such as .env.aws-burst.example or deploy/remote/redtusk.env.example is
+# committed (see .gitignore) and must still reach the host.
++ *.example
+# Per-host config and every stray copy of it. TREE-WIDE on purpose, for two reasons:
+# rsync's ** requires a literal slash (unlike git), so deploy/**/*.env silently misses
+# deploy/.env; and a root-level .env is now gitignored, i.e. invisible in git status, so
+# this list is the only thing keeping it off every host.
+.env
+.env[-_.~]*
+*.env
+*.env[-_.~]*
+env[-_.~]*
 # Per-host state.
 var/
 # Build/source artifacts.
