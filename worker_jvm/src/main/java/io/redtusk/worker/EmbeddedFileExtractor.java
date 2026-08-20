@@ -135,8 +135,8 @@ public final class EmbeddedFileExtractor {
         // Pass 1 gained the inline-image cap and this did not, so a capped first pass was
         // followed by an UNBOUNDED second pass over the same document.
         context.set(PDFParserConfig.class, ParserRunner.newPdfConfig());
-        OfficeParserConfig officeCfg = new OfficeParserConfig();
-        officeCfg.setIncludeMissingRows(true);
+        // Shared with pass 1, same reasoning as the PDF config above.
+        OfficeParserConfig officeCfg = ParserRunner.newOfficeConfig();
         context.set(OfficeParserConfig.class, officeCfg);
         RFC822Parser.Config mailCfg = new RFC822Parser.Config();
         mailCfg.setExtractAllAlternatives(true);

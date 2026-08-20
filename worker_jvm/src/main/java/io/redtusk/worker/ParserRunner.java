@@ -224,8 +224,7 @@ public final class ParserRunner {
         context.set(PDFParserConfig.class, pdfCfg);
 
         // Office: surface hidden/empty rows in Excel workbooks — a common lure technique.
-        OfficeParserConfig officeCfg = new OfficeParserConfig();
-        officeCfg.setIncludeMissingRows(true);
+        OfficeParserConfig officeCfg = newOfficeConfig();
         // Macro security: the worker NEVER executes macros — it extracts them as
         // inert embedded entries for forensic review (preserved by the standard
         // VBA/XLM extraction path that surfaces "/macros/..." entries). Set the
@@ -987,6 +986,36 @@ public final class ParserRunner {
             }
             return sharedParser;
         }
+    }
+
+    /**
+     * Office configuration, shared by both extraction passes for the same reason the PDF one is.
+     *
+     * includeMissingRows is the expensive one. It emits a row for every GAP in a sheet's used
+     * range -- content-bearing rows are emitted either way -- so on a sparse workbook it is
+     * pure padding. Measured on a 1.8 MB xlsm: 3,885,164 lines of extracted text of which
+     * 3,882,321 (99.9%) were tab-only empty rows, 8 MB of output, and 203s of parse. Production
+     * "finished" the same file in 67s only because it hit the 8 MiB write limit and stopped
+     * before reaching the VBA -- 1 entry against this build's 44.
+     *
+     * DEFAULT OFF, matching Tika's own default. The forensic argument for it is row alignment
+     * (knowing content sits at row 1,000,000 rather than row 5), which the row indices already
+     * carry; that is not worth 3.9M blank lines on every sparse sheet. REDTUSK_INCLUDE_MISSING_ROWS=1
+     * restores it for a case that needs literal row-for-row fidelity.
+     */
+    static OfficeParserConfig newOfficeConfig() {
+        OfficeParserConfig cfg = new OfficeParserConfig();
+        cfg.setIncludeMissingRows(includeMissingRows());
+        return cfg;
+    }
+
+    /** Package-private for testing: System.getenv() cannot be set in-process. */
+    static boolean parseIncludeMissingRows(String raw) {
+        return raw != null && (raw.equals("1") || raw.equalsIgnoreCase("true"));
+    }
+
+    static boolean includeMissingRows() {
+        return parseIncludeMissingRows(System.getenv("REDTUSK_INCLUDE_MISSING_ROWS"));
     }
 
     /**
