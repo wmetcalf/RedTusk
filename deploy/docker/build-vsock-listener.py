@@ -30,7 +30,6 @@ print(f"build-vsock: listening on {SOCK_PATH}", flush=True)
 #      synthetic "continue" path that warp takes at build time.
 # Without accepting the second connection the worker would block in
 # connectWithRetry for 30s × backoff retries and the build hangs.
-import select
 try:
     # Loop until parent kills us OR we've handled the two expected connections.
     expected_conns = 2
@@ -39,7 +38,7 @@ try:
     while handled < expected_conns:
         try:
             conn, _ = srv.accept()
-        except socket.timeout:
+        except TimeoutError:
             print(f"build-vsock: timed out after {handled} connections", flush=True)
             break
         print(f"build-vsock: accepted connection #{handled+1}", flush=True)

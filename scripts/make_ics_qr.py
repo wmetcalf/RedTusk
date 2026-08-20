@@ -33,10 +33,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import sys
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import qrcode
@@ -69,10 +68,14 @@ def make_qr_rows(url: str, *, ecc: str = 'H', border: int = 4) -> list[str]:
         chars = []
         for c in range(cols):
             top, bot = m[r][c], m[r + 1][c]
-            if top and bot: chars.append('█')
-            elif top:       chars.append('▀')
-            elif bot:       chars.append('▄')
-            else:           chars.append(' ')
+            if top and bot:
+                chars.append('█')
+            elif top:
+                chars.append('▀')
+            elif bot:
+                chars.append('▄')
+            else:
+                chars.append(' ')
         art.append(''.join(chars))
     return art
 
@@ -182,7 +185,7 @@ def build_ics(*, url: str, summary: str, start: datetime,
     alt = ics_escape(html_body)
 
     end = start + duration
-    dtstamp = datetime.now(timezone.utc)
+    dtstamp = datetime.now(UTC)
 
     plain_desc = description if description else (
         'Scan the QR rendered in the HTML alt-desc to verify.\\n\\n'
@@ -237,7 +240,7 @@ def build_ics(*, url: str, summary: str, start: datetime,
             params = ['ROLE=REQ-PARTICIPANT', 'PARTSTAT=NEEDS-ACTION', 'RSVP=TRUE']
             if cn:
                 params.append(f'CN={ics_escape(cn)}')
-            lines.append(f'ATTENDEE;' + ';'.join(params) + f':mailto:{mailto}')
+            lines.append('ATTENDEE;' + ';'.join(params) + f':mailto:{mailto}')
     lines += [
         'END:VEVENT',
         'END:VCALENDAR',
@@ -303,7 +306,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def default_start() -> datetime:
     """One hour from now, truncated to the minute."""
-    return (datetime.now(timezone.utc) + timedelta(hours=1)).replace(
+    return (datetime.now(UTC) + timedelta(hours=1)).replace(
         second=0, microsecond=0)
 
 
@@ -312,10 +315,10 @@ def parse_iso(s: str) -> datetime:
     try:
         dt = datetime.fromisoformat(s)
     except ValueError as exc:
-        raise SystemExit(f'invalid --start: {s} ({exc})')
+        raise SystemExit(f'invalid --start: {s} ({exc})') from exc
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def write_one(url: str, args, *, out_path: Path) -> Path:

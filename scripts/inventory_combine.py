@@ -37,7 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -99,11 +99,16 @@ def main(argv: list[str]) -> int:
         if not decl and not undecl:
             template_match = find_template(f)
         status = []
-        if decl: status.append("declared")
-        if undecl: status.append("undeclared-literal")
-        if template_match: status.append("templated")
-        if obs: status.append("observed")
-        else: status.append("not-observed")
+        if decl:
+            status.append("declared")
+        if undecl:
+            status.append("undeclared-literal")
+        if template_match:
+            status.append("templated")
+        if obs:
+            status.append("observed")
+        else:
+            status.append("not-observed")
 
         entry: dict = {"status": status}
         if decl:
@@ -124,13 +129,14 @@ def main(argv: list[str]) -> int:
         combined[f] = entry
 
     out_doc = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "static_source": str(args.static),
         "runtime_source": str(args.runtime),
         "summary": {
             "total_fields": len(combined),
             "declared_and_observed": sum(1 for e in combined.values()
-                                          if "declared" in e["status"] and "observed" in e["status"]),
+                                          if "declared" in e["status"]
+                                          and "observed" in e["status"]),
             "declared_only": sum(1 for e in combined.values()
                                   if "declared" in e["status"] and "not-observed" in e["status"]),
             "undeclared_literal_observed": sum(1 for e in combined.values()
@@ -170,9 +176,12 @@ def _render_md(doc: dict) -> str:
     out.append("")
     out.append(f"- **{s['total_fields']}** total fields seen across sources")
     out.append(f"- **{s['declared_and_observed']}** declared + observed (the healthy core)")
-    out.append(f"- **{s['declared_only']}** declared but not observed (rare formats / unwalked code paths)")
-    out.append(f"- **{s['undeclared_literal_observed']}** observed undeclared string literals (migration targets)")
-    out.append(f"- **{s['observed_only_unknown_source']}** observed but no source trace (investigation queue)")
+    out.append(f"- **{s['declared_only']}** declared but not observed "
+               "(rare formats / unwalked code paths)")
+    out.append(f"- **{s['undeclared_literal_observed']}** observed undeclared string literals "
+               "(migration targets)")
+    out.append(f"- **{s['observed_only_unknown_source']}** observed but no source trace "
+               "(investigation queue)")
     out.append("")
     out.append("## Field index")
     out.append("")

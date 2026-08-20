@@ -22,8 +22,18 @@ jobs:
         run: |
           python -m pip install -q --upgrade pip
           python -m pip install -q -e ".[dev]"
+      # scripts/ and deploy/ are in the gate because they are not scratch: submit_corpus.py
+      # drives every fleet corpus run and the inventory_*.py trio produces the metadata
+      # inventory. They were unlinted until 2026-08-20 and had 45 violations.
       - name: ruff
-        run: ruff check src tests
+        run: ruff check src tests scripts deploy
+      # `mypy src` and NOT `mypy tests`, on evidence rather than convenience. Under strict,
+      # tests report 178 errors; 125 are "annotate your test function" and most of the rest are
+      # the test doubles doing their job -- SimpleNamespace standing in for _WarmWorker,
+      # monkeypatching engine_mod.subprocess. Gating there buys `# type: ignore` noise or,
+      # worse, pressure to weaken a fake into a real object. One flagged line
+      # (tests/fixtures/unicode_qr/generate.py:99) is mypy being wrong: `f` is bound text-mode
+      # at module scope on line 66, so a correct binary write later gets flagged.
       - name: mypy
         run: mypy src
       # tests/http and tests/docker are excluded on purpose, not to dodge failures:

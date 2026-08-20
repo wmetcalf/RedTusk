@@ -22,7 +22,6 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import ValidationError
 
 
 def fetch_succeeded_ids(host: str, limit: int) -> list[str]:
@@ -108,7 +107,8 @@ def main(argv: list[str]) -> int:
                 if err.validator == "additionalProperties":
                     bad_keys = []
                     msg = err.message
-                    # message: "Additional properties are not allowed ('foo', 'bar' were unexpected)"
+                    # message: "Additional properties are not allowed
+                    # ('foo', 'bar' were unexpected)"
                     import re as _re
                     bad_keys = _re.findall(r"'([^']+)' (?:was|were) unexpected",
                                             msg)
@@ -128,7 +128,8 @@ def main(argv: list[str]) -> int:
     print("=" * 64, file=sys.stderr)
     print(f"jobs checked:    {n_jobs}", file=sys.stderr)
     print(f"entries checked: {n_entries}", file=sys.stderr)
-    print(f"entries clean:   {n_clean_entries} ({100*n_clean_entries//max(1,n_entries)}%)", file=sys.stderr)
+    print(f"entries clean:   {n_clean_entries} "
+          f"({100*n_clean_entries//max(1,n_entries)}%)", file=sys.stderr)
     print(f"distinct violators: {len(violators)}", file=sys.stderr)
     print("=" * 64, file=sys.stderr)
     if not violators:

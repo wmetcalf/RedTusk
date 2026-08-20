@@ -68,7 +68,7 @@ def _accept_one(s: socket.socket, accept_timeout_s: int) -> int:
     s.settimeout(accept_timeout_s)
     try:
         conn, peer = s.accept()
-    except socket.timeout:
+    except TimeoutError:
         print(f"error: no worker connection within {accept_timeout_s}s",
               file=sys.stderr)
         return 2

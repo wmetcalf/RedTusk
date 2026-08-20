@@ -36,12 +36,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -92,7 +91,8 @@ def main(argv: list[str]) -> int:
     print(f"  {len(succeeded)} succeeded", file=sys.stderr)
 
     # Per-MIME, per-field counts + example values.
-    by_mime: dict[str, dict[str, dict]] = defaultdict(lambda: defaultdict(lambda: {"count": 0, "example_value": None}))
+    by_mime: dict[str, dict[str, dict]] = defaultdict(
+        lambda: defaultdict(lambda: {"count": 0, "example_value": None}))
     by_field_total: Counter[str] = Counter()
     by_field_mimes: dict[str, set[str]] = defaultdict(set)
 
@@ -118,7 +118,7 @@ def main(argv: list[str]) -> int:
                 by_field_mimes[field_name].add(mime)
 
     out_doc = {
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "scanned_at": datetime.now(UTC).isoformat(),
         "host": args.host,
         "jobs_scanned": len(succeeded),
         "by_mime_type": {

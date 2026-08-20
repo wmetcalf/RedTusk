@@ -27,7 +27,7 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -123,7 +123,7 @@ def build_schema(registry: dict, schema_id: str | None = None) -> dict:
     }
     if schema_id:
         schema["$id"] = schema_id
-    schema["x-generated-at"] = datetime.now(timezone.utc).isoformat()
+    schema["x-generated-at"] = datetime.now(UTC).isoformat()
     schema["x-registry-summary"] = registry.get("summary", {})
     schema["x-counts"] = {
         "properties": len(properties),
