@@ -28,7 +28,7 @@ import types
 import pytest
 
 from redtusk import engine as engine_mod
-from redtusk.engine import EngineTimeout, RedTuskEngine
+from redtusk.engine import EngineTimeoutError, RedTuskEngine
 
 
 class _FakeProc:
@@ -43,7 +43,7 @@ class _FakeProc:
         # ALIVE at the pre-flight check. Returning the exit code here instead would send
         # _produce_rmeta down its "warm handle is already dead" branch at the top, which never
         # enters the try block at all -- an earlier version of this fake did exactly that, and the
-        # crash test passed while proving nothing (mutation-checked: broadening the EngineTimeout
+        # crash test passed while proving nothing (mutation-checked: broadening the EngineTimeoutError
         # clause to `except Exception` survived).
         return None
 
@@ -85,7 +85,7 @@ def _engine_with_warm(tmp_path, proc, *, started: bool = True):
 
 
 def test_warm_timeout_does_not_rerun_on_the_cold_path(tmp_path, monkeypatch):
-    """MUTATION: remove the `except EngineTimeout: raise` clause -> _run_worker is called with a
+    """MUTATION: remove the `except EngineTimeoutError: raise` clause -> _run_worker is called with a
     second full budget, and this test fails on both assertions."""
     calls: list[float] = []
     monkeypatch.setattr(engine_mod, "_run_worker",
@@ -95,7 +95,7 @@ def test_warm_timeout_does_not_rerun_on_the_cold_path(tmp_path, monkeypatch):
     src.write_bytes(b"%PDF-1.4 slow")
     eng = _engine_with_warm(tmp_path, _FakeProc(timeout=True))
 
-    with pytest.raises(EngineTimeout):
+    with pytest.raises(EngineTimeoutError):
         eng._produce_rmeta(src, tmp_path / "out", timeout=120.0)
 
     assert calls == [], (
@@ -107,7 +107,7 @@ def test_warm_timeout_does_not_rerun_on_the_cold_path(tmp_path, monkeypatch):
 def test_warm_crash_still_fails_closed_to_cold_with_a_full_budget(tmp_path, monkeypatch):
     """The other direction: a warm JVM that DIED must still get a working cold run.
 
-    MUTATION: broaden the EngineTimeout clause to `except Exception: raise` -> a crashed warm JVM
+    MUTATION: broaden the EngineTimeoutError clause to `except Exception: raise` -> a crashed warm JVM
     stops falling back, and a transiently broken warm tier fails every job instead of degrading.
     """
     calls: list[float] = []
@@ -126,10 +126,10 @@ def test_warm_crash_still_fails_closed_to_cold_with_a_full_budget(tmp_path, monk
 
 
 def test_engine_timeout_is_not_swallowed_by_the_generic_handler():
-    """EngineTimeout must remain distinguishable from a generic engine fault.
+    """EngineTimeoutError must remain distinguishable from a generic engine fault.
 
     It is a RuntimeError subclass, so ordering of the except clauses is the only thing keeping it
     out of the cold-retry path — assert the type relationship the ordering depends on.
     """
-    assert issubclass(EngineTimeout, RuntimeError)
-    assert EngineTimeout is not RuntimeError
+    assert issubclass(EngineTimeoutError, RuntimeError)
+    assert EngineTimeoutError is not RuntimeError

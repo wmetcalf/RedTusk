@@ -14,7 +14,7 @@ Both look identical at `communicate(timeout=...)`:
                                                   implicated, so failing it terminally with no
                                                   fallback burns a job for a host-side fault.
 
-Treating every timeout as the first case (which is what shipping only the EngineTimeout change
+Treating every timeout as the first case (which is what shipping only the EngineTimeoutError change
 did) removes the fallback from the second. The JVM now writes `control/control.started` the
 instant it takes the go-signal, so the host can ask instead of guess.
 """
@@ -26,7 +26,7 @@ import types
 import pytest
 
 from redtusk import engine as engine_mod
-from redtusk.engine import EngineTimeout, RedTuskEngine
+from redtusk.engine import EngineTimeoutError, RedTuskEngine
 
 
 class _FakeProc:
@@ -66,7 +66,7 @@ def _engine_with_warm(tmp_path, proc, *, started: bool):
 
 
 def test_a_timeout_after_the_job_started_is_not_re_run(tmp_path, monkeypatch):
-    """MUTATION: ignore control.started and always raise EngineTimeout -> unchanged here, but
+    """MUTATION: ignore control.started and always raise EngineTimeoutError -> unchanged here, but
     the next test fails. Both directions are needed; neither alone pins the discriminator."""
     calls: list[float] = []
     monkeypatch.setattr(engine_mod, "_run_worker", lambda i, o, timeout: calls.append(timeout))
@@ -74,7 +74,7 @@ def test_a_timeout_after_the_job_started_is_not_re_run(tmp_path, monkeypatch):
     src = tmp_path / "slow.pdf"; src.write_bytes(b"%PDF-1.4 slow")
     eng = _engine_with_warm(tmp_path, _FakeProc(timeout=True), started=True)
 
-    with pytest.raises(EngineTimeout):
+    with pytest.raises(EngineTimeoutError):
         eng._produce_rmeta(src, tmp_path / "out", timeout=120.0)
     assert calls == [], (
         f"the JVM demonstrably started this document; re-running it cold spends the budget "
@@ -83,7 +83,7 @@ def test_a_timeout_after_the_job_started_is_not_re_run(tmp_path, monkeypatch):
 
 
 def test_a_timeout_before_the_job_started_falls_back_to_cold(tmp_path, monkeypatch):
-    """MUTATION: raise EngineTimeout unconditionally (i.e. drop the marker check) -> a JVM that
+    """MUTATION: raise EngineTimeoutError unconditionally (i.e. drop the marker check) -> a JVM that
     never picked the job up fails the job terminally with no fallback, and this fails."""
     calls: list[float] = []
     monkeypatch.setattr(engine_mod, "_run_worker", lambda i, o, timeout: calls.append(timeout))
@@ -108,6 +108,6 @@ def test_the_warm_jvm_is_still_killed_either_way(tmp_path, monkeypatch):
         eng = _engine_with_warm(tmp_path / f"s{started}", proc, started=started)
         try:
             eng._produce_rmeta(src, tmp_path / f"o{started}", timeout=5.0)
-        except EngineTimeout:
+        except EngineTimeoutError:
             pass
         assert proc.killed, f"warm JVM left alive on the started={started} path"

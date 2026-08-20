@@ -53,7 +53,7 @@ from redtusk.schema import validate_rmeta
 logger = logging.getLogger(__name__)
 
 
-class EngineTimeout(RuntimeError):
+class EngineTimeoutError(RuntimeError):
     """The worker exceeded its time budget on THIS document.
 
     Distinct from a warm-tier fault on purpose. A crashed warm JVM should fail closed to a fresh
@@ -219,7 +219,8 @@ def _coerce_metadata_value(v: Any) -> Any:
 def _make_record(raw: dict[str, Any]) -> Record:
     """Build a ``Record`` from a dict of Tika metadata, coercing all values."""
     fields: dict[str, Any] = {}
-    for k, v in list(raw.items())[:_MAX_RECORD_KEYS]:  # cap key COUNT (Record.fields max_length=4096)
+    # cap key COUNT (Record.fields max_length=4096)
+    for k, v in list(raw.items())[:_MAX_RECORD_KEYS]:
         safe_key = str(k)[:256]  # guard against absurdly long keys
         fields[safe_key] = _coerce_metadata_value(v)
     return Record(fields=fields)
@@ -270,7 +271,8 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
                 extra[scalar_key] = _coerce_metadata_value(val)
         combined: dict[str, Any] = {**extra}
         if isinstance(meta_raw, dict):
-            for k, v in list(meta_raw.items())[:_MAX_RECORD_KEYS]:  # cap key COUNT (see _MAX_RECORD_KEYS)
+            # cap key COUNT (see _MAX_RECORD_KEYS)
+            for k, v in list(meta_raw.items())[:_MAX_RECORD_KEYS]:
                 combined[str(k)] = _coerce_metadata_value(v)
         # Clip to the contract field bounds (which RAISE, not truncate): rmeta entry path /
         # content_type / text are schema-valid at ANY length (no maxLength), so an attacker's
@@ -678,7 +680,7 @@ class RedTuskEngine:
             warm.tmp.cleanup()
 
     @staticmethod
-    def _warm_exit_detail(warm: "_WarmWorker") -> str:
+    def _warm_exit_detail(warm: _WarmWorker) -> str:
         """Last line of the dead warm JVM's stderr log, for the cold-fallback log.
 
         The JVM's stderr goes to a FILE in its scratch dir (see warmup), so this is a plain
@@ -781,10 +783,11 @@ class RedTuskEngine:
                 # was reaped as "warm worker abandoned: owning dispatcher gone" -- terminal, and
                 # holding a slot for the whole time.
                 #
-                # EngineTimeout is handled by its OWN except clause below, placed BEFORE the
+                # EngineTimeoutError is handled by its OWN except clause below, placed BEFORE the
                 # generic one, so it re-raises instead of being swallowed into a cold retry. A warm
                 # JVM that CRASHED (non-zero exit, or a staging error) still falls back to cold with
-                # a full budget -- the fail-closed behaviour tests/integration/test_warm_path.py pins.
+                # a full budget -- the fail-closed behaviour tests/integration/test_warm_path.py
+                # pins.
                 #
                 # ...but ONLY when this JVM demonstrably TOOK the job. The two failures are
                 # indistinguishable at this call: a timeout is equally what you see when the
@@ -799,7 +802,7 @@ class RedTuskEngine:
                         f"warm JVM never started the job within {timeout}s (no control.started); "
                         f"treating as an infrastructure fault, not a slow document"
                     ) from None
-                raise EngineTimeout(
+                raise EngineTimeoutError(
                     f"redtusk worker timed out after {timeout}s"
                 ) from None
             if warm.proc.returncode != 0:
@@ -810,14 +813,15 @@ class RedTuskEngine:
                 raise RuntimeError(
                     f"redtusk-worker (warm jvm) exited {warm.proc.returncode}: {tail}"
                 )
-        except EngineTimeout:
+        except EngineTimeoutError:
             # Slow document, not a broken warm tier. Do NOT re-run it on a cold JVM: same input,
             # same parser, same budget -> same timeout, at twice the wall-clock and twice the slot
             # occupancy. Surface it so the harness records a clean timeout.
             raise
         except Exception as exc:  # noqa: BLE001
             # Fail-closed to cold for a genuine warm FAULT (JVM crashed / staging failed): a fresh
-            # JVM produces the rmeta into the same dir. Pinned by tests/integration/test_warm_path.py.
+            # JVM produces the rmeta into the same dir. Pinned by
+            # tests/integration/test_warm_path.py.
             logger.warning("redtusk warm detonation failed (%s); cold fallback", exc)
             _run_worker(input, rmeta_dir, timeout=timeout)
             return

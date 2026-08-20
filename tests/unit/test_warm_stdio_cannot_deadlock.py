@@ -13,11 +13,10 @@ rather than a race against a pipe a surviving child may still hold open.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import subprocess
 import threading
 import types
+from pathlib import Path
 
 from redtusk import engine as engine_mod
 

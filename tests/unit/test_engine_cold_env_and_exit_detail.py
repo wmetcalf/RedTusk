@@ -15,8 +15,6 @@
 from __future__ import annotations
 
 import subprocess
-import threading
-import types
 
 from redtusk import engine as engine_mod
 

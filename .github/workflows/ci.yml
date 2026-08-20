@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python -m pip install -q --upgrade pip
+          python -m pip install -q ruff pytest
+          python -m pip install -q -e . || python -m pip install -q -r requirements.txt || true
+      - name: ruff
+        run: ruff check src
+      # tests/http and tests/docker are excluded on purpose, not to dodge failures:
+      # http needs a starlette/httpx pair this image does not pin, and docker needs a built
+      # local image. Both are run by hand against a real environment. tests/unit and
+      # tests/integration are the ones that mean anything without a fleet.
+      - name: pytest
+        run: pytest tests/unit tests/integration -q
+
+  worker-jvm:
+    # The check that matters most, and the one this repo did not have: build the worker against
+    # the PINNED Tika rather than whatever is in a developer's ~/.m2. On 2026-08-19 a local
+    # `mvn test` was green against Tika 3.0.0 while the image shipped 4.0.0-SNAPSHOT, so code
+    # that compiled locally failed inside the image build and 26 "passing" tests said nothing
+    # about the artifact.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cache the Tika stage image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          # Keyed on the pin: Tika recompiles only when TIKA_FORK_SHA moves.
+          key: tika-stage-${{ hashFiles('deploy/docker/Dockerfile.localtika') }}
+      - name: worker build + tests, inside the pinned-Tika stage image
+        run: scripts/worker_build.sh test
