@@ -43,8 +43,8 @@ class _FakeProc:
         # ALIVE at the pre-flight check. Returning the exit code here instead would send
         # _produce_rmeta down its "warm handle is already dead" branch at the top, which never
         # enters the try block at all -- an earlier version of this fake did exactly that, and the
-        # crash test passed while proving nothing (mutation-checked: broadening the EngineTimeoutError
-        # clause to `except Exception` survived).
+        # crash test passed while proving nothing (mutation-checked: broadening the
+        # EngineTimeoutError clause to `except Exception` survived).
         return None
 
     def communicate(self, timeout=None):
@@ -85,8 +85,8 @@ def _engine_with_warm(tmp_path, proc, *, started: bool = True):
 
 
 def test_warm_timeout_does_not_rerun_on_the_cold_path(tmp_path, monkeypatch):
-    """MUTATION: remove the `except EngineTimeoutError: raise` clause -> _run_worker is called with a
-    second full budget, and this test fails on both assertions."""
+    """MUTATION: remove the `except EngineTimeoutError: raise` clause -> _run_worker is
+    called with a second full budget, and this test fails on both assertions."""
     calls: list[float] = []
     monkeypatch.setattr(engine_mod, "_run_worker",
                         lambda inp, out, timeout: calls.append(timeout))
@@ -107,8 +107,9 @@ def test_warm_timeout_does_not_rerun_on_the_cold_path(tmp_path, monkeypatch):
 def test_warm_crash_still_fails_closed_to_cold_with_a_full_budget(tmp_path, monkeypatch):
     """The other direction: a warm JVM that DIED must still get a working cold run.
 
-    MUTATION: broaden the EngineTimeoutError clause to `except Exception: raise` -> a crashed warm JVM
-    stops falling back, and a transiently broken warm tier fails every job instead of degrading.
+    MUTATION: broaden the EngineTimeoutError clause to `except Exception: raise` -> a crashed
+    warm JVM stops falling back, and a transiently broken warm tier fails every job instead of
+    degrading.
     """
     calls: list[float] = []
     monkeypatch.setattr(engine_mod, "_run_worker",

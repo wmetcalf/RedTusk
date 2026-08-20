@@ -1,6 +1,8 @@
-"""The cold path must never inherit the warm tier's prewarm knob. `REDTUSK_PREWARM` is the warm JVM's knob -- `warmup()`
-   sets it deliberately -- but `_run_worker` inherits the whole environment, so an operator who
-   enables it on the container turns on a ~1.2s parser prewarm for every COLD job and every
+"""The cold path must never inherit the warm tier's prewarm knob.
+
+1. `REDTUSK_PREWARM` is the warm JVM's knob -- `warmup()` sets it deliberately -- but
+   `_run_worker` inherits the whole environment, so an operator who enables it on the
+   container turns on a ~1.2s parser prewarm for every COLD job and every
    warm->cold fallback. That is pure added latency for a one-shot process that then parses
    exactly once, and it contradicts what Main.prewarmParsers' javadoc promises ("set only by
    the Python engine's warmup()").
@@ -32,8 +34,10 @@ def test_cold_worker_never_inherits_prewarm(tmp_path, monkeypatch):
     monkeypatch.setattr(engine_mod.subprocess, "run", _fake_run)
     monkeypatch.setattr(engine_mod, "_java_worker_argv", lambda scratch: ["java", "-jar", "x"])
 
-    src = tmp_path / "in.doc"; src.write_bytes(b"x")
-    out = tmp_path / "out"; out.mkdir()
+    src = tmp_path / "in.doc"
+    src.write_bytes(b"x")
+    out = tmp_path / "out"
+    out.mkdir()
     try:
         engine_mod._run_worker(src, out, timeout=5.0)
     except Exception:

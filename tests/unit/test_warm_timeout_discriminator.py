@@ -71,7 +71,8 @@ def test_a_timeout_after_the_job_started_is_not_re_run(tmp_path, monkeypatch):
     calls: list[float] = []
     monkeypatch.setattr(engine_mod, "_run_worker", lambda i, o, timeout: calls.append(timeout))
 
-    src = tmp_path / "slow.pdf"; src.write_bytes(b"%PDF-1.4 slow")
+    src = tmp_path / "slow.pdf"
+    src.write_bytes(b"%PDF-1.4 slow")
     eng = _engine_with_warm(tmp_path, _FakeProc(timeout=True), started=True)
 
     with pytest.raises(EngineTimeoutError):
@@ -88,7 +89,8 @@ def test_a_timeout_before_the_job_started_falls_back_to_cold(tmp_path, monkeypat
     calls: list[float] = []
     monkeypatch.setattr(engine_mod, "_run_worker", lambda i, o, timeout: calls.append(timeout))
 
-    src = tmp_path / "doc.pdf"; src.write_bytes(b"%PDF-1.4 ok")
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"%PDF-1.4 ok")
     eng = _engine_with_warm(tmp_path, _FakeProc(timeout=True), started=False)
 
     eng._produce_rmeta(src, tmp_path / "out", timeout=120.0)      # must NOT raise
@@ -101,7 +103,8 @@ def test_a_timeout_before_the_job_started_falls_back_to_cold(tmp_path, monkeypat
 def test_the_warm_jvm_is_still_killed_either_way(tmp_path, monkeypatch):
     """Whichever branch is taken, the slot's process must not be left running."""
     monkeypatch.setattr(engine_mod, "_run_worker", lambda i, o, timeout: None)
-    src = tmp_path / "d.pdf"; src.write_bytes(b"%PDF")
+    src = tmp_path / "d.pdf"
+    src.write_bytes(b"%PDF")
 
     for started in (True, False):
         proc = _FakeProc(timeout=True)

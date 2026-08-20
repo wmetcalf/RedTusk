@@ -265,8 +265,8 @@ def test_detonate_clips_huge_truncated_warning(tmp_path, monkeypatch):
     # truncated.observed is schema-valid but UNBOUNDED (integer, no max); the truncated-warning
     # f-string interpolated it into a max_length=2000 Warning.message -> pydantic ValidationError
     # crashed detonate. The message must be clipped like the sibling rmeta-warnings loop.
-    hostile = {**_RMETA_FIXTURE,
-               "truncated": {"reason": "max_embedded_entries", "limit": 5000, "observed": 10 ** 2000}}
+    hostile = {**_RMETA_FIXTURE, "truncated": {
+        "reason": "max_embedded_entries", "limit": 5000, "observed": 10 ** 2000}}
 
     def _write(self, input, rmeta_dir, timeout):
         (rmeta_dir / "embedded" / "thumbnails").mkdir(parents=True, exist_ok=True)
@@ -275,9 +275,12 @@ def test_detonate_clips_huge_truncated_warning(tmp_path, monkeypatch):
         (rmeta_dir / "embedded" / "thumbnails" / "image3.jpeg.jpg").write_bytes(b"\xff\xd8thumb")
 
     monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", _write)
-    inp = tmp_path / "x.xlsx"; inp.write_bytes(b"x")
-    out = tmp_path / "out"; out.mkdir()
-    res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
+    inp = tmp_path / "x.xlsx"
+    inp.write_bytes(b"x")
+    out = tmp_path / "out"
+    out.mkdir()
+    # must NOT raise
+    res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))
     tw = [w for w in res.warnings if w.code == "truncated"]
     assert tw and len(tw[0].message) <= 2000
 
@@ -303,9 +306,12 @@ def test_detonate_clips_unbounded_rmeta_strings(tmp_path, monkeypatch):
         (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
 
     monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", _write)
-    inp = tmp_path / "x.xlsx"; inp.write_bytes(b"x")
-    out = tmp_path / "out"; out.mkdir()
-    res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
+    inp = tmp_path / "x.xlsx"
+    inp.write_bytes(b"x")
+    out = tmp_path / "out"
+    out.mkdir()
+    # must NOT raise
+    res = RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))
     assert len(res.detected.mime) <= 255
 
 
@@ -316,7 +322,8 @@ def test_detonate_bounds_record_key_count(tmp_path, monkeypatch):
     huge_meta = {f"k{i}": "v" for i in range(5000)}
     hostile = {**_RMETA_FIXTURE, "extraction": {
         **_RMETA_FIXTURE["extraction"],
-        "entries": [_entry("/", None, 0, "application/vnd.ms-excel", "ab" * 32, metadata=huge_meta)],
+        "entries": [
+            _entry("/", None, 0, "application/vnd.ms-excel", "ab" * 32, metadata=huge_meta)],
     }}
 
     def _write(self, input, rmeta_dir, timeout):
@@ -324,8 +331,10 @@ def test_detonate_bounds_record_key_count(tmp_path, monkeypatch):
         (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
 
     monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", _write)
-    inp = tmp_path / "x.xlsx"; inp.write_bytes(b"x")
-    out = tmp_path / "out"; out.mkdir()
+    inp = tmp_path / "x.xlsx"
+    inp.write_bytes(b"x")
+    out = tmp_path / "out"
+    out.mkdir()
     RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
 
 
@@ -346,6 +355,8 @@ def test_detonate_clamps_out_of_range_entry_depth(tmp_path, monkeypatch):
         (rmeta_dir / "metadata.json").write_text(json.dumps(hostile))
 
     monkeypatch.setattr(RedTuskEngine, "_produce_rmeta", _write)
-    inp = tmp_path / "x.xlsx"; inp.write_bytes(b"x")
-    out = tmp_path / "out"; out.mkdir()
+    inp = tmp_path / "x.xlsx"
+    inp.write_bytes(b"x")
+    out = tmp_path / "out"
+    out.mkdir()
     RedTuskEngine().detonate(inp, out, types.SimpleNamespace(timeout_s=10.0))  # must NOT raise
