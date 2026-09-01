@@ -81,7 +81,7 @@ number for code that is not the release, and step 4 above (the whole point of th
 goes blind. Instead:
 
 ```bash
-# in the blastbox repo — stamps a PEP 440 local version, 0.1.26+g<sha>[.dirty]
+# in the blastbox repo — stamps a PEP 440 local version, 0.1.27+g<sha>[.dirty]
 WHEEL=$(deploy/build_dev_wheel.sh | tail -1)
 scp "$WHEEL" <host>:<redtusk>/deploy/docker/wheels/
 # on the host
@@ -90,7 +90,7 @@ docker build -f deploy/docker/Dockerfile.host \
 ```
 
 The wheel installs over the pin with `--force-reinstall --no-deps`, and `pip show blastbox`
-(which is what `deploy_inventory.sh` reads) then reports `0.1.26+g<sha>` — impossible to
+(which is what `deploy_inventory.sh` reads) then reports `0.1.27+g<sha>` — impossible to
 confuse with PyPI. Leave `BLASTBOX_WHEEL` unset for a normal release build.
 
 ### 1b. Reading where the slot cycle goes
