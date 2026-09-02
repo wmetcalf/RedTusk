@@ -16,6 +16,8 @@ rather than assumed.
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import re
 from pathlib import Path
 
@@ -38,7 +40,9 @@ def _declared_args(path: Path) -> set[str]:
 
 
 @pytest.mark.parametrize("dockerfile,base_arg", EXPECTED)
-def test_the_script_names_an_arg_the_dockerfile_declares(dockerfile, base_arg):
+def test_the_script_names_an_arg_the_dockerfile_declares(
+    dockerfile: str, base_arg: str | None
+) -> None:
     path = ROOT / dockerfile
     assert path.is_file(), f"{dockerfile} is gone; build_images.sh still builds it"
     if base_arg is None:
@@ -50,14 +54,14 @@ def test_the_script_names_an_arg_the_dockerfile_declares(dockerfile, base_arg):
     )
 
 
-def test_the_script_builds_every_dockerfile_this_test_knows_about():
+def test_the_script_builds_every_dockerfile_this_test_knows_about() -> None:
     """Keep the table and the script from drifting apart."""
     script = SCRIPT.read_text(encoding="utf-8")
     for dockerfile, _ in EXPECTED:
         assert dockerfile in script, f"{dockerfile} is in the table but not in the script"
 
 
-def test_the_script_verifies_its_own_output():
+def test_the_script_verifies_its_own_output() -> None:
     """A build that does not check its stamps is how the gap reopens."""
     script = SCRIPT.read_text(encoding="utf-8")
     assert "stamp --read" in script, "build_images.sh must verify what it stamped"
