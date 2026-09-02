@@ -106,3 +106,7 @@ deploy/firecracker/bench_*.json
 .tika-src/
 .tika-baseline/
 .tika-fixed/
+
+# Written by scripts/deploy_to_host.sh so the deployed tree (no .git) can say
+# which commit it came from. Per-deploy state, never committed.
+.blastbox-revision

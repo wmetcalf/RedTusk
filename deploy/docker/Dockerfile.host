@@ -7,7 +7,11 @@
 #
 # Analogue of clippyshot's deploy/docker/Dockerfile. Build context = repo root:
 #   docker build -f deploy/docker/Dockerfile.host -t redtusk:dev .
-FROM python:3.12-slim-bookworm
+# The base is an ARG so the build can be pinned to a digest, and it is declared
+# before the first FROM because that is the only scope in which docker honours
+# an ARG inside a FROM. `scripts/build_images.sh` passes the resolved digest.
+ARG BASE_IMAGE=python:3.12-slim-bookworm
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -41,17 +45,24 @@ https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.lis
 #
 # BLASTBOX_WHEEL: install a PRE-RELEASE blastbox over the pinned one, for fleets running a
 # host-side fix that is not on PyPI yet. Build it with blastbox `deploy/build_dev_wheel.sh`,
-# which stamps a PEP 440 local version (0.1.27+g<sha>), so the deployed artifact can never be
+# which stamps a PEP 440 local version (0.1.28+g<sha>), so the deployed artifact can never be
 # mistaken for the release in `pip show` or scripts/deploy_inventory.sh. Leave the arg empty
 # for a normal build and the pinned PyPI blastbox is what ships.
 ARG BLASTBOX_WHEEL=
+# The blastbox version this image INSTALLS. Without it, `redtusk[host]` resolves
+# the >= floor to whatever is newest on PyPI at build time, so the provenance
+# label could name one version while the venv held another -- the label/contents
+# disagreement `blastbox doctor` exists to catch. Keep the default in sync with
+# the floor in pyproject.toml.
+ARG BLASTBOX_VERSION=0.1.28
 WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/pyproject.toml
 COPY src /tmp/build/src
 COPY deploy/docker/wheels/ /tmp/wheels/
 RUN python3 -m venv /opt/redtusk \
     && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/redtusk/bin/pip install --no-cache-dir '/tmp/build[host]' \
+    && /opt/redtusk/bin/pip install --no-cache-dir \
+         '/tmp/build[host]' "blastbox==${BLASTBOX_VERSION}" \
     && if [ -n "$BLASTBOX_WHEEL" ]; then \
          echo ">> overriding blastbox with /tmp/wheels/$BLASTBOX_WHEEL" \
          && /opt/redtusk/bin/pip install --no-cache-dir --force-reinstall --no-deps \

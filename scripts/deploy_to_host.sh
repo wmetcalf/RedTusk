@@ -19,6 +19,9 @@
 #
 # After a successful rsync, this script:
 #   1. Reminds you to confirm REDTUSK_STATE_DIR ownership on the remote
+#   1a. Writes .blastbox-revision so the deployed tree (which has no .git)
+#       can still say which commit it came from -- scripts/build_images.sh
+#       refuses to stamp an image without it
 #   2. Does NOT restart any service — you decide when to bounce the api,
 #      because a restart drops in-flight uploads and re-runs orphan recovery.
 set -euo pipefail
@@ -72,8 +75,39 @@ tests/fixtures/corpus/
 EOF
 fi
 
+# `.git/` is excluded, so the deployed tree is not a checkout and `git
+# rev-parse` cannot say where it came from. Record the sha in a file the tree
+# carries instead: `blastbox stamp` REFUSES to stamp without a revision (an
+# image that looks recorded but cannot be rebuilt is worse than an unstamped
+# one), so without this every remote build of scripts/build_images.sh fails.
+# Written as code rather than documented as a manual step -- a hand-created
+# file is the drift class this repo has been bitten by before.
+if git -C . rev-parse HEAD >/dev/null 2>&1; then
+    if [ -n "$(git -C . status --porcelain)" ]; then
+        # A dirty tree's sha does not describe what is being shipped, and
+        # stamp rejects a `-dirty` revision as unreproducible. Say so here,
+        # where it is fixable, rather than at build time on the remote.
+        echo "working tree is dirty: the deployed revision would not describe" >&2
+        echo "what is being shipped. Commit or stash first." >&2
+        exit 2
+    fi
+    git -C . rev-parse HEAD > .blastbox-revision
+    echo "==> recorded source revision $(cat .blastbox-revision) for the remote"
+else
+    echo "==> WARNING: not a git checkout; .blastbox-revision not written." >&2
+    echo "    The remote keeps whatever revision it already had." >&2
+fi
+
 echo "==> rsync to $TARGET (excludes: see $EXCLUDE_FILE)"
-rsync -az --delete --exclude-from="$EXCLUDE_FILE" \
+# `--filter='P .blastbox-revision'` protects the remote's copy from --delete.
+# Deploying from a tree that could not write one (the warning path above) would
+# otherwise DELETE the revision the remote already had, turning a host that
+# could stamp into one that cannot -- a deploy destroying the provenance it
+# exists to carry. Measured against real rsync: without the rule the remote's
+# file is deleted; with it the file survives AND a newer local one still
+# transfers, so protection costs nothing on the normal path.
+rsync -az --delete --filter='P .blastbox-revision' \
+      --exclude-from="$EXCLUDE_FILE" \
       "$@" ./ "$TARGET/"
 
 echo ""
