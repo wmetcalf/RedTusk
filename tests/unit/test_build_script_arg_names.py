@@ -134,6 +134,12 @@ def test_the_script_verifies_what_it_stamped() -> None:
         "build_images.sh must read every stamp back (a commented-out line does "
         "not count)"
     )
-    assert re.search(r"^\s*exit 1$", TEXT, re.MULTILINE), (
-        "a failed verification must fail the build"
+    # Scoped to the verification block. A whole-file `exit 1` search is
+    # satisfied by stamp_flags' own abort, so it stayed green with the final
+    # gate removed -- the same wrong-reason failure as the assertion above,
+    # in its sibling test.
+    gate = re.search(r'\[ "\$rc" -eq 0 \][^\n]*\|\|\s*\{(.*?)^\}', TEXT, re.MULTILINE | re.DOTALL)
+    assert gate, "the read-back results are no longer gated the way this test reads"
+    assert re.search(r"exit\s+1", gate.group(1)), (
+        "a failed verification must fail the build, not just print"
     )

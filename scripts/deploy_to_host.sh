@@ -95,11 +95,19 @@ if git -C . rev-parse HEAD >/dev/null 2>&1; then
     echo "==> recorded source revision $(cat .blastbox-revision) for the remote"
 else
     echo "==> WARNING: not a git checkout; .blastbox-revision not written." >&2
-    echo "    scripts/build_images.sh on the remote will refuse to stamp." >&2
+    echo "    The remote keeps whatever revision it already had." >&2
 fi
 
 echo "==> rsync to $TARGET (excludes: see $EXCLUDE_FILE)"
-rsync -az --delete --exclude-from="$EXCLUDE_FILE" \
+# `--filter='P .blastbox-revision'` protects the remote's copy from --delete.
+# Deploying from a tree that could not write one (the warning path above) would
+# otherwise DELETE the revision the remote already had, turning a host that
+# could stamp into one that cannot -- a deploy destroying the provenance it
+# exists to carry. Measured against real rsync: without the rule the remote's
+# file is deleted; with it the file survives AND a newer local one still
+# transfers, so protection costs nothing on the normal path.
+rsync -az --delete --filter='P .blastbox-revision' \
+      --exclude-from="$EXCLUDE_FILE" \
       "$@" ./ "$TARGET/"
 
 echo ""
