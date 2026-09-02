@@ -45,7 +45,7 @@ https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.lis
 #
 # BLASTBOX_WHEEL: install a PRE-RELEASE blastbox over the pinned one, for fleets running a
 # host-side fix that is not on PyPI yet. Build it with blastbox `deploy/build_dev_wheel.sh`,
-# which stamps a PEP 440 local version (0.1.29+g<sha>), so the deployed artifact can never be
+# which stamps a PEP 440 local version (0.1.30+g<sha>), so the deployed artifact can never be
 # mistaken for the release in `pip show` or scripts/deploy_inventory.sh. Leave the arg empty
 # for a normal build and the pinned PyPI blastbox is what ships.
 ARG BLASTBOX_WHEEL=
@@ -54,7 +54,7 @@ ARG BLASTBOX_WHEEL=
 # label could name one version while the venv held another -- the label/contents
 # disagreement `blastbox doctor` exists to catch. Keep the default in sync with
 # the floor in pyproject.toml.
-ARG BLASTBOX_VERSION=0.1.29
+ARG BLASTBOX_VERSION=0.1.30
 WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/pyproject.toml
 COPY src /tmp/build/src

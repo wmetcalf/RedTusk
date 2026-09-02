@@ -143,3 +143,50 @@ def test_the_script_verifies_what_it_stamped() -> None:
     assert re.search(r"exit\s+1", gate.group(1)), (
         "a failed verification must fail the build, not just print"
     )
+
+
+def test_the_minimum_blastbox_version_is_stated_once() -> None:
+    """A minimum that appears in two places drifts.
+
+    It did: the not-found diagnostic kept saying >= 0.1.29 after the gate moved
+    to 0.1.30, so the script told an operator to install a version it would then
+    reject. Every mention must come from BB_MIN.
+    """
+    assigns = re.findall(r"^BB_MIN=(\S+)", TEXT, re.MULTILINE)
+    assert len(assigns) == 1, f"BB_MIN is assigned {len(assigns)} times: {assigns}"
+    floor = assigns[0]
+
+    # A message may NAME a version that is too old ("0.1.28 and 0.1.29 have
+    # `stamp` but ..."), and those literals are the point. What must never be a
+    # literal is the version the operator is told to GET: an exemption broad
+    # enough to cover both is an exemption that lets the real bug through --
+    # the drift that happened was a hardcoded ">= 0.1.29" in exactly such a
+    # line, and a first version of this test waved it past.
+    for line in TEXT.splitlines():
+        if not line.lstrip().startswith("echo"):
+            continue
+        for m in re.finditer(r">=\s*(\$\{?\w+\}?|\d+(?:\.\d+)*)", line):
+            got = m.group(1).strip("${}")
+            assert got in ("BB_MIN", floor), (
+                f"the version an operator is told to install is hardcoded as "
+                f"{got!r}: {line.strip()!r}. Use $BB_MIN so it cannot drift "
+                "from the gate."
+            )
+
+
+def test_the_floor_matches_what_pyproject_pins() -> None:
+    """The script's gate and the package's own floor must agree.
+
+    If the gate is lower, the script accepts a blastbox the package refuses to
+    install alongside; if higher, it rejects one the package considers fine.
+    """
+    floor = re.search(r"^BB_MIN=(\S+)", TEXT, re.MULTILINE)
+    assert floor
+    pins = re.findall(
+        r"blastbox(?:\[[^\]]*\])?>=(\d+\.\d+\.\d+)",
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+    )
+    assert pins, "pyproject no longer pins blastbox the way this test reads it"
+    assert set(pins) == {floor.group(1)}, (
+        f"build_images.sh requires >= {floor.group(1)} but pyproject pins {sorted(set(pins))}"
+    )
