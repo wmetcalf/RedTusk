@@ -93,6 +93,36 @@ The wheel installs over the pin with `--force-reinstall --no-deps`, and `pip sho
 (which is what `deploy_inventory.sh` reads) then reports `0.1.27+g<sha>` — impossible to
 confuse with PyPI. Leave `BLASTBOX_WHEEL` unset for a normal release build.
 
+### 1a. Building images that record what they were built from
+
+Use `scripts/build_images.sh <tag>`. It stamps every image with the blastbox
+version, the source revision, and the **digest** of the base it was built on,
+and it PINS the build to that digest so the label cannot describe an image the
+build did not use. It then reads each stamp back and fails if any image is not
+reproducible from what it records.
+
+Why this is not optional: on 2026-09-02 the base that built the running
+`redtusk-cold-worker` no longer existed. Its jar matched none of the fourteen
+`redtusk-worker:*` tags on the box and no dangling image, so the deployed worker
+could not be rebuilt at all -- and rebuilding it on any available base would
+have swapped the Java engine while looking like a routine version bump. Nothing
+had recorded the base, so the gap was invisible until someone went looking.
+
+Two traps the script handles for you:
+
+* **A deployed tree is usually not a git checkout.** `~/redtusk-bb` is an
+  rsync'd copy, so `git rev-parse` fails and a stamp with no revision is
+  refused. Write the source sha into `.blastbox-revision` as part of the deploy.
+* **The ARG names are not uniform.** These Dockerfiles use `BASE_IMAGE`;
+  blastbox's `deploy/gvisor/Dockerfile.redtusk` uses `BASE`. Docker silently
+  IGNORES a `--build-arg` the Dockerfile does not declare, so the wrong name
+  yields an unpinned build with a stamp that claims a digest. `blastbox stamp`
+  refuses that outright, and `tests/unit/test_build_script_arg_names.py` catches
+  it without docker.
+
+Verify anything already built with `blastbox stamp --read <image>`, and the
+whole fleet with `blastbox doctor`.
+
 ### 1b. Reading where the slot cycle goes
 
 `scripts/slot_cycle_profile.sh` reports the per-phase breakdown from the dispatcher's
