@@ -57,9 +57,16 @@ BLASTBOX_VERSION="${2:-$(grep -v '^[[:space:]]*#' pyproject.toml |
 WORKER_BASE="${WORKER_BASE:-eclipse-temurin:25-jre-jammy}"
 HOST_BASE="${HOST_BASE:-python:3.12-slim-bookworm}"
 
+# Declared ONCE, above the first message that mentions it. It was written out
+# by hand in the not-found diagnostic and got left at 0.1.29 when the gate moved
+# to 0.1.30 -- so the script told an operator to install a version it then
+# rejected. A minimum that appears in two places drifts.
+BB_MIN=0.1.30
+
 command -v blastbox >/dev/null || {
   echo "blastbox CLI not found. This script needs a blastbox providing" >&2
-  echo "\`blastbox stamp\` (>= 0.1.29)." >&2
+  echo "\`blastbox stamp\` (>= $BB_MIN):" >&2
+  echo "  pip install 'blastbox>=$BB_MIN'" >&2
   exit 2
 }
 # Checking that the SUBCOMMAND exists is not the same as checking the version:
@@ -69,7 +76,6 @@ command -v blastbox >/dev/null || {
 # store -- a locally built image carries without ever having been pushed. Either
 # way the build dies inside the first `docker build` on what reads like a
 # registry auth error, pointing nowhere near the real cause.
-BB_MIN=0.1.30
 BB_HAVE="$(blastbox version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 || true)"
 [ -n "$BB_HAVE" ] || {
   echo "this blastbox has no usable \`version\` output; need >= $BB_MIN" >&2
