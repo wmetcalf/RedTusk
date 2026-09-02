@@ -15,6 +15,9 @@
 #
 # Usage:
 #   scripts/build_images.sh <tag> [blastbox-version]
+#
+# Env: WORKER_BASE / HOST_BASE  override the upstream bases
+#      BLASTBOX_WHEEL          ship a pre-release host blastbox (section 1)
 # Example:
 #   scripts/build_images.sh bb0128 0.1.28
 set -euo pipefail
@@ -26,7 +29,33 @@ cd "$REPO"
 # The version the images will INSTALL, not the version of the CLI doing the
 # stamping -- they are not necessarily the same, and recording the wrong one is
 # worse than recording nothing.
-BLASTBOX_VERSION="${2:-$(grep -oE 'blastbox>=[0-9.]+' pyproject.toml | head -1 | cut -d= -f3)}"
+# `cut -d= -f<n>` cannot do this: `blastbox>=0.1.27` splits into TWO fields on
+# `=` (field 2 is the version), `blastbox==0.1.28` into three, and a range like
+# `blastbox>=0.1.27,<0.2` drags the upper bound into whichever field it lands
+# in. Match the version digits themselves instead of counting delimiters.
+# Comment lines are dropped first for the same reason `blastbox pins` ignores
+# them: a version mentioned in prose is not a pin, and letting one win here
+# would stamp a version nothing installs. The extras form (`blastbox[host]>=`)
+# is matched too -- missing it silently fell through to the empty check.
+# `|| true` is load-bearing: under `set -e` with `pipefail`, a grep that
+# matches nothing makes the ASSIGNMENT fail, which kills the script before the
+# check below can print anything. The observable symptom is no output and
+# exit 1 -- the worst possible diagnostic for a missing pin.
+BLASTBOX_VERSION="${2:-$(grep -v '^[[:space:]]*#' pyproject.toml |
+    grep -oE 'blastbox(\[[A-Za-z0-9,._-]+\])?[[:space:]]*[<>=!~]=[[:space:]]*[0-9]+(\.[0-9]+)*' |
+    head -1 | grep -oE '[0-9]+(\.[0-9]+)*$' || true)}"
+[ -n "$BLASTBOX_VERSION" ] || {
+  echo "could not read a blastbox version from pyproject.toml." >&2
+  echo "Pass it explicitly:  scripts/build_images.sh $TAG <blastbox-version>" >&2
+  exit 2
+}
+
+# The upstream bases the two root images build on. Overridable so a base bump
+# is one env var rather than an edit in two files; the DEFAULTS must match the
+# Dockerfiles' own ARG defaults, which tests/unit/test_build_script_arg_names.py
+# asserts -- a drift here would pin a base the Dockerfile does not otherwise use.
+WORKER_BASE="${WORKER_BASE:-eclipse-temurin:25-jre-jammy}"
+HOST_BASE="${HOST_BASE:-python:3.12-slim-bookworm}"
 
 command -v blastbox >/dev/null || {
   echo "blastbox CLI not found. This script needs a blastbox providing" >&2
@@ -46,32 +75,75 @@ if ! git -C "$REPO" rev-parse HEAD >/dev/null 2>&1 && [ ! -f "$REPO/.blastbox-re
   exit 2
 fi
 
-stamp_flags() {  # <dockerfile> [base] [base-arg]
-  local df="$1" base="${2:-}" arg="${3:-BASE_IMAGE}"
-  if [ -n "$base" ]; then
-    blastbox stamp --repo "$REPO" -f "$df" --base "$base" --base-arg "$arg" \
-                   --blastbox-version "$BLASTBOX_VERSION"
-  else
-    blastbox stamp --repo "$REPO" --blastbox-version "$BLASTBOX_VERSION"
-  fi
+# Every image gets a pinned base, including the two built on upstream tags.
+# `blastbox stamp --read` reports an image with no recorded base digest as
+# UNSTAMPED and exits 1, so an unpinned image would fail this script's own
+# verification -- and rightly: `python:3.12-slim-bookworm` and
+# `eclipse-temurin:25-jre-jammy` are mutable, so without a digest the same
+# source and tag rebuild on different bytes.
+# Sets `flags` (an array) from `blastbox stamp`, and ABORTS if stamp refuses.
+#
+# This must not be a `$(...)` in docker's argument list. `set -e` reacts to the
+# status of the whole command -- `docker build` -- and DISCARDS the status of a
+# command substitution in its arguments. A refusing stamp would leave the build
+# running with no labels and no --build-arg, so the cold worker would fall back
+# to its Dockerfile default `redtusk-worker:default`: a mutable tag pointing at
+# whatever stale base is on the box. That is the 2026-09-02 incident exactly,
+# silently reproduced under the intended tag, and the script would print
+# "all images stamped" afterwards.
+#
+# Reading into an array also keeps each flag one argv entry regardless of what
+# a label value contains, instead of relying on word splitting.
+stamp_flags() {  # <dockerfile> <base> [base-arg]
+  local df="$1" base="$2" arg="${3:-BASE_IMAGE}" out
+  out="$(blastbox stamp --repo "$REPO" -f "$df" --base "$base" --base-arg "$arg" \
+                  --blastbox-version "$BLASTBOX_VERSION")" || {
+    echo "blastbox stamp refused to stamp $df -- not building it unstamped." >&2
+    exit 1
+  }
+  read -r -a flags <<<"$out"
 }
 
+# An upstream tag has to be present locally before it can be resolved to a
+# digest, and `docker build` would otherwise pull it itself -- possibly a
+# DIFFERENT push of the same tag than the one recorded. Each pull is its own
+# command so `set -e` sees its status; wrapping it in `$(...)` would discard
+# that, and an `exit` inside a substitution only leaves the SUBSHELL.
+
+# The images install this blastbox; the Dockerfiles default the ARG, and a
+# default that drifts from what is stamped produces the exact lie this tooling
+# exists to catch: a label naming one version over a venv holding another.
+version_arg=(--build-arg "BLASTBOX_VERSION=$BLASTBOX_VERSION")
+
+# The pre-release escape hatch documented for the host image (DEPLOYMENT.md
+# section 1) is `ARG BLASTBOX_WHEEL`. Without a way to pass it, an operator
+# told to build with this script would silently get the PyPI blastbox instead
+# of the host-side fix they came for. Empty = the pinned PyPI release ships.
+wheel_arg=()
+if [ -n "${BLASTBOX_WHEEL:-}" ]; then
+  wheel_arg=(--build-arg "BLASTBOX_WHEEL=$BLASTBOX_WHEEL")
+fi
+
 echo ">> worker base (jar + AOT)  -> redtusk-worker:$TAG"
-# shellcheck disable=SC2046  # word splitting is the point: these are flags
+docker pull -q "$WORKER_BASE" >/dev/null
+stamp_flags deploy/docker/Dockerfile.default "$WORKER_BASE"
 docker build -f deploy/docker/Dockerfile.default \
-  $(stamp_flags deploy/docker/Dockerfile.default) \
+  "${flags[@]}" \
   -t "redtusk-worker:$TAG" .
 
 echo ">> cold worker              -> redtusk-cold-worker:$TAG"
-# shellcheck disable=SC2046
+stamp_flags deploy/docker/Dockerfile.cold-worker "redtusk-worker:$TAG"
 docker build -f deploy/docker/Dockerfile.cold-worker \
-  $(stamp_flags deploy/docker/Dockerfile.cold-worker "redtusk-worker:$TAG" BASE_IMAGE) \
+  "${flags[@]}" \
+  "${version_arg[@]}" \
   -t "redtusk-cold-worker:$TAG" .
 
 echo ">> host / dispatcher        -> redtusk:$TAG"
-# shellcheck disable=SC2046
+docker pull -q "$HOST_BASE" >/dev/null
+stamp_flags deploy/docker/Dockerfile.host "$HOST_BASE"
 docker build -f deploy/docker/Dockerfile.host \
-  $(stamp_flags deploy/docker/Dockerfile.host) \
+  "${flags[@]}" \
+  "${version_arg[@]}" "${wheel_arg[@]}" \
   -t "redtusk:$TAG" .
 
 echo

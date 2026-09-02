@@ -1,5 +1,12 @@
 # RedTusk worker — default profile (AppCDS + KSM, no CRaC).
 
+# The RUNTIME base is an ARG so a build can be pinned to a digest. Only the
+# final stage becomes the image, so this is the one that has to be
+# parameterized; the builder stages' bases do not end up in the shipped layers.
+# It must be declared HERE, before the first FROM: docker honours an ARG in a
+# FROM only in that scope. `scripts/build_images.sh` passes the resolved digest.
+ARG BASE_IMAGE=eclipse-temurin:25-jre-jammy
+
 # ── Stage 0-a: Build ZXingReader (ZXing-CPP CLI with JSON output) ─────────────
 FROM ubuntu:jammy AS zxing-build
 
@@ -119,7 +126,7 @@ RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" 
 # AppCDS is dumped here using the SAME JRE that will run at runtime, so the
 # archive is compatible (avoids JDK/JRE checksum mismatch with -Xshare:on).
 # --------------------------------------------------------------------------
-FROM eclipse-temurin:25-jre-jammy AS runtime
+FROM ${BASE_IMAGE} AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \

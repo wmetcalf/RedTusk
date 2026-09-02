@@ -95,11 +95,22 @@ confuse with PyPI. Leave `BLASTBOX_WHEEL` unset for a normal release build.
 
 ### 1a. Building images that record what they were built from
 
-Use `scripts/build_images.sh <tag>`. It stamps every image with the blastbox
-version, the source revision, and the **digest** of the base it was built on,
-and it PINS the build to that digest so the label cannot describe an image the
-build did not use. It then reads each stamp back and fails if any image is not
-reproducible from what it records.
+```
+scripts/build_images.sh <tag> [blastbox-version]
+```
+
+It stamps all three images -- worker base, cold worker, host -- with the
+blastbox version, the source revision, and what each was built **on**, then
+reads every stamp back and exits non-zero if any image is not reproducible from
+what it records. Nothing is built unstamped: if `blastbox stamp` refuses, the
+script stops rather than producing an image whose label it could not write.
+
+Environment overrides:
+
+| variable | effect |
+|---|---|
+| `WORKER_BASE` / `HOST_BASE` | the upstream bases the two root images build on (defaults match the Dockerfiles' own `ARG BASE_IMAGE`) |
+| `BLASTBOX_WHEEL` | ship a pre-release host-side blastbox instead of the pinned PyPI one (see section 1) |
 
 Why this is not optional: on 2026-09-02 the base that built the running
 `redtusk-cold-worker` no longer existed. Its jar matched none of the fourteen
@@ -108,17 +119,35 @@ could not be rebuilt at all -- and rebuilding it on any available base would
 have swapped the Java engine while looking like a routine version bump. Nothing
 had recorded the base, so the gap was invisible until someone went looking.
 
+**How strong the pin is depends on where the base lives.** A base with a
+registry digest is pinned by that digest and every builder resolves it. A
+*local-only* base -- which all three of these are, since nothing here is pushed
+-- is pinned by its reference, with the immutable image ID recorded in the
+label. An image ID is not a usable `FROM`: buildkit reads `sha256:...` as the
+repository `docker.io/library/sha256:...` and tries to pull it. So for local
+bases the guarantee is "the build used whatever this reference meant at build
+time, and the label says which image that was" -- checkable afterwards rather
+than guaranteed by construction. Push the base to a registry for the strong
+form.
+
 Two traps the script handles for you:
 
-* **A deployed tree is usually not a git checkout.** `~/redtusk-bb` is an
-  rsync'd copy, so `git rev-parse` fails and a stamp with no revision is
-  refused. Write the source sha into `.blastbox-revision` as part of the deploy.
+* **A deployed tree is not a git checkout.** `.git/` is excluded from the
+  rsync, so `git rev-parse` fails there and a stamp with no revision is
+  refused. `scripts/deploy_to_host.sh` writes the sha into
+  `.blastbox-revision` before it syncs -- it also refuses to deploy a dirty
+  tree, because that sha would not describe what is being shipped.
 * **The ARG names are not uniform.** These Dockerfiles use `BASE_IMAGE`;
   blastbox's `deploy/gvisor/Dockerfile.redtusk` uses `BASE`. Docker silently
-  IGNORES a `--build-arg` the Dockerfile does not declare, so the wrong name
-  yields an unpinned build with a stamp that claims a digest. `blastbox stamp`
-  refuses that outright, and `tests/unit/test_build_script_arg_names.py` catches
-  it without docker.
+  IGNORES a `--build-arg` the Dockerfile does not declare -- and declaring it is
+  not enough either: an ARG inside a stage cannot parameterize a `FROM`, and in
+  a multi-stage build only the last stage becomes the image, so a parameterized
+  *builder* pins nothing. `blastbox stamp` refuses all three cases, and
+  `tests/unit/test_build_script_arg_names.py` catches them in CI without docker.
+
+The three tags are built in order and verified at the end, so a failure at step
+2 or 3 leaves the earlier tags already built. They are not wired into anything
+until you point `deploy/docker/.env` at them.
 
 Verify anything already built with `blastbox stamp --read <image>`, and the
 whole fleet with `blastbox doctor`.
