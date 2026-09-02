@@ -19,7 +19,7 @@
 # Env: WORKER_BASE / HOST_BASE  override the upstream bases
 #      BLASTBOX_WHEEL          ship a pre-release host blastbox (section 1)
 # Example:
-#   scripts/build_images.sh bb0129 0.1.29
+#   scripts/build_images.sh bb0130 0.1.30
 set -euo pipefail
 
 TAG="${1:?usage: build_images.sh <tag> [blastbox-version]}"
@@ -63,11 +63,13 @@ command -v blastbox >/dev/null || {
   exit 2
 }
 # Checking that the SUBCOMMAND exists is not the same as checking the version:
-# 0.1.28 has `stamp` too, and it pins a local base by its bare IMAGE ID, which
-# buildkit reads as the repository `docker.io/library/sha256:...` and tries to
-# pull. The build dies inside the first `docker build` with what reads like a
+# 0.1.28 and 0.1.29 have `stamp` too, and neither can build these images. Both
+# derive a base reference from `docker inspect` that the builder cannot resolve:
+# 0.1.28 a bare IMAGE ID, 0.1.29 a repo digest that -- with the containerd image
+# store -- a locally built image carries without ever having been pushed. Either
+# way the build dies inside the first `docker build` on what reads like a
 # registry auth error, pointing nowhere near the real cause.
-BB_MIN=0.1.29
+BB_MIN=0.1.30
 BB_HAVE="$(blastbox version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 || true)"
 [ -n "$BB_HAVE" ] || {
   echo "this blastbox has no usable \`version\` output; need >= $BB_MIN" >&2
@@ -79,9 +81,9 @@ BB_HAVE="$(blastbox version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1
 # the minimum counts as meeting it, which is what we want.
 [ "$(printf '%s\n%s\n' "$BB_MIN" "$BB_HAVE" | sort -V | head -1)" = "$BB_MIN" ] || {
   echo "blastbox $BB_HAVE is too old; need >= $BB_MIN." >&2
-  echo "0.1.28 has \`stamp\` but pins a local base by its bare image ID, which" >&2
-  echo "buildkit cannot resolve, so the build fails looking like a registry" >&2
-  echo "auth error rather than anything to do with stamping." >&2
+  echo "0.1.28 and 0.1.29 have \`stamp\` but derive a base reference the builder" >&2
+  echo "cannot resolve, so the build fails looking like a registry auth error" >&2
+  echo "rather than anything to do with stamping." >&2
   echo "  pip install --upgrade 'blastbox>=$BB_MIN'" >&2
   exit 2
 }
