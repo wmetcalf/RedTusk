@@ -19,7 +19,7 @@
 # Env: WORKER_BASE / HOST_BASE  override the upstream bases
 #      BLASTBOX_WHEEL          ship a pre-release host blastbox (section 1)
 # Example:
-#   scripts/build_images.sh bb0128 0.1.28
+#   scripts/build_images.sh bb0129 0.1.29
 set -euo pipefail
 
 TAG="${1:?usage: build_images.sh <tag> [blastbox-version]}"
@@ -59,11 +59,11 @@ HOST_BASE="${HOST_BASE:-python:3.12-slim-bookworm}"
 
 command -v blastbox >/dev/null || {
   echo "blastbox CLI not found. This script needs a blastbox providing" >&2
-  echo "\`blastbox stamp\` (>= 0.1.28)." >&2
+  echo "\`blastbox stamp\` (>= 0.1.29)." >&2
   exit 2
 }
 blastbox stamp --help >/dev/null 2>&1 || {
-  echo "this blastbox has no \`stamp\` subcommand; need >= 0.1.28" >&2
+  echo "this blastbox has no \`stamp\` subcommand; need >= 0.1.29" >&2
   exit 2
 }
 
