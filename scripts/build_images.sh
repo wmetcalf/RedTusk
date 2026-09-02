@@ -19,7 +19,7 @@
 # Env: WORKER_BASE / HOST_BASE  override the upstream bases
 #      BLASTBOX_WHEEL          ship a pre-release host blastbox (section 1)
 # Example:
-#   scripts/build_images.sh bb0128 0.1.28
+#   scripts/build_images.sh bb0129 0.1.29
 set -euo pipefail
 
 TAG="${1:?usage: build_images.sh <tag> [blastbox-version]}"
@@ -59,11 +59,30 @@ HOST_BASE="${HOST_BASE:-python:3.12-slim-bookworm}"
 
 command -v blastbox >/dev/null || {
   echo "blastbox CLI not found. This script needs a blastbox providing" >&2
-  echo "\`blastbox stamp\` (>= 0.1.28)." >&2
+  echo "\`blastbox stamp\` (>= 0.1.29)." >&2
   exit 2
 }
-blastbox stamp --help >/dev/null 2>&1 || {
-  echo "this blastbox has no \`stamp\` subcommand; need >= 0.1.28" >&2
+# Checking that the SUBCOMMAND exists is not the same as checking the version:
+# 0.1.28 has `stamp` too, and it pins a local base by its bare IMAGE ID, which
+# buildkit reads as the repository `docker.io/library/sha256:...` and tries to
+# pull. The build dies inside the first `docker build` with what reads like a
+# registry auth error, pointing nowhere near the real cause.
+BB_MIN=0.1.29
+BB_HAVE="$(blastbox version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 || true)"
+[ -n "$BB_HAVE" ] || {
+  echo "this blastbox has no usable \`version\` output; need >= $BB_MIN" >&2
+  exit 2
+}
+# sort -V puts the smaller first, so the minimum leading means it is satisfied.
+# The regex above already reduced a PEP 440 local version (0.1.29+gabc) to its
+# release segment, so `sort -V` only ever compares releases -- a source build of
+# the minimum counts as meeting it, which is what we want.
+[ "$(printf '%s\n%s\n' "$BB_MIN" "$BB_HAVE" | sort -V | head -1)" = "$BB_MIN" ] || {
+  echo "blastbox $BB_HAVE is too old; need >= $BB_MIN." >&2
+  echo "0.1.28 has \`stamp\` but pins a local base by its bare image ID, which" >&2
+  echo "buildkit cannot resolve, so the build fails looking like a registry" >&2
+  echo "auth error rather than anything to do with stamping." >&2
+  echo "  pip install --upgrade 'blastbox>=$BB_MIN'" >&2
   exit 2
 }
 

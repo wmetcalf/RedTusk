@@ -25,7 +25,7 @@ requires-python = ">=3.12"
 # deleted — its deps moved out. Core stays light so the cold worker can install
 # it `--no-deps` on top of blastbox core (it imports only redtusk.engine).
 dependencies = [
-    "blastbox>=0.1.28,<0.2",
+    "blastbox>=0.1.29,<0.2",
     "click>=8.1,<9.0",
     "structlog>=24.1.0,<26.0",
     "jsonschema>=4.0,<5.0",
@@ -41,10 +41,10 @@ dependencies = [
 # plain `pip install redtusk[host]` outside Docker resolves the same closure.
 # Unset BLASTBOX_BLOB_URL simply leaves boto3 unused (local-filesystem blobs).
 host = [
-    "blastbox[host,s3]>=0.1.28,<0.2",
+    "blastbox[host,s3]>=0.1.29,<0.2",
 ]
 dev = [
-    "blastbox[host,s3]>=0.1.28,<0.2",
+    "blastbox[host,s3]>=0.1.29,<0.2",
     "pytest>=8.0.0,<9.0",
     "pytest-asyncio>=0.23.0,<1.0",
     "httpx>=0.27.0,<1.0",
