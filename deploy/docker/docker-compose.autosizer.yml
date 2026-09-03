@@ -47,6 +47,17 @@ x-autosizer: &autosizer
     - BLASTBOX_NODE_SHARE_DIR=/var/lib/blastbox/node
     - BLASTBOX_NODE_RAM_HEADROOM=0.8
     - BLASTBOX_NODE_VCPU_OVERSUBSCRIPTION=2.0
+    # Warm FLOOR the sizer will not shrink below. Without it the pool falls to 0
+    # whenever the queue is briefly idle and every next job pays a cold start --
+    # observed directly: dropping this line took the firecracker pool from 24
+    # resident guests to 0, and jobs still completed but only by spawning a slot
+    # per request. The floor is what makes "warm" mean anything.
+    # COUPLED to BLASTBOX_FC_CEILING, which docker-compose.firecracker.yml
+    # defaults to 4: a floor above the ceiling can never be reached, so the
+    # sizer would chase a target it is not allowed to hold. Any host enabling
+    # this overlay must set BLASTBOX_FC_CEILING >= this floor (.env.example
+    # ships 32), and tests/unit/test_autosizer_overlay.py asserts the pair.
+    - BLASTBOX_NODE_ENGINE_REDTUSK_MIN_WARM=16
   volumes:
     - /var/lib/blastbox/node:/var/lib/blastbox/node
 
@@ -54,6 +65,21 @@ services:
   # The api is not a dispatcher: it holds no warm pool and has nothing to
   # publish, so it is deliberately absent here. The host-local copy set its
   # image too, which is how that stale `:024` reached the whole stack.
-  dispatcher:        { <<: *autosizer }
-  dispatcher-fc:     { <<: *autosizer }
-  dispatcher-gvisor: { <<: *autosizer }
+  dispatcher:    { <<: *autosizer }
+  dispatcher-fc: { <<: *autosizer }
+  # gVisor keeps NO node-managed floor: its warm slots are sized by
+  # REDTUSK_GVISOR_WARM_SIZE, and a second floor here would fight that. This
+  # override existed in the host-local copy and is preserved deliberately.
+  dispatcher-gvisor:
+    <<: *autosizer
+    environment:
+      - BLASTBOX_NODE_RESOURCE_MANAGEMENT=1
+      - BLASTBOX_NODE_BALANCING=1
+      - BLASTBOX_NODE_ENGINES=redtusk,clippyshot,titanarum
+      - BLASTBOX_NODE_ENGINE_REDTUSK_RAM_MIB=${BLASTBOX_FC_MEM_MIB:-2048}
+      - BLASTBOX_NODE_ENGINE_CLIPPYSHOT_RAM_MIB=4096
+      - BLASTBOX_NODE_ENGINE_TITANARUM_RAM_MIB=4608
+      - BLASTBOX_NODE_SHARE_DIR=/var/lib/blastbox/node
+      - BLASTBOX_NODE_RAM_HEADROOM=0.8
+      - BLASTBOX_NODE_VCPU_OVERSUBSCRIPTION=2.0
+      - BLASTBOX_NODE_ENGINE_REDTUSK_MIN_WARM=0
