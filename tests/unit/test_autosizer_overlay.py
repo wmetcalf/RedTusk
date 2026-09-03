@@ -157,3 +157,26 @@ def test_the_declared_redtusk_ram_matches_what_a_guest_gets() -> None:
         f"{fallback}. The overlay derives from BLASTBOX_FC_MEM_MIB, so only the "
         "fallback can drift -- keep it equal to the documented guest size."
     )
+
+
+def test_the_warm_floor_is_declared(overlay: dict[str, Any]) -> None:
+    """Without a floor the pool falls to 0 whenever the queue is briefly idle.
+
+    Observed directly: rewriting this overlay without MIN_WARM took the
+    firecracker pool from 24 resident guests to 0. Jobs still completed -- by
+    spawning a slot per request -- so nothing failed, and only the guest count
+    showed it. The floor is what makes "warm" mean anything.
+    """
+    env = _env_of((overlay["services"])["dispatcher-fc"])
+    assert env.get("BLASTBOX_NODE_ENGINE_REDTUSK_MIN_WARM") == "16", (
+        "the firecracker dispatcher declares no warm floor; the sizer will "
+        "shrink the pool to nothing between bursts"
+    )
+
+
+def test_gvisor_keeps_no_node_managed_floor(overlay: dict[str, Any]) -> None:
+    """Its slots are sized by REDTUSK_GVISOR_WARM_SIZE; two floors would fight."""
+    env = _env_of((overlay["services"])["dispatcher-gvisor"])
+    assert env.get("BLASTBOX_NODE_ENGINE_REDTUSK_MIN_WARM") == "0", (
+        "the gvisor override was dropped; it is sized by its own warm size"
+    )
