@@ -21,6 +21,12 @@ from fastapi.testclient import TestClient
 
 from redtusk.blastbox_ingress import _rmeta_from_envelope, router
 
+# A real job id shape. The route itself does not validate ids -- that belongs to
+# blastbox's `load_result_metadata`, which rejects a non-UUID before any store or
+# filesystem access and is tested there. A realistic id keeps this fixture from
+# implying the route would accept something production rejects.
+_JOB = "95e5c8eb-8df4-49e7-bce7-dbccb6e6c9b4"
+
 _DOC = json.dumps({"extraction": {"entries": [{"path": "/", "depth": 0}]}})
 
 
@@ -51,7 +57,7 @@ def _client(envelope: object, artifact: object = None) -> TestClient:
 
 
 def test_the_document_is_served_from_the_envelope() -> None:
-    r = _client(_envelope()).get("/v1/jobs/abc/rmeta")
+    r = _client(_envelope()).get(f"/v1/jobs/{_JOB}/rmeta")
     assert r.status_code == 200, r.text
     assert r.json()["extraction"]["entries"][0]["depth"] == 0
     assert r.headers["content-type"].startswith("application/json")
@@ -59,19 +65,19 @@ def test_the_document_is_served_from_the_envelope() -> None:
 
 def test_the_download_filename_is_preserved() -> None:
     """The route was a download before; callers may rely on the filename."""
-    r = _client(_envelope()).get("/v1/jobs/abc/rmeta")
-    assert 'filename="abc.rmeta.json"' in r.headers.get("content-disposition", "")
+    r = _client(_envelope()).get(f"/v1/jobs/{_JOB}/rmeta")
+    assert f'filename="{_JOB}.rmeta.json"' in r.headers.get("content-disposition", "")
 
 
 def test_a_pre_move_job_still_reads_from_its_declared_artifact() -> None:
     """Jobs produced before the envelope move have the artifact; keep them readable."""
-    r = _client(_envelope(field=None), artifact=_DOC).get("/v1/jobs/abc/rmeta")
+    r = _client(_envelope(field=None), artifact=_DOC).get(f"/v1/jobs/{_JOB}/rmeta")
     assert r.status_code == 200, r.text
     assert r.json()["extraction"]["entries"][0]["depth"] == 0
 
 
 def test_neither_present_is_a_404_not_a_crash() -> None:
-    assert _client(_envelope(field=None)).get("/v1/jobs/abc/rmeta").status_code == 404
+    assert _client(_envelope(field=None)).get(f"/v1/jobs/{_JOB}/rmeta").status_code == 404
 
 
 @pytest.mark.parametrize(
