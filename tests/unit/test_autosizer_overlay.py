@@ -189,18 +189,22 @@ def test_gvisor_keeps_no_node_managed_floor(overlay: dict[str, Any]) -> None:
 def test_the_warm_floor_fits_under_the_configured_ceiling(overlay: dict[str, Any]) -> None:
     """A floor above the ceiling can never be reached.
 
-    `docker-compose.firecracker.yml` defaults `BLASTBOX_POOL_CEILING` to 4, so a
-    host that enables this overlay without raising BLASTBOX_FC_CEILING would ask
-    the sizer to hold 16 slots it is not allowed to have.
+    `BLASTBOX_FC_CEILING` is the operator-facing knob; the FC overlay feeds it to
+    the pool as `BLASTBOX_POOL_CEILING=${BLASTBOX_FC_CEILING:-4}`. It is the
+    former that is compared here, and its default of 4 is the trap: a host that
+    enables this overlay without raising it asks the sizer to hold 16 slots it
+    is not allowed to have.
     """
     import re
 
+    services = overlay.get("services") or {}
+    assert "dispatcher-fc" in services, "the firecracker dispatcher is not defined"
     env_example = ROOT / "deploy" / "docker" / ".env.example"
     text = env_example.read_text(encoding="utf-8")
     m = re.search(r"^BLASTBOX_FC_CEILING=(\d+)", text, re.MULTILINE)
     assert m, ".env.example must document BLASTBOX_FC_CEILING beside the floor"
     ceiling = int(m.group(1))
-    floor = int(_env_of((overlay["services"])["dispatcher-fc"])[
+    floor = int(_env_of(services["dispatcher-fc"])[
         "BLASTBOX_NODE_ENGINE_REDTUSK_MIN_WARM"
     ])
     assert floor <= ceiling, (
