@@ -46,6 +46,13 @@ def overlay() -> dict[str, Any]:
     return loaded
 
 
+def _env_example_text() -> str:
+    """The tracked per-host template. Its absence is a failure, not a skip."""
+    path = ROOT / "deploy" / "docker" / ".env.example"
+    assert path.is_file(), f"{path} is gone; it is the per-host template"
+    return path.read_text(encoding="utf-8")
+
+
 def _env_of(service: dict[str, Any]) -> dict[str, str]:
     env = service.get("environment") or []
     if isinstance(env, dict):
@@ -141,15 +148,14 @@ def test_the_declared_redtusk_ram_matches_what_a_guest_gets() -> None:
     `BLASTBOX_FC_MEM_MIB` is what a firecracker guest is given; declaring
     anything else over- or under-admits by exactly that ratio.
     """
-    env_example = ROOT / "deploy" / "docker" / ".env.example"
-    if not env_example.is_file():
-        pytest.skip("no .env.example to compare against")
-    text = env_example.read_text(encoding="utf-8")
     import re
 
+    # Asserted, never skipped. .env.example is tracked and is where a new node's
+    # operator reads the guest size; a skip here would quietly cover nothing --
+    # which it did, until the key was added.
+    text = _env_example_text()
     m = re.search(r"^BLASTBOX_FC_MEM_MIB=(\d+)", text, re.MULTILINE)
-    if not m:
-        pytest.skip(".env.example does not set BLASTBOX_FC_MEM_MIB")
+    assert m, ".env.example must document BLASTBOX_FC_MEM_MIB beside the pool size"
     declared = FLEET_WIDE["BLASTBOX_NODE_ENGINE_REDTUSK_RAM_MIB"]
     fallback = declared.split(":-")[1].rstrip("}") if ":-" in declared else declared
     assert m.group(1) == fallback, (
@@ -199,14 +205,17 @@ def test_the_warm_floor_fits_under_the_configured_ceiling(overlay: dict[str, Any
 
     services = overlay.get("services") or {}
     assert "dispatcher-fc" in services, "the firecracker dispatcher is not defined"
-    env_example = ROOT / "deploy" / "docker" / ".env.example"
-    text = env_example.read_text(encoding="utf-8")
+    text = _env_example_text()
     m = re.search(r"^BLASTBOX_FC_CEILING=(\d+)", text, re.MULTILINE)
     assert m, ".env.example must document BLASTBOX_FC_CEILING beside the floor"
     ceiling = int(m.group(1))
-    floor = int(_env_of(services["dispatcher-fc"])[
-        "BLASTBOX_NODE_ENGINE_REDTUSK_MIN_WARM"
-    ])
+    env = _env_of(services["dispatcher-fc"])
+    raw = env.get("BLASTBOX_NODE_ENGINE_REDTUSK_MIN_WARM")
+    assert raw is not None, (
+        "the firecracker dispatcher declares no warm floor, so there is nothing "
+        "to compare against the ceiling"
+    )
+    floor = int(raw)
     assert floor <= ceiling, (
         f"warm floor {floor} exceeds the documented ceiling {ceiling}; the sizer "
         "would chase a target it cannot hold"
