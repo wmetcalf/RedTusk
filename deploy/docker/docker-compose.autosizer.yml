@@ -1,0 +1,48 @@
+# Node pool autosizer participation. Reversible: drop this -f to roll back.
+#
+# Puts the three dispatchers on ${REDTUSK_IMAGE} and mounts the shared node-view
+# dir so this stack PUBLISHES what it is holding and READS what its co-located
+# peers hold. Without it a stack is invisible to the balancer: measured on
+# toolz2 on 2026-09-03, redtusk held 24 live firecracker guests (~48 GiB) while
+# only titanarum published, so titanarum's sizer was arbitrating a 125 GiB host
+# against a budget missing a third of what was actually spoken for.
+#
+# This file is TRACKED deliberately. The host-local copy it replaces was
+# untracked and had drifted: it still pinned `image: redtusk:024` and
+# `redtusk=redtusk-cold-worker:024`, so applying it would have rolled a
+# bb0133 stack back to blastbox 0.1.24 -- the same "hardcoded tag silently
+# pins the dispatchers while the api follows .env" bug titanarum's copy
+# documents having hit for weeks. Track ${REDTUSK_IMAGE} so one .env edit
+# moves the whole stack, and keep the file where a diff can catch drift.
+#
+# NODE_ENGINES and the per-engine RAM_MIB values are FLEET-WIDE consistent
+# config: every co-located dispatcher (titanarum, clippyshot too) must declare
+# the same numbers, because each one is sizing against the same physical host.
+# The RAM figure must be what a guest ACTUALLY takes, not what we wish it took
+# -- titanarum declared 2560 against a `-Xmx4g -XX:+AlwaysPreTouch` engine and
+# over-admitted by ~1.8x until it was corrected to 4608.
+x-autosizer: &autosizer
+  image: ${REDTUSK_IMAGE:-redtusk:dev}
+  environment:
+    - BLASTBOX_NODE_RESOURCE_MANAGEMENT=1
+    - BLASTBOX_NODE_BALANCING=1
+    - BLASTBOX_NODE_ENGINES=redtusk,clippyshot,titanarum
+    # redtusk: BLASTBOX_FC_MEM_MIB=2048 on toolz2 -- declared value matches.
+    - BLASTBOX_NODE_ENGINE_REDTUSK_RAM_MIB=2048
+    # clippyshot: its .env sets BLASTBOX_FC_MEM_MIB=4096. The fleet declared
+    # 3072, under-counting a full warm pool by ~24 GiB.
+    - BLASTBOX_NODE_ENGINE_CLIPPYSHOT_RAM_MIB=4096
+    - BLASTBOX_NODE_ENGINE_TITANARUM_RAM_MIB=4608
+    - BLASTBOX_NODE_SHARE_DIR=/var/lib/blastbox/node
+    - BLASTBOX_NODE_RAM_HEADROOM=0.8
+    - BLASTBOX_NODE_VCPU_OVERSUBSCRIPTION=2.0
+  volumes:
+    - /var/lib/blastbox/node:/var/lib/blastbox/node
+
+services:
+  # The api is not a dispatcher: it holds no warm pool and has nothing to
+  # publish, so it is deliberately absent here. The host-local copy set its
+  # image too, which is how that stale `:024` reached the whole stack.
+  dispatcher:        { <<: *autosizer }
+  dispatcher-fc:     { <<: *autosizer }
+  dispatcher-gvisor: { <<: *autosizer }
