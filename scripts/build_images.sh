@@ -61,7 +61,7 @@ HOST_BASE="${HOST_BASE:-python:3.12-slim-bookworm}"
 # by hand in the not-found diagnostic and got left at 0.1.29 when the gate moved
 # to 0.1.30 -- so the script told an operator to install a version it then
 # rejected. A minimum that appears in two places drifts.
-BB_MIN=0.1.30
+BB_MIN=0.1.32
 
 command -v blastbox >/dev/null || {
   echo "blastbox CLI not found. This script needs a blastbox providing" >&2
