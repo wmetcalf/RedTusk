@@ -19,7 +19,7 @@
 # Env: WORKER_BASE / HOST_BASE  override the upstream bases
 #      BLASTBOX_WHEEL          ship a pre-release host blastbox (section 1)
 # Example:
-#   scripts/build_images.sh bb0132 0.1.32
+#   scripts/build_images.sh bb0133 0.1.33
 set -euo pipefail
 
 TAG="${1:?usage: build_images.sh <tag> [blastbox-version]}"
@@ -61,7 +61,7 @@ HOST_BASE="${HOST_BASE:-python:3.12-slim-bookworm}"
 # by hand in the not-found diagnostic and got left at 0.1.29 when the gate moved
 # to 0.1.30 -- so the script told an operator to install a version it then
 # rejected. A minimum that appears in two places drifts.
-BB_MIN=0.1.32
+BB_MIN=0.1.33
 
 command -v blastbox >/dev/null || {
   echo "blastbox CLI not found. This script needs a blastbox providing" >&2
