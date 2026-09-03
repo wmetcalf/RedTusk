@@ -52,6 +52,11 @@ x-autosizer: &autosizer
     # observed directly: dropping this line took the firecracker pool from 24
     # resident guests to 0, and jobs still completed but only by spawning a slot
     # per request. The floor is what makes "warm" mean anything.
+    # COUPLED to BLASTBOX_FC_CEILING, which docker-compose.firecracker.yml
+    # defaults to 4: a floor above the ceiling can never be reached, so the
+    # sizer would chase a target it is not allowed to hold. Any host enabling
+    # this overlay must set BLASTBOX_FC_CEILING >= this floor (.env.example
+    # ships 32), and tests/unit/test_autosizer_overlay.py asserts the pair.
     - BLASTBOX_NODE_ENGINE_REDTUSK_MIN_WARM=16
   volumes:
     - /var/lib/blastbox/node:/var/lib/blastbox/node
