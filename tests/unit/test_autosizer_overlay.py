@@ -99,11 +99,25 @@ def test_every_participant_mounts_the_shared_view(overlay: dict[str, Any]) -> No
     checking that, which would have been a wrong diagnosis for any future
     non-participant service added here.
     """
+    share = "/var/lib/blastbox/node"
     for name, svc in (overlay.get("services") or {}).items():
         vols = [str(v) for v in ((svc or {}).get("volumes") or [])]
-        assert any("/var/lib/blastbox/node" in v for v in vols), (
-            f"{name} is defined in the autosizer overlay but does not mount "
-            "the node share dir; it would publish into its own container"
+        # Source AND target, not a substring. `node:/var/lib/blastbox/node` is a
+        # NAMED VOLUME -- private to this stack -- and would satisfy a substring
+        # check while defeating the entire point, which is that co-located
+        # stacks read each other's snapshots off one host directory.
+        ok = []
+        for v in vols:
+            parts = v.split(":")
+            if len(parts) < 2:
+                continue
+            src, dst = parts[0], parts[1]
+            if src == share and dst == share:
+                ok.append(v)
+        assert ok, (
+            f"{name} must bind the HOST dir {share} to {share}; got {vols!r}. "
+            "A named volume or a different target is private to this stack and "
+            "no peer would ever see its snapshots."
         )
 
 
