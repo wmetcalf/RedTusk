@@ -121,9 +121,12 @@ fi
 #
 # Reading into an array also keeps each flag one argv entry regardless of what
 # a label value contains, instead of relying on word splitting.
-stamp_flags() {  # <dockerfile> <base> [base-arg]
-  local df="$1" base="$2" arg="${3:-BASE_IMAGE}" out
-  out="$(blastbox stamp --repo "$REPO" -f "$df" --base "$base" --base-arg "$arg" \
+stamp_flags() {  # <dockerfile> <base> [base-arg] [source-repo]
+  local df="$1" base="$2" arg="${3:-BASE_IMAGE}" src="${4:-$REPO}" out
+  # The source repo is a parameter because the warm artifacts are built from
+  # DOCKERFILES THAT LIVE IN BLASTBOX. Stamping them with RedTusk's revision
+  # would record a commit that does not contain the file that built them.
+  out="$(blastbox stamp --repo "$src" -f "$df" --base "$base" --base-arg "$arg" \
                   --blastbox-version "$BLASTBOX_VERSION")" || {
     echo "blastbox stamp refused to stamp $df -- not building it unstamped." >&2
     exit 1
@@ -173,10 +176,60 @@ docker build -f deploy/docker/Dockerfile.host \
   "${version_arg[@]}" "${wheel_arg[@]}" \
   -t "redtusk:$TAG" .
 
+# ---------------------------------------------------------------------------
+# Warm-tier artifacts.
+#
+# The gVisor and Firecracker tiers do NOT run the cold worker image. They run a
+# rootfs exported from a SEPARATE image, built from Dockerfiles that live in
+# blastbox -- so flipping REDTUSK_WORKER_IMAGE updates the cold tier and leaves
+# the two warm tiers on whatever they were last built from. That is how a fleet
+# ends up running two versions while every tag says one, and it is the question
+# "did you rebuild all the warm images everywhere?" that this script existed to
+# answer NO to.
+#
+# Needs a blastbox SOURCE tree (the Dockerfiles are not in the wheel). Without
+# BLASTBOX_SRC the warm images are skipped -- and skipping is announced, because
+# a silent skip here reads as "everything is on the new version".
+warm_images=()
+if [ -n "${BLASTBOX_SRC:-}" ]; then
+  for sub in deploy/gvisor deploy/firecracker; do
+    [ -d "$BLASTBOX_SRC/$sub" ] || {
+      echo "BLASTBOX_SRC=$BLASTBOX_SRC has no $sub; not a blastbox source tree." >&2
+      echo "Both warm images are built from it, so checking only one lets the" >&2
+      echo "second fail later as a bare docker error." >&2
+      exit 2
+    }
+  done
+  # The ARG names differ between these two files -- BASE for gvisor, BASE_IMAGE
+  # for firecracker -- and docker silently ignores the wrong one. `blastbox
+  # stamp` refuses rather than emitting an unpinned build with a pinned label.
+  echo ">> gvisor warm image        -> redtusk-warm:gvisor-$TAG"
+  stamp_flags "$BLASTBOX_SRC/deploy/gvisor/Dockerfile.redtusk" \
+              "redtusk-cold-worker:$TAG" BASE "$BLASTBOX_SRC"
+  docker build -f "$BLASTBOX_SRC/deploy/gvisor/Dockerfile.redtusk" \
+    "${flags[@]}" \
+    -t "redtusk-warm:gvisor-$TAG" "$BLASTBOX_SRC"
+
+  echo ">> firecracker warm image   -> redtusk-fc-worker:$TAG"
+  stamp_flags "$BLASTBOX_SRC/deploy/firecracker/Dockerfile.redtusk" \
+              "redtusk-cold-worker:$TAG" BASE_IMAGE "$BLASTBOX_SRC"
+  docker build -f "$BLASTBOX_SRC/deploy/firecracker/Dockerfile.redtusk" \
+    "${flags[@]}" \
+    -t "redtusk-fc-worker:$TAG" "$BLASTBOX_SRC"
+
+  warm_images=("redtusk-warm:gvisor-$TAG" "redtusk-fc-worker:$TAG")
+else
+  echo
+  echo ">> SKIPPING the gvisor and firecracker warm images: BLASTBOX_SRC is unset."
+  echo "   Those tiers run a rootfs exported from their own image, so they will"
+  echo "   keep running whatever they were last built from. Set BLASTBOX_SRC to a"
+  echo "   blastbox source tree to rebuild them with the rest."
+fi
+
 echo
 echo ">> verify: every image must record what it was built from"
 rc=0
-for img in "redtusk-worker:$TAG" "redtusk-cold-worker:$TAG" "redtusk:$TAG"; do
+for img in "redtusk-worker:$TAG" "redtusk-cold-worker:$TAG" "redtusk:$TAG" ${warm_images[@]+"${warm_images[@]}"}; do
   echo "-- $img"
   blastbox stamp --read "$img" || rc=1
 done
@@ -185,6 +238,15 @@ done
   echo "one or more images are not reproducible from what they record." >&2
   exit 1
 }
+echo
+if [ ${#warm_images[@]} -gt 0 ]; then
+  echo
+  echo ">> the warm tiers boot a ROOTFS, not these image tags. Export them:"
+  echo "     scripts/export_warm_rootfs.sh $TAG"
+  echo "   That extracts the images verified above. Do not rebuild the rootfs"
+  echo "   from a Dockerfile instead -- that produces an unstamped artifact on"
+  echo "   the file's DEFAULT base, which is not what was verified here."
+fi
 echo
 echo "all images stamped. Deploy by pointing REDTUSK_IMAGE / REDTUSK_WORKER_IMAGE"
 echo "at :$TAG in deploy/docker/.env, then recreate api + every dispatcher."
