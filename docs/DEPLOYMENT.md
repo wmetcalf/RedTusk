@@ -110,6 +110,7 @@ Environment overrides:
 | variable | effect |
 |---|---|
 | `WORKER_BASE` / `HOST_BASE` | the upstream bases the two root images build on (defaults match the Dockerfiles' own `ARG BASE_IMAGE`) |
+| `BLASTBOX_SRC` | a blastbox **source** tree, which enables the two warm-tier images (their Dockerfiles live in blastbox and are not in the wheel) |
 | `BLASTBOX_WHEEL` | ship a pre-release host-side blastbox instead of the pinned PyPI one (see section 1) |
 
 Why this is not optional: on 2026-09-02 the base that built the running
@@ -145,7 +146,16 @@ Two traps the script handles for you:
   *builder* pins nothing. `blastbox stamp` refuses all three cases, and
   `tests/unit/test_build_script_arg_names.py` catches them in CI without docker.
 
-The three tags are built in order and verified at the end, so a failure at step
+**The warm tiers do not run the cold worker image.** gVisor and Firecracker each
+run a rootfs exported from a separate image, so flipping `REDTUSK_WORKER_IMAGE`
+updates the cold tier and leaves those two on whatever they were last built
+from -- a fleet running two versions while every tag says one. With
+`BLASTBOX_SRC` set, the script builds and stamps those images too and prints the
+export commands; without it, it says loudly that it skipped them. Measured on
+2026-09-03: the live gVisor rootfs held blastbox 0.1.27 while the tags said
+0.1.30, until it was rebuilt.
+
+The images are built in order and verified at the end, so a failure at step
 2 or 3 leaves the earlier tags already built. They are not wired into anything
 until you point `deploy/docker/.env` at them.
 

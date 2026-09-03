@@ -34,14 +34,36 @@ TEXT = SCRIPT.read_text(encoding="utf-8")
 
 # `stamp_flags <dockerfile> <base> [base-arg]` -- the base-arg defaults to
 # BASE_IMAGE in the script, so an absent third word means that default.
+# Continuations are joined the way the shell joins them, THEN each logical line
+# is matched whole. Trying to express "or a backslash-newline here" inside the
+# pattern let `\s+` cross a line boundary, so a two-line call swallowed the next
+# line's first word as its base-arg -- every plain call came back with
+# `--base-arg docker`.
+#
+# Leading whitespace is allowed too: the warm-artifact calls sit inside an `if`,
+# and an anchor that ignored indentation made every guard below skip them
+# silently, passing while covering nothing.
+LOGICAL = re.sub(r"\\\n[ \t]*", " ", TEXT)
+
+_CALL = re.compile(
+    r"^[ \t]*stamp_flags[ \t]+(?P<df>\"[^\"]*\"|\S+)[ \t]+(?P<base>\"[^\"]*\"|\S+)"
+    r"(?:[ \t]+(?P<arg>[A-Za-z_]\w*))?(?:[ \t]+\"[^\"]*\")?[ \t]*$",
+    re.MULTILINE,
+)
 CALLS = [
-    (m.group("df"), (m.group("arg") or "BASE_IMAGE"))
-    for m in re.finditer(
-        r"^stamp_flags\s+(?P<df>\S+)\s+(?P<base>\S+|\"[^\"]*\")(?:\s+(?P<arg>[A-Za-z_]\w*))?\s*$",
-        TEXT,
-        re.MULTILINE,
-    )
+    (m.group("df").strip('"'), (m.group("arg") or "BASE_IMAGE"))
+    for m in _CALL.finditer(LOGICAL)
 ]
+
+# Dockerfiles that live in blastbox, not here. Their ARG names are part of this
+# ecosystem's contract and differ from ours, which is the whole reason the names
+# are asserted rather than assumed. CI cannot open them -- blastbox ships as a
+# wheel and the deploy/ tree is not in it -- so the pair is pinned here and
+# `blastbox stamp` refuses at build time if the real file disagrees.
+FOREIGN_ARGS = {
+    "deploy/gvisor/Dockerfile.redtusk": "BASE",
+    "deploy/firecracker/Dockerfile.redtusk": "BASE_IMAGE",
+}
 
 
 def test_the_script_actually_stamps_something() -> None:
@@ -57,6 +79,18 @@ def test_the_script_actually_stamps_something() -> None:
 def test_each_arg_the_script_passes_selects_that_dockerfiles_base(
     dockerfile: str, base_arg: str
 ) -> None:
+    if "$BLASTBOX_SRC" in dockerfile:
+        rel = dockerfile.split("$BLASTBOX_SRC/", 1)[-1]
+        expected = FOREIGN_ARGS.get(rel)
+        assert expected, (
+            f"{rel} is built from blastbox but has no entry in FOREIGN_ARGS; "
+            "record which ARG selects its base so a rename is caught here"
+        )
+        assert base_arg == expected, (
+            f"build_images.sh passes --base-arg {base_arg} for {rel}, "
+            f"but that file uses {expected}. docker silently ignores the wrong one."
+        )
+        return
     path = ROOT / dockerfile
     assert path.is_file(), f"build_images.sh stamps {dockerfile}, which does not exist"
     try:
@@ -67,7 +101,10 @@ def test_each_arg_the_script_passes_selects_that_dockerfiles_base(
 
 def test_every_docker_build_in_the_script_is_stamped() -> None:
     """An unstamped build is the whole problem; one must not sneak back in."""
-    builds = re.findall(r"^docker build -f (\S+)", TEXT, re.MULTILINE)
+    builds = [
+        b.strip('"')
+        for b in re.findall(r"^[ \t]*docker build -f (\"[^\"]*\"|\S+)", LOGICAL, re.MULTILINE)
+    ]
     stamped = {df for df, _ in CALLS}
     assert builds, "no `docker build` lines found; this test is asserting nothing"
     assert set(builds) <= stamped, (
