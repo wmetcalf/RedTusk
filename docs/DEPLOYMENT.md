@@ -150,8 +150,12 @@ Two traps the script handles for you:
 run a rootfs exported from a separate image, so flipping `REDTUSK_WORKER_IMAGE`
 updates the cold tier and leaves those two on whatever they were last built
 from -- a fleet running two versions while every tag says one. With
-`BLASTBOX_SRC` set, the script builds and stamps those images too and prints the
-export commands; without it, it says loudly that it skipped them. Measured on
+`BLASTBOX_SRC` set, the script builds and stamps those images too; without it,
+it says loudly that it skipped them. Turn the images into the artifacts the
+tiers boot with `scripts/export_warm_rootfs.sh <tag>`, which extracts the
+images that were just verified -- do not rebuild a rootfs from a Dockerfile
+instead, because that builds an unstamped image on the file's default base and
+what boots is then not what was checked. Measured on
 2026-09-03: the live gVisor rootfs held blastbox 0.1.27 while the tags said
 0.1.30, until it was rebuilt.
 

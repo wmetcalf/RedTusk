@@ -47,7 +47,10 @@ LOGICAL = re.sub(r"\\\n[ \t]*", " ", TEXT)
 
 _CALL = re.compile(
     r"^[ \t]*stamp_flags[ \t]+(?P<df>\"[^\"]*\"|\S+)[ \t]+(?P<base>\"[^\"]*\"|\S+)"
-    r"(?:[ \t]+(?P<arg>[A-Za-z_]\w*))?(?:[ \t]+\"[^\"]*\")?[ \t]*$",
+    # The optional 4th argument (source repo) may be quoted or bare -- matching
+    # only the quoted form would silently stop recognising a call that passed an
+    # unquoted path, and an unrecognised call is an unguarded one.
+    r"(?:[ \t]+(?P<arg>[A-Za-z_]\w*))?(?:[ \t]+(?:\"[^\"]*\"|\S+))?[ \t]*$",
     re.MULTILINE,
 )
 CALLS = [

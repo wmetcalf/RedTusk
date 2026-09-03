@@ -192,10 +192,14 @@ docker build -f deploy/docker/Dockerfile.host \
 # a silent skip here reads as "everything is on the new version".
 warm_images=()
 if [ -n "${BLASTBOX_SRC:-}" ]; then
-  [ -d "$BLASTBOX_SRC/deploy/gvisor" ] || {
-    echo "BLASTBOX_SRC=$BLASTBOX_SRC has no deploy/gvisor; not a blastbox source tree." >&2
-    exit 2
-  }
+  for sub in deploy/gvisor deploy/firecracker; do
+    [ -d "$BLASTBOX_SRC/$sub" ] || {
+      echo "BLASTBOX_SRC=$BLASTBOX_SRC has no $sub; not a blastbox source tree." >&2
+      echo "Both warm images are built from it, so checking only one lets the" >&2
+      echo "second fail later as a bare docker error." >&2
+      exit 2
+    }
+  done
   # The ARG names differ between these two files -- BASE for gvisor, BASE_IMAGE
   # for firecracker -- and docker silently ignores the wrong one. `blastbox
   # stamp` refuses rather than emitting an unpinned build with a pinned label.
@@ -237,11 +241,11 @@ done
 echo
 if [ ${#warm_images[@]} -gt 0 ]; then
   echo
-  echo ">> the warm tiers run a ROOTFS, not the image. Export them:"
-  echo "   gvisor: docker create redtusk-warm:gvisor-$TAG | xargs docker export |"
-  echo "           sudo tar -x -C \${REDTUSK_GVISOR_DIR:-/var/lib/redtusk-gvisor}/rootfs"
-  echo "   fc:     ROOTFS_MIB=6144 DOCKERFILE=deploy/firecracker/Dockerfile.redtusk \\"
-  echo "           \$BLASTBOX_SRC/deploy/firecracker/build-rootfs.sh <out>.ext4"
+  echo ">> the warm tiers boot a ROOTFS, not these image tags. Export them:"
+  echo "     scripts/export_warm_rootfs.sh $TAG"
+  echo "   That extracts the images verified above. Do not rebuild the rootfs"
+  echo "   from a Dockerfile instead -- that produces an unstamped artifact on"
+  echo "   the file's DEFAULT base, which is not what was verified here."
 fi
 echo
 echo "all images stamped. Deploy by pointing REDTUSK_IMAGE / REDTUSK_WORKER_IMAGE"
