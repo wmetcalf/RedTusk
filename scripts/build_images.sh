@@ -19,7 +19,7 @@
 # Env: WORKER_BASE / HOST_BASE  override the upstream bases
 #      BLASTBOX_WHEEL          ship a pre-release host blastbox (section 1)
 # Example:
-#   scripts/build_images.sh bb0130 0.1.30
+#   scripts/build_images.sh bb0132 0.1.32
 set -euo pipefail
 
 TAG="${1:?usage: build_images.sh <tag> [blastbox-version]}"
