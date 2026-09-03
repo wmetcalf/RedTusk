@@ -54,6 +54,13 @@ dev = [
     "types-jsonschema>=4.0,<5.0",
     # Version/requirement parsing for the lock-vs-pyproject consistency tests.
     "packaging>=23.0,<27.0",
+    # The compose-overlay tests parse YAML. Both are declared: pyyaml so the
+    # tests can run at all, and the stubs so `mypy` does not fail on
+    # import-untyped -- CI had the runtime but not the stubs, which a local
+    # `type: ignore` would have papered over in one environment and broken in
+    # the other.
+    "pyyaml>=6.0,<7.0",
+    "types-PyYAML>=6.0,<7.0",
 ]
 
 [project.scripts]
