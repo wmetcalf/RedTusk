@@ -245,13 +245,24 @@ fi
 # ── 7. standard dirs (owned by the deploy user/group) ──────────────────────
 log "creating standard dirs"
 DGRP=$(id -gn "$DEPLOY_USER")
+# The uid the api/dispatcher/worker containers run as (see Dockerfile.host).
+REDTUSK_WORKER_UID=${REDTUSK_WORKER_UID:-10001}
 for d in "$REDTUSK_DATA_DIR/jobs" "$REDTUSK_DATA_DIR/scratch" "$REDTUSK_FC_DIR"; do
     $SUDO mkdir -p "$d"; $SUDO chown "$DEPLOY_USER:$DGRP" "$d"
 done
 # node-autosizer share: single-trust-domain surface written only by dispatchers on
 # THIS host; bind-mounted into each engine stack. Group-writable so co-located
 # dispatchers (same deploy group) all publish/read.
-$SUDO mkdir -p "$NODE_SHARE_DIR"; $SUDO chown "$DEPLOY_USER:$DGRP" "$NODE_SHARE_DIR"; $SUDO chmod 2770 "$NODE_SHARE_DIR"
+#
+# Owned by the WORKER uid, not the deploy user: the dispatcher publishes from
+# inside its container as UID 10001, and 2770 owned by the deploy user left that
+# process unable to write. The failure is silent -- blastbox logs and disables
+# sizing rather than crashing dispatch -- so the node simply never joins the
+# balancer and nothing says so. setgid keeps the deploy group on new files, so
+# an operator can still read the view.
+$SUDO mkdir -p "$NODE_SHARE_DIR"
+$SUDO chown "$REDTUSK_WORKER_UID:$DGRP" "$NODE_SHARE_DIR"
+$SUDO chmod 2770 "$NODE_SHARE_DIR"
 
 # ── 8. host tuning (JVM + many microVMs) ───────────────────────────────────
 log "applying host tuning (fd limits, vm.max_map_count)"

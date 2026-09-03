@@ -15,6 +15,15 @@
 # documents having hit for weeks. Track ${REDTUSK_IMAGE} so one .env edit
 # moves the whole stack, and keep the file where a diff can catch drift.
 #
+# MERGE ORDER: this goes ON TOP of the tier overlays, never instead of them:
+#
+#   -f docker-compose.yml -f docker-compose.gvisor.yml \
+#   -f docker-compose.firecracker.yml -f docker-compose.autosizer.yml
+#
+# It names dispatcher-fc and dispatcher-gvisor, so merging it over the base file
+# ALONE does not extend those services -- it creates them, with a node identity
+# and no tier configuration at all.
+#
 # NODE_ENGINES and the per-engine RAM_MIB values are FLEET-WIDE consistent
 # config: every co-located dispatcher (titanarum, clippyshot too) must declare
 # the same numbers, because each one is sizing against the same physical host.
@@ -27,8 +36,10 @@ x-autosizer: &autosizer
     - BLASTBOX_NODE_RESOURCE_MANAGEMENT=1
     - BLASTBOX_NODE_BALANCING=1
     - BLASTBOX_NODE_ENGINES=redtusk,clippyshot,titanarum
-    # redtusk: BLASTBOX_FC_MEM_MIB=2048 on toolz2 -- declared value matches.
-    - BLASTBOX_NODE_ENGINE_REDTUSK_RAM_MIB=2048
+    # DERIVED from the guest setting, never restated. A per-host .env that
+    # raises BLASTBOX_FC_MEM_MIB moves the guests; a hardcoded copy here would
+    # keep declaring the old cost and over-admit by exactly that ratio.
+    - BLASTBOX_NODE_ENGINE_REDTUSK_RAM_MIB=${BLASTBOX_FC_MEM_MIB:-2048}
     # clippyshot: its .env sets BLASTBOX_FC_MEM_MIB=4096. The fleet declared
     # 3072, under-counting a full warm pool by ~24 GiB.
     - BLASTBOX_NODE_ENGINE_CLIPPYSHOT_RAM_MIB=4096
