@@ -97,6 +97,51 @@ have "$([ -n "$SUDO" ] && echo sudo || echo sh)" || die "sudo required when not 
 id "$DEPLOY_USER" >/dev/null 2>&1 || die "deploy user '$DEPLOY_USER' does not exist"
 log "node: $PRETTY_NAME / $ARCH / deploy-user=$DEPLOY_USER / $(nproc)vCPU / $(free -g | awk '/^Mem:/{print $2"GB"}') RAM"
 
+run_as_deploy() {
+    # Run a command AS THE DEPLOY USER, whether or not we are already root.
+    # `$SUDO -u "$DEPLOY_USER" ...` was wrong under the documented `sudo`
+    # invocation: as root $SUDO is EMPTY, so the command began with `-u` and the
+    # shell could not execute it. The caller's `if !` turned that into a warning,
+    # so provisioning printed `done` having never built the kernel or rootfs.
+    if [ "$(id -un)" = "$DEPLOY_USER" ]; then
+        "$@"
+    elif [ "$(id -u)" -eq 0 ] && have runuser; then
+        runuser -u "$DEPLOY_USER" -- "$@"
+    else
+        sudo -u "$DEPLOY_USER" -- "$@"
+    fi
+}
+
+_aws_creds_home() {
+    # The deploy user's home from passwd, not $HOME: under the documented `sudo`
+    # invocation $HOME is /root, and every probe below would read /root/.aws.
+    local home
+    home=$(getent passwd "$DEPLOY_USER" 2>/dev/null | cut -d: -f6)
+    [ -n "$home" ] || home="$HOME"
+    echo "${AWS_CREDS_HOME:-$home}"
+}
+
+_aws_sts_ok() {
+    # `aws sts get-caller-identity` against the DEPLOY user's credentials.
+    local home; home="$(_aws_creds_home)"
+    AWS_SHARED_CREDENTIALS_FILE="$home/.aws/credentials" \
+    AWS_CONFIG_FILE="$home/.aws/config" \
+    aws sts get-caller-identity >/dev/null 2>&1
+}
+
+_aws_creds_status() {
+    local home creds
+    home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
+    creds="$home/.aws/credentials"
+    have aws || { echo "n/a (no aws cli)"; return; }
+    [ -f "$creds" ] || { echo "absent — place $creds"; return; }
+    if _aws_sts_ok; then
+        echo "valid (sts ok, $creds)"
+    else
+        echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
+    fi
+}
+
 if [ "$CHECK_ONLY" -eq 1 ]; then
     log "--check: reporting current state, changing nothing"
     printf '  docker      : %s\n' "$(docker --version 2>/dev/null || echo MISSING)"
@@ -111,7 +156,10 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
     done
     printf '  fc assets   : %s\n' "$([ -f "$REDTUSK_FC_DIR/vmlinux" ] && [ -f "$REDTUSK_FC_DIR/redtusk-rootfs.ext4" ] && echo present || echo INCOMPLETE)"
     printf '  aws cli     : %s\n' "$(aws --version 2>/dev/null | head -1 || echo 'MISSING (--aws-burst)')"
-    printf '  aws creds   : %s\n' "$(have aws && aws sts get-caller-identity >/dev/null 2>&1 && echo 'valid (sts ok)' || echo 'absent/invalid — place ~/.aws/credentials')"
+    # Explicitly the DEPLOY user's credentials, not the caller's. This script is documented
+    # to run under sudo, where HOME is /root: the probe then reads /root/.aws, finds nothing,
+    # and reports the operator's correctly-placed ~/.aws/credentials as absent.
+    printf '  aws creds   : %s\n' "$(_aws_creds_status)"
     exit 0
 fi
 
@@ -235,7 +283,7 @@ if [ "$AWS_BURST" -eq 1 ]; then
     # (the runtime ALSO fails closed on this). Warn, don't die: creds may be placed later.
     if [ ! -r "${AWS_CREDS_HOME:-/home/$DEPLOY_USER}/.aws/credentials" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
         warn "no AWS credentials yet — place ~/.aws/credentials on this node, then re-run --check"
-    elif aws sts get-caller-identity >/dev/null 2>&1; then
+    elif _aws_sts_ok; then
         log "aws entitlement OK (sts get-caller-identity passed)"
     else
         warn "AWS credentials present but 'aws sts get-caller-identity' FAILED — the burst tier will fail closed"
@@ -247,9 +295,22 @@ log "creating standard dirs"
 DGRP=$(id -gn "$DEPLOY_USER")
 # The uid the api/dispatcher/worker containers run as (see Dockerfile.host).
 REDTUSK_WORKER_UID=${REDTUSK_WORKER_UID:-10001}
+# The FC dispatcher runs in a container with ${REDTUSK_FC_DIR} bind-mounted at
+# /var/lib/blastbox-fc, and reads BLASTBOX_FC_BIN=/var/lib/blastbox-fc/firecracker
+# from there -- /usr/local/bin on the host is not visible to it. Installing only
+# to /usr/local/bin left the tier unable to find its own executable on a node
+# this script had just declared ready.
+stage_firecracker_asset() {
+    have firecracker || return 0
+    [ -x "$REDTUSK_FC_DIR/firecracker" ] && return 0
+    $SUDO install -m 0755 "$(command -v firecracker)" "$REDTUSK_FC_DIR/firecracker" \
+        && log "staged firecracker into $REDTUSK_FC_DIR (the dispatcher's mounted path)"
+}
+
 for d in "$REDTUSK_DATA_DIR/jobs" "$REDTUSK_DATA_DIR/scratch" "$REDTUSK_FC_DIR"; do
     $SUDO mkdir -p "$d"; $SUDO chown "$DEPLOY_USER:$DGRP" "$d"
 done
+stage_firecracker_asset
 # node-autosizer share: single-trust-domain surface written only by dispatchers on
 # THIS host; bind-mounted into each engine stack. Group-writable so co-located
 # dispatchers (same deploy group) all publish/read.
@@ -291,7 +352,7 @@ if [ "$FC_ASSETS" -eq 1 ]; then
     # Build a kernel here only if asked AND we didn't copy one in.
     [ "$WITH_KERNEL" -eq 1 ] && [ -z "$KERNEL_FROM" ] && FC_ARGS+=(--with-kernel)
     # Run as the deploy user under sg kvm (the FC script needs kvm access + docker).
-    if ! $SUDO -u "$DEPLOY_USER" sg kvm -c "cd '$REPO_ROOT' && scripts/setup_firecracker_host.sh ${FC_ARGS[*]}"; then
+    if ! run_as_deploy sg kvm -c "cd '$REPO_ROOT' && scripts/setup_firecracker_host.sh ${FC_ARGS[*]}"; then
         warn "setup_firecracker_host.sh did not complete — build the rootfs/kernel manually (see deploy/firecracker/README.md)."
     fi
     # The FC compose expects the rootfs named redtusk-rootfs.ext4; the FC script
@@ -304,6 +365,21 @@ else
 fi
 
 # ── 10. summary ────────────────────────────────────────────────────────────
+# Say plainly when the FC tier CANNOT start. setup_firecracker_host.sh only warns
+# about a missing kernel and returns 0, and the fresh-node command in the README
+# passes neither --with-kernel nor --kernel-from -- so provisioning printed
+# `done` on a node whose Firecracker dispatcher would refuse at startup.
+fc_missing=""
+for asset in firecracker vmlinux redtusk-rootfs.ext4; do
+    [ -e "$REDTUSK_FC_DIR/$asset" ] || fc_missing="$fc_missing $asset"
+done
+if [ -n "$fc_missing" ]; then
+    warn "Firecracker tier NOT ready — missing from $REDTUSK_FC_DIR:$fc_missing"
+    warn "  kernel: re-run with --with-kernel (builds one) or --kernel-from <host>:/path/vmlinux"
+    warn "  rootfs: scripts/build_images.sh writes redtusk-rootfs.ext4 into that directory"
+    warn "  the cold and gVisor tiers do not need these and are unaffected"
+fi
+
 printf '\n\033[1;32m[prep-node] done.\033[0m\n'
 cat <<EOF
 
@@ -332,7 +408,7 @@ cat <<EOF
 
 AWS burst tier (this is the control-plane node):
   aws cli   : $(aws --version 2>/dev/null | head -1 || echo 'MISSING')
-  aws creds : $(have aws && aws sts get-caller-identity >/dev/null 2>&1 && echo 'valid (sts ok)' || echo 'place ~/.aws/credentials, then re-run --check')
+  aws creds : $(_aws_creds_status)
   1. Put your AWS credentials at ~/.aws/credentials (this script never touches them).
   2. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
