@@ -97,6 +97,22 @@ have "$([ -n "$SUDO" ] && echo sudo || echo sh)" || die "sudo required when not 
 id "$DEPLOY_USER" >/dev/null 2>&1 || die "deploy user '$DEPLOY_USER' does not exist"
 log "node: $PRETTY_NAME / $ARCH / deploy-user=$DEPLOY_USER / $(nproc)vCPU / $(free -g | awk '/^Mem:/{print $2"GB"}') RAM"
 
+_aws_creds_status() {
+    # The deploy user's home, from passwd rather than $HOME -- see the caller.
+    local home creds
+    home=$(getent passwd "$DEPLOY_USER" 2>/dev/null | cut -d: -f6)
+    [ -n "$home" ] || home="$HOME"
+    creds="$home/.aws/credentials"
+    have aws || { echo "n/a (no aws cli)"; return; }
+    [ -f "$creds" ] || { echo "absent — place $creds"; return; }
+    if AWS_SHARED_CREDENTIALS_FILE="$creds" AWS_CONFIG_FILE="$home/.aws/config" \
+       aws sts get-caller-identity >/dev/null 2>&1; then
+        echo "valid (sts ok, $creds)"
+    else
+        echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
+    fi
+}
+
 if [ "$CHECK_ONLY" -eq 1 ]; then
     log "--check: reporting current state, changing nothing"
     printf '  docker      : %s\n' "$(docker --version 2>/dev/null || echo MISSING)"
@@ -111,7 +127,10 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
     done
     printf '  fc assets   : %s\n' "$([ -f "$REDTUSK_FC_DIR/vmlinux" ] && [ -f "$REDTUSK_FC_DIR/redtusk-rootfs.ext4" ] && echo present || echo INCOMPLETE)"
     printf '  aws cli     : %s\n' "$(aws --version 2>/dev/null | head -1 || echo 'MISSING (--aws-burst)')"
-    printf '  aws creds   : %s\n' "$(have aws && aws sts get-caller-identity >/dev/null 2>&1 && echo 'valid (sts ok)' || echo 'absent/invalid — place ~/.aws/credentials')"
+    # Explicitly the DEPLOY user's credentials, not the caller's. This script is documented
+    # to run under sudo, where HOME is /root: the probe then reads /root/.aws, finds nothing,
+    # and reports the operator's correctly-placed ~/.aws/credentials as absent.
+    printf '  aws creds   : %s\n' "$(_aws_creds_status)"
     exit 0
 fi
 

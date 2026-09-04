@@ -48,8 +48,17 @@ services:
       # blastbox.host.runtime.aws_worker shells out to `aws`; the creds are the operator's.
       - /usr/local/aws-cli:/usr/local/aws-cli:ro
       - /usr/local/bin/aws:/usr/local/bin/aws:ro
-      - ${AWS_CREDS_DIR:-/home/coz/.aws}:/aws:ro
+      # No default: the documented `~/.aws/credentials` is /home/ubuntu/.aws on a normal
+      # deploy user, and a default naming one developer's home silently mounts the wrong
+      # directory -- the STS check then fails closed and reads as bad credentials rather
+      # than a wrong path. prepare_node_ubuntu.sh --status prints the path it expects.
+      - ${AWS_CREDS_DIR:?set AWS_CREDS_DIR to the deploy user's .aws dir, e.g. /home/ubuntu/.aws}:/aws:ro
     tmpfs:
+      # General scratch. `read_only: true` makes the image's own /tmp unwritable, and the
+      # AWS CLI this dispatcher shells out to writes there; the FC and gVisor services in
+      # the base stack mount /tmp for the same reason. Small on purpose -- the job bytes
+      # go to the separate, larger mount below.
+      - /tmp:rw,nosuid,nodev,size=64m
       # Writable scratch for the job root. This dispatcher runs NO worker locally: for each claimed job
       # it RE-MATERIALISES the sample from the MinIO blob store into BLASTBOX_JOB_ROOT, then PUSHES the
       # bytes to the AWS worker. With read_only:true the default /var/lib/... job root is unwritable
@@ -63,6 +72,22 @@ services:
       # per job and must never survive on spare hardware.
       - BLASTBOX_JOB_ROOT=/tmp/bbjobs
       - BLASTBOX_MAX_METADATA=${BLASTBOX_MAX_METADATA:-104857600}
+      # ── the blob store, WITHOUT which this tier cannot run at all ──
+      # This dispatcher's job root is a per-boot tmpfs, so a claimed job's input is NEVER
+      # already on disk here: `_materialise_sample` fetches every sample from the blob
+      # store, and results are sealed back into it. Unset, the factory returns a
+      # LocalBlobStore under /tmp -- private to this container, holding none of the
+      # samples the API spooled. The startup canary compares this dispatcher's blob
+      # target against the one registered on the shared queue and REFUSES to serve on a
+      # mismatch, so the tier fails closed instead of finishing jobs whose artifacts
+      # 404 (that is the 17,626-job incident this seam exists to prevent) -- but it
+      # never runs a single job either. Mirrors the FC and gVisor dispatchers.
+      - BLASTBOX_BLOB_URL=${BLASTBOX_BLOB_URL:-}
+      # The minio ALIAS: reached over the internal backend network, not the egress route.
+      - BLASTBOX_BLOB_ENDPOINT_URL=http://minio:9000
+      - BLASTBOX_BLOB_UPLOAD_CONCURRENCY=${BLASTBOX_BLOB_UPLOAD_CONCURRENCY:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - BLASTBOX_ENGINES=redtusk=${REDTUSK_WORKER_IMAGE:-redtusk-cold-worker:dev}
       # ── AWS credentials (mounted read-only above) ──
       - AWS_SHARED_CREDENTIALS_FILE=/aws/credentials
@@ -80,6 +105,11 @@ services:
       #    it is not yet env-tunable — see the burst_trigger_s/_drain_s defaults in pool.py. ──
       - BLASTBOX_POOL_BURST_SIZE=${BLASTBOX_POOL_BURST_SIZE:-4}
       - BLASTBOX_POOL_CEILING=${BLASTBOX_POOL_CEILING:-8}
+      # Dispatch loops, which bound how many pool slots can be BUSY at once: a remote
+      # dispatch occupies its loop until /detonate returns. Left at the default of 1, the
+      # pool could burst to four slots and still process one job at a time, which is the
+      # scale-out this overlay exists for. Tracks the ceiling so raising one raises both.
+      - BLASTBOX_DISPATCH_CONCURRENCY=${BLASTBOX_DISPATCH_CONCURRENCY:-${BLASTBOX_POOL_CEILING:-8}}
       - BLASTBOX_POOL_WARM_SIZE=${BLASTBOX_POOL_WARM_SIZE:-0}
       # ── EC2 tiers (aws-ec2 / aws-ec2-hibernate) require these ──
       - BLASTBOX_EC2_AMI=${BLASTBOX_EC2_AMI:-}
