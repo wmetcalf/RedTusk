@@ -57,7 +57,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # RedTusk worker; metadata-field-inventory CI green on the branch.
 # Bumped 2026-08-19 to the current deploy-branch head. The old pin (f2b166c6f) was 210 commits
 # behind and, because of the bug fixed below, was never what actually shipped anyway.
-ARG TIKA_FORK_SHA=74997d7259ab06c04b6d7712f9a94fac1ae16b6c
+ARG TIKA_FORK_SHA=54c87af31f2da843ee97e76852dc880330a2c0ff
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
