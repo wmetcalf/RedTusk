@@ -69,7 +69,10 @@ dest = "${REDTUSK_GVISOR_DIR:-/var/lib/redtusk-gvisor}/rootfs"
 kind = "ext4"
 image = "redtusk-fc-worker"
 dest = "$REDTUSK_FC_DIR/redtusk-rootfs.ext4"
-size_mib = 1536
+# Overridable, as the export script it replaces was (ROOTFS_MIB, otherwise
+# matching the artifact already in place). A literal here would silently shrink
+# a rootfs a deployment had deliberately grown.
+size_mib = "${ROOTFS_MIB:-1536}"
 # The guest boots /init. A rootfs without it hangs every warm guest until the
 # boot timeout, which is what took the titanarum FC tier down on 2026-09-02 --
 # nothing checked, because nothing had written down what the artifact needed.
