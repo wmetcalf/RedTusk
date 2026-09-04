@@ -1,227 +1,125 @@
-"""`scripts/build_images.sh` must pin bases with ARGs docker will actually honour.
+"""What blastbox-images.toml declares must match the Dockerfiles it names.
 
-Docker WARNS and IGNORES a `--build-arg` the Dockerfile never declares, and
-declaring one is not enough either: an ARG inside a stage cannot parameterize a
-FROM, and in a multi-stage build only the LAST stage becomes the image, so a
-parameterized *builder* pins nothing. Any of those leaves the build resolving a
-mutable tag while the stamp claims a pinned digest -- a recorded provenance
-wrong in the one way that matters.
+These used to assert the same things about scripts/build_images.sh. The bash is
+gone -- `blastbox build-images` executes the declaration now -- but the failure
+modes did not go anywhere: docker silently ignores a --build-arg the Dockerfile
+does not declare, so a wrong `base_arg` pins nothing while the stamp claims a
+digest the build never used.
 
-`blastbox stamp` refuses all of that at build time; this test catches it in CI
-without docker. Two design points, both learned the hard way:
-
-* The (Dockerfile, base-arg) pairs are READ OUT OF THE SCRIPT, not written down
-  here. A hand-maintained table only catches a rename on the Dockerfile side --
-  a typo in the script's own argument, which is the failure this guards against,
-  sailed straight through it.
-* The Dockerfile parsing is imported from blastbox rather than reimplemented.
-  A second copy of that parser drifts from the one that actually gates builds,
-  and its guards end up exercised only by whichever Dockerfiles this repo
-  happens to contain.
+The generic checks live in blastbox and are tested there. What is REPO business
+is that this repo's own declaration matches this repo's own Dockerfiles, which
+is what breaks when a Dockerfile is renamed or an ARG is changed here.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-from blastbox.host.stamp import StampError, assert_arg_selects_base
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "build_images.sh"
-TEXT = SCRIPT.read_text(encoding="utf-8")
+if TYPE_CHECKING:  # the real type, so mypy checks the attribute access below
+    from blastbox.host.images import ImageSpec
 
-# `stamp_flags <dockerfile> <base> [base-arg]` -- the base-arg defaults to
-# BASE_IMAGE in the script, so an absent third word means that default.
-# Continuations are joined the way the shell joins them, THEN each logical line
-# is matched whole. Trying to express "or a backslash-newline here" inside the
-# pattern let `\s+` cross a line boundary, so a two-line call swallowed the next
-# line's first word as its base-arg -- every plain call came back with
-# `--base-arg docker`.
-#
-# Leading whitespace is allowed too: the warm-artifact calls sit inside an `if`,
-# and an anchor that ignored indentation made every guard below skip them
-# silently, passing while covering nothing.
-LOGICAL = re.sub(r"\\\n[ \t]*", " ", TEXT)
+# importorskip at RUNTIME: this repo's tests must still collect where blastbox
+# is not installed. The TYPE_CHECKING import above is erased at runtime, so it
+# cannot reintroduce the hard dependency it exists to avoid.
+images = pytest.importorskip("blastbox.host.images")
 
-_CALL = re.compile(
-    r"^[ \t]*stamp_flags[ \t]+(?P<df>\"[^\"]*\"|\S+)[ \t]+(?P<base>\"[^\"]*\"|\S+)"
-    # The optional 4th argument (source repo) may be quoted or bare -- matching
-    # only the quoted form would silently stop recognising a call that passed an
-    # unquoted path, and an unrecognised call is an unguarded one.
-    r"(?:[ \t]+(?P<arg>[A-Za-z_]\w*))?(?:[ \t]+(?:\"[^\"]*\"|\S+))?[ \t]*$",
-    re.MULTILINE,
-)
-CALLS = [
-    (m.group("df").strip('"'), (m.group("arg") or "BASE_IMAGE"))
-    for m in _CALL.finditer(LOGICAL)
-]
-
-# Dockerfiles that live in blastbox, not here. Their ARG names are part of this
-# ecosystem's contract and differ from ours, which is the whole reason the names
-# are asserted rather than assumed. CI cannot open them -- blastbox ships as a
-# wheel and the deploy/ tree is not in it -- so the pair is pinned here and
-# `blastbox stamp` refuses at build time if the real file disagrees.
-FOREIGN_ARGS = {
-    "deploy/gvisor/Dockerfile.redtusk": "BASE",
-    "deploy/firecracker/Dockerfile.redtusk": "BASE_IMAGE",
-}
+PLAN = images.load_plan(ROOT)
+LOCAL = [i for i in PLAN.images if i.context == "."]
 
 
-def test_the_script_actually_stamps_something() -> None:
-    """Guard the guard: if the call syntax changes, every check below passes vacuously."""
-    assert CALLS, (
-        "no `stamp_flags <dockerfile> <base>` calls found in build_images.sh. "
-        "Either the script stopped stamping, or its call shape changed and this "
-        "test is now asserting nothing."
-    )
+def test_the_declaration_names_every_tier() -> None:
+    """A tier missing from the spec is a tier that never gets rebuilt -- the
+    fleet then runs two versions while every tag says one."""
+    names = {i.name for i in PLAN.images}
+    assert {"redtusk-worker", "redtusk-cold-worker", "redtusk"} <= names
+    assert {"redtusk-warm-gvisor", "redtusk-fc-worker"} <= names
 
 
-@pytest.mark.parametrize("dockerfile,base_arg", CALLS)
-def test_each_arg_the_script_passes_selects_that_dockerfiles_base(
-    dockerfile: str, base_arg: str
-) -> None:
-    if "$BLASTBOX_SRC" in dockerfile:
-        rel = dockerfile.split("$BLASTBOX_SRC/", 1)[-1]
-        expected = FOREIGN_ARGS.get(rel)
-        assert expected, (
-            f"{rel} is built from blastbox but has no entry in FOREIGN_ARGS; "
-            "record which ARG selects its base so a rename is caught here"
-        )
-        assert base_arg == expected, (
-            f"build_images.sh passes --base-arg {base_arg} for {rel}, "
-            f"but that file uses {expected}. docker silently ignores the wrong one."
-        )
-        return
-    path = ROOT / dockerfile
-    assert path.is_file(), f"build_images.sh stamps {dockerfile}, which does not exist"
+@pytest.mark.parametrize("spec", LOCAL, ids=lambda s: str(s.name))
+def test_each_declared_base_arg_selects_that_dockerfiles_base(spec: ImageSpec) -> None:
+    """docker discards a --build-arg the Dockerfile does not declare, so the
+    build resolves its own default while the stamp claims the pinned base."""
+    from blastbox.host.stamp import StampError, assert_arg_selects_base
+
+    path = ROOT / spec.dockerfile
+    assert path.is_file(), f"the plan names {spec.dockerfile}, which does not exist"
     try:
-        assert_arg_selects_base(path, base_arg)
-    except StampError as exc:  # re-raise with the script's role in it
-        pytest.fail(f"build_images.sh passes --base-arg {base_arg} for {dockerfile}: {exc}")
+        assert_arg_selects_base(path, spec.base_arg)
+    except StampError as exc:
+        pytest.fail(f"blastbox-images.toml declares base_arg={spec.base_arg}: {exc}")
 
 
-def test_every_docker_build_in_the_script_is_stamped() -> None:
-    """An unstamped build is the whole problem; one must not sneak back in."""
-    builds = [
-        b.strip('"')
-        for b in re.findall(r"^[ \t]*docker build -f (\"[^\"]*\"|\S+)", LOGICAL, re.MULTILINE)
-    ]
-    stamped = {df for df, _ in CALLS}
-    assert builds, "no `docker build` lines found; this test is asserting nothing"
-    assert set(builds) <= stamped, (
-        f"built but never stamped: {sorted(set(builds) - stamped)}. "
-        "An image with no recorded base reads back as UNSTAMPED and fails the "
-        "script's own verification."
-    )
-
-
-@pytest.mark.parametrize(
-    "var,dockerfile",
-    [("WORKER_BASE", "deploy/docker/Dockerfile.default"),
-     ("HOST_BASE", "deploy/docker/Dockerfile.host")],
-)
-def test_the_scripts_default_base_matches_the_dockerfiles_own_default(
-    var: str, dockerfile: str
+@pytest.mark.parametrize("spec", LOCAL, ids=lambda s: str(s.name))
+def test_a_declared_upstream_base_matches_the_dockerfiles_own_default(
+    spec: ImageSpec,
 ) -> None:
-    """The script pins these; the Dockerfile defaults them. They must agree.
+    """The plan pins these; the Dockerfile defaults them. They must agree.
 
-    If they drift, a plain `docker build` and a stamped build produce images on
+    If they drift, a plain `docker build` and a planned build produce images on
     different bases while both look correct.
     """
-    m = re.search(rf'^{var}="\$\{{{var}:-([^}}]+)\}}"', TEXT, re.MULTILINE)
-    assert m, f"{var} is no longer set the way this test reads it"
+    if spec.internal:  # a chain base has no upstream default to agree with
+        pytest.skip(f"{spec.name} builds on {spec.base}, which this plan builds")
     declared = re.search(
-        r"^\s*ARG\s+BASE_IMAGE=(\S+)",
-        (ROOT / dockerfile).read_text(encoding="utf-8"),
+        rf"^\s*ARG\s+{re.escape(spec.base_arg)}=(\S+)",
+        (ROOT / spec.dockerfile).read_text(encoding="utf-8"),
         re.MULTILINE,
     )
-    assert declared, f"{dockerfile} no longer defaults ARG BASE_IMAGE"
-    assert m.group(1) == declared.group(1), (
-        f"build_images.sh defaults {var}={m.group(1)!r} but {dockerfile} defaults "
-        f"ARG BASE_IMAGE={declared.group(1)!r}"
+    assert declared, (
+        f"{spec.dockerfile} no longer defaults ARG {spec.base_arg}; without a "
+        "default a plain `docker build` of it cannot work at all"
+    )
+    assert spec.base == declared.group(1), (
+        f"the plan pins {spec.name} to {spec.base!r} but {spec.dockerfile} "
+        f"defaults ARG {spec.base_arg}={declared.group(1)!r}"
     )
 
 
-def test_a_refused_stamp_aborts_instead_of_building_unstamped() -> None:
-    """`set -e` DISCARDS the status of a `$(...)` in a command's arguments.
+def test_the_warm_images_are_declared_against_the_blastbox_tree() -> None:
+    """They are built from Dockerfiles that live in blastbox, and stamping them
+    with THIS repo's revision would record a commit that does not contain the
+    file that built them."""
+    warm = [i for i in PLAN.images if i.name in {"redtusk-warm-gvisor", "redtusk-fc-worker"}]
+    assert len(warm) == 2
+    for spec in warm:
+        assert spec.context == "$BLASTBOX_SRC", (
+            f"{spec.name} must be built from the blastbox tree, not this repo"
+        )
 
-    Left that way, a refusing stamp lets the build run with no labels and no
-    --build-arg, so the cold worker falls back to its Dockerfile default
-    `redtusk-worker:default` -- a mutable tag pointing at whatever stale base is
-    on the box, which is the incident this script exists to prevent.
+
+def test_the_two_warm_dockerfiles_use_different_arg_names() -> None:
+    """Not a style note -- it is the trap. They genuinely differ (BASE for
+    gvisor, BASE_IMAGE for firecracker), and passing the wrong one pins nothing
+    while the label claims a digest. Pinned here so a copy-paste is caught.
     """
-    assert not re.search(r"docker build[^\n]*\$\(stamp_flags", TEXT), (
-        "stamp_flags is called inside docker build's arguments; its failure "
-        "would be silently discarded"
-    )
-    assert "read -r -a flags" in TEXT, "stamp output must be read into an array"
-    # Scoped to stamp_flags' OWN body: the verify block at the end of the script
-    # also ends in `|| { ... exit 1 }`, and a whole-file search for that pattern
-    # is satisfied by it -- so this assertion passed with the abort removed.
-    body = re.search(r"^stamp_flags\(\) \{(.*?)^\}", TEXT, re.MULTILINE | re.DOTALL)
-    assert body, "stamp_flags is no longer a function this test can read"
-    assert re.search(r"exit\s+1", body.group(1)), (
-        "stamp_flags must abort when `blastbox stamp` refuses, or the build "
-        "runs unstamped with the Dockerfile's mutable default base"
-    )
+    by_name = {i.name: i for i in PLAN.images}
+    assert by_name["redtusk-warm-gvisor"].base_arg == "BASE"
+    assert by_name["redtusk-fc-worker"].base_arg == "BASE_IMAGE"
 
 
-def test_the_script_verifies_what_it_stamped() -> None:
-    """A build that does not check its own stamps is how the gap reopens."""
-    assert re.search(r"^\s*blastbox stamp --read", TEXT, re.MULTILINE), (
-        "build_images.sh must read every stamp back (a commented-out line does "
-        "not count)"
-    )
-    # Scoped to the verification block. A whole-file `exit 1` search is
-    # satisfied by stamp_flags' own abort, so it stayed green with the final
-    # gate removed -- the same wrong-reason failure as the assertion above,
-    # in its sibling test.
-    gate = re.search(r'\[ "\$rc" -eq 0 \][^\n]*\|\|\s*\{(.*?)^\}', TEXT, re.MULTILINE | re.DOTALL)
-    assert gate, "the read-back results are no longer gated the way this test reads"
-    assert re.search(r"exit\s+1", gate.group(1)), (
-        "a failed verification must fail the build, not just print"
-    )
-
-
-def test_the_minimum_blastbox_version_is_stated_once() -> None:
-    """A minimum that appears in two places drifts.
-
-    It did: the not-found diagnostic kept saying >= 0.1.29 after the gate moved
-    to 0.1.30, so the script told an operator to install a version it would then
-    reject. Every mention must come from BB_MIN.
-    """
-    assigns = re.findall(r"^BB_MIN=(\S+)", TEXT, re.MULTILINE)
-    assert len(assigns) == 1, f"BB_MIN is assigned {len(assigns)} times: {assigns}"
-    floor = assigns[0]
-
-    # A message may NAME a version that is too old ("0.1.28 and 0.1.29 have
-    # `stamp` but ..."), and those literals are the point. What must never be a
-    # literal is the version the operator is told to GET: an exemption broad
-    # enough to cover both is an exemption that lets the real bug through --
-    # the drift that happened was a hardcoded ">= 0.1.29" in exactly such a
-    # line, and a first version of this test waved it past.
-    for line in TEXT.splitlines():
-        if not line.lstrip().startswith("echo"):
-            continue
-        for m in re.finditer(r">=\s*(\$\{?\w+\}?|\d+(?:\.\d+)*)", line):
-            got = m.group(1).strip("${}")
-            assert got in ("BB_MIN", floor), (
-                f"the version an operator is told to install is hardcoded as "
-                f"{got!r}: {line.strip()!r}. Use $BB_MIN so it cannot drift "
-                "from the gate."
-            )
+def test_the_firecracker_rootfs_declares_what_it_must_contain() -> None:
+    """The guest boots /init. A rootfs without it hangs every warm guest until
+    the boot timeout -- which took the titanarum FC tier down, because nothing
+    had written down what the artifact needed."""
+    fc = [r for r in PLAN.rootfs if r.kind == "ext4"]
+    assert len(fc) == 1
+    assert "/init" in fc[0].requires
 
 
 def test_the_floor_matches_what_pyproject_pins() -> None:
-    """The script's gate and the package's own floor must agree.
+    """The wrapper's gate and the package's own floor must agree.
 
-    If the gate is lower, the script accepts a blastbox the package refuses to
-    install alongside; if higher, it rejects one the package considers fine.
+    Lower, and the script accepts a blastbox the package refuses to install
+    alongside; higher, and it rejects one the package considers fine.
     """
-    floor = re.search(r"^BB_MIN=(\S+)", TEXT, re.MULTILINE)
-    assert floor
+    text = (ROOT / "scripts" / "build_images.sh").read_text(encoding="utf-8")
+    floor = re.search(r"^BB_MIN=(\S+)", text, re.MULTILINE)
+    assert floor, "build_images.sh no longer states a minimum the way this test reads it"
     pins = re.findall(
         r"blastbox(?:\[[^\]]*\])?>=(\d+\.\d+\.\d+)",
         (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
@@ -230,3 +128,32 @@ def test_the_floor_matches_what_pyproject_pins() -> None:
     assert set(pins) == {floor.group(1)}, (
         f"build_images.sh requires >= {floor.group(1)} but pyproject pins {sorted(set(pins))}"
     )
+
+
+def test_every_dockerfile_default_blastbox_version_matches_the_pin() -> None:
+    """The Dockerfiles say "keep the default in sync with the floor in
+    pyproject.toml" and nothing enforced it.
+
+    A default that drifts produces exactly the lie this tooling exists to catch:
+    a plain `docker build` installs one version while the label — and every
+    planned build, which passes the pin explicitly — names another.
+    """
+    pins = set(
+        re.findall(
+            r"blastbox(?:\[[^\]]*\])?>=(\d+\.\d+\.\d+)",
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+        )
+    )
+    assert len(pins) == 1, f"pyproject pins several blastbox versions: {sorted(pins)}"
+    pin = pins.pop()
+
+    defaults = {}
+    for path in sorted((ROOT / "deploy" / "docker").glob("Dockerfile*")):
+        m = re.search(
+            r"^ARG BLASTBOX_VERSION=(\S+)", path.read_text(encoding="utf-8"), re.MULTILINE
+        )
+        if m:
+            defaults[path.name] = m.group(1)
+    assert defaults, "no Dockerfile defaults ARG BLASTBOX_VERSION; this test asserts nothing"
+    wrong = {k: v for k, v in defaults.items() if v != pin}
+    assert not wrong, f"pyproject pins {pin} but these default otherwise: {wrong}"

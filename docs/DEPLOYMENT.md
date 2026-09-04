@@ -99,19 +99,36 @@ confuse with PyPI. Leave `BLASTBOX_WHEEL` unset for a normal release build.
 scripts/build_images.sh <tag> [blastbox-version]
 ```
 
-It stamps all three images -- worker base, cold worker, host -- with the
-blastbox version, the source revision, and what each was built **on**, then
-reads every stamp back and exits non-zero if any image is not reproducible from
-what it records. Nothing is built unstamped: if `blastbox stamp` refuses, the
-script stops rather than producing an image whose label it could not write.
+That is a thin wrapper around `blastbox build-images`, which reads
+`blastbox-images.toml` in this repo. **The declaration is the build**: every
+image, the base each one is pinned to, which `ARG` receives that base, and both
+rootfs artifacts are named there, so a tier that is missing from it is a tier
+nothing rebuilds.
+
+It stamps all five images -- worker base, cold worker, host, and the two warm
+images -- with the blastbox version, the source revision, and what each was
+built **on**; verifies every stamp reads back; and only then exports the rootfs
+artifacts. Nothing is built unstamped: if the stamp is refused, the run stops
+rather than producing an image whose label it could not write. Nothing is
+exported from an image that failed verification, and nothing replaces a live
+artifact until the plan's `requires` have been found in it.
+
+Add `--dry-run` to print exactly what would be built and exported, resolved,
+without touching anything.
 
 Environment overrides:
 
 | variable | effect |
 |---|---|
-| `WORKER_BASE` / `HOST_BASE` | the upstream bases the two root images build on (defaults match the Dockerfiles' own `ARG BASE_IMAGE`) |
-| `BLASTBOX_SRC` | a blastbox **source** tree, which enables the two warm-tier images (their Dockerfiles live in blastbox and are not in the wheel) |
+| `BLASTBOX_SRC` | **required** — a blastbox **source** tree. The two warm-tier images are built from Dockerfiles that live there and are not in the wheel |
+| `REDTUSK_FC_DIR` | where the Firecracker `redtusk-rootfs.ext4` is written |
+| `REDTUSK_GVISOR_DIR` | where the gVisor tree is written (default `/var/lib/redtusk-gvisor`) |
 | `BLASTBOX_WHEEL` | ship a pre-release host-side blastbox instead of the pinned PyPI one (see section 1) |
+
+The upstream bases are no longer environment variables: they are declared in
+`blastbox-images.toml`, and a test asserts each one matches the `ARG` default in
+the Dockerfile it belongs to — if those drift, a plain `docker build` and a
+planned build produce images on different bases while both look correct.
 
 Why this is not optional: on 2026-09-02 the base that built the running
 `redtusk-cold-worker` no longer existed. Its jar matched none of the fourteen
@@ -149,13 +166,15 @@ Two traps the script handles for you:
 **The warm tiers do not run the cold worker image.** gVisor and Firecracker each
 run a rootfs exported from a separate image, so flipping `REDTUSK_WORKER_IMAGE`
 updates the cold tier and leaves those two on whatever they were last built
-from -- a fleet running two versions while every tag says one. With
-`BLASTBOX_SRC` set, the script builds and stamps those images too; without it,
-it says loudly that it skipped them. Turn the images into the artifacts the
-tiers boot with `scripts/export_warm_rootfs.sh <tag>`, which extracts the
-images that were just verified -- do not rebuild a rootfs from a Dockerfile
-instead, because that builds an unstamped image on the file's default base and
-what boots is then not what was checked. Measured on
+from -- a fleet running two versions while every tag says one. `BLASTBOX_SRC` is therefore REQUIRED: those two images are built from
+Dockerfiles that live in blastbox, and are stamped with **that** tree's
+revision, because recording this repo's would name a commit that does not
+contain the file which built them.
+
+Exporting them is part of the same run -- there is no separate export step any
+more. Keeping one is what let the two disagree: images could be rebuilt without
+the artifacts being replaced, so the warm tiers went on booting whatever they
+were last exported from. Measured on
 2026-09-03: the live gVisor rootfs held blastbox 0.1.27 while the tags said
 0.1.30, until it was rebuilt.
 
