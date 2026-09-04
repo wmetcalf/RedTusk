@@ -54,7 +54,7 @@ ARG BLASTBOX_WHEEL=
 # label could name one version while the venv held another -- the label/contents
 # disagreement `blastbox doctor` exists to catch. Keep the default in sync with
 # the floor in pyproject.toml.
-ARG BLASTBOX_VERSION=0.1.38
+ARG BLASTBOX_VERSION=0.1.39
 WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/pyproject.toml
 COPY src /tmp/build/src
