@@ -15,10 +15,17 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+if TYPE_CHECKING:  # the real type, so mypy checks the attribute access below
+    from blastbox.host.images import ImageSpec
+
+# importorskip at RUNTIME: this repo's tests must still collect where blastbox
+# is not installed. The TYPE_CHECKING import above is erased at runtime, so it
+# cannot reintroduce the hard dependency it exists to avoid.
 images = pytest.importorskip("blastbox.host.images")
 
 PLAN = images.load_plan(ROOT)
@@ -33,8 +40,8 @@ def test_the_declaration_names_every_tier() -> None:
     assert {"redtusk-warm-gvisor", "redtusk-fc-worker"} <= names
 
 
-@pytest.mark.parametrize("spec", LOCAL, ids=lambda s: s.name)
-def test_each_declared_base_arg_selects_that_dockerfiles_base(spec) -> None:
+@pytest.mark.parametrize("spec", LOCAL, ids=lambda s: str(s.name))
+def test_each_declared_base_arg_selects_that_dockerfiles_base(spec: ImageSpec) -> None:
     """docker discards a --build-arg the Dockerfile does not declare, so the
     build resolves its own default while the stamp claims the pinned base."""
     from blastbox.host.stamp import StampError, assert_arg_selects_base
@@ -47,8 +54,10 @@ def test_each_declared_base_arg_selects_that_dockerfiles_base(spec) -> None:
         pytest.fail(f"blastbox-images.toml declares base_arg={spec.base_arg}: {exc}")
 
 
-@pytest.mark.parametrize("spec", LOCAL, ids=lambda s: s.name)
-def test_a_declared_upstream_base_matches_the_dockerfiles_own_default(spec) -> None:
+@pytest.mark.parametrize("spec", LOCAL, ids=lambda s: str(s.name))
+def test_a_declared_upstream_base_matches_the_dockerfiles_own_default(
+    spec: ImageSpec,
+) -> None:
     """The plan pins these; the Dockerfile defaults them. They must agree.
 
     If they drift, a plain `docker build` and a planned build produce images on
