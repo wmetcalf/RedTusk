@@ -52,7 +52,14 @@ die(){ printf '\033[1;31m[node-env]\033[0m %s\n' "$*" >&2; exit 1; }
 # These are the ONLY things that legitimately vary per box. Everything else in
 # .env is fleet-wide config and is left untouched.
 DOCKER_GID=$(getent group docker | cut -d: -f3 || true)
-KVM_GID=$(getent group kvm | cut -d: -f3 || true)
+# The DEVICE's group, not the group table: after custom udev rules, group
+# renumbering or device passthrough the two disagree, and it is the device's GID
+# that decides whether the non-root dispatcher can open /dev/kvm. Same source the
+# compose wrapper uses for docker.sock. The group table is the fallback for a
+# host where /dev/kvm is absent (nothing to read, and the FC tier is refused
+# anyway).
+KVM_GID=$(stat -c '%g' /dev/kvm 2>/dev/null || true)
+[ -n "$KVM_GID" ] || KVM_GID=$(getent group kvm | cut -d: -f3 || true)
 
 [ -n "$DOCKER_GID" ] || die "no 'docker' group on this host — is Docker installed?"
 [ -n "$KVM_GID" ]    || die "no 'kvm' group on this host — Firecracker needs /dev/kvm"

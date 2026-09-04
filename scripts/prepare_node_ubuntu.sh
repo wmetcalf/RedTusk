@@ -97,6 +97,21 @@ have "$([ -n "$SUDO" ] && echo sudo || echo sh)" || die "sudo required when not 
 id "$DEPLOY_USER" >/dev/null 2>&1 || die "deploy user '$DEPLOY_USER' does not exist"
 log "node: $PRETTY_NAME / $ARCH / deploy-user=$DEPLOY_USER / $(nproc)vCPU / $(free -g | awk '/^Mem:/{print $2"GB"}') RAM"
 
+run_as_deploy() {
+    # Run a command AS THE DEPLOY USER, whether or not we are already root.
+    # `$SUDO -u "$DEPLOY_USER" ...` was wrong under the documented `sudo`
+    # invocation: as root $SUDO is EMPTY, so the command began with `-u` and the
+    # shell could not execute it. The caller's `if !` turned that into a warning,
+    # so provisioning printed `done` having never built the kernel or rootfs.
+    if [ "$(id -un)" = "$DEPLOY_USER" ]; then
+        "$@"
+    elif [ "$(id -u)" -eq 0 ] && have runuser; then
+        runuser -u "$DEPLOY_USER" -- "$@"
+    else
+        sudo -u "$DEPLOY_USER" -- "$@"
+    fi
+}
+
 _aws_creds_home() {
     # The deploy user's home from passwd, not $HOME: under the documented `sudo`
     # invocation $HOME is /root, and every probe below would read /root/.aws.
@@ -280,9 +295,22 @@ log "creating standard dirs"
 DGRP=$(id -gn "$DEPLOY_USER")
 # The uid the api/dispatcher/worker containers run as (see Dockerfile.host).
 REDTUSK_WORKER_UID=${REDTUSK_WORKER_UID:-10001}
+# The FC dispatcher runs in a container with ${REDTUSK_FC_DIR} bind-mounted at
+# /var/lib/blastbox-fc, and reads BLASTBOX_FC_BIN=/var/lib/blastbox-fc/firecracker
+# from there -- /usr/local/bin on the host is not visible to it. Installing only
+# to /usr/local/bin left the tier unable to find its own executable on a node
+# this script had just declared ready.
+stage_firecracker_asset() {
+    have firecracker || return 0
+    [ -x "$REDTUSK_FC_DIR/firecracker" ] && return 0
+    $SUDO install -m 0755 "$(command -v firecracker)" "$REDTUSK_FC_DIR/firecracker" \
+        && log "staged firecracker into $REDTUSK_FC_DIR (the dispatcher's mounted path)"
+}
+
 for d in "$REDTUSK_DATA_DIR/jobs" "$REDTUSK_DATA_DIR/scratch" "$REDTUSK_FC_DIR"; do
     $SUDO mkdir -p "$d"; $SUDO chown "$DEPLOY_USER:$DGRP" "$d"
 done
+stage_firecracker_asset
 # node-autosizer share: single-trust-domain surface written only by dispatchers on
 # THIS host; bind-mounted into each engine stack. Group-writable so co-located
 # dispatchers (same deploy group) all publish/read.
@@ -324,7 +352,7 @@ if [ "$FC_ASSETS" -eq 1 ]; then
     # Build a kernel here only if asked AND we didn't copy one in.
     [ "$WITH_KERNEL" -eq 1 ] && [ -z "$KERNEL_FROM" ] && FC_ARGS+=(--with-kernel)
     # Run as the deploy user under sg kvm (the FC script needs kvm access + docker).
-    if ! $SUDO -u "$DEPLOY_USER" sg kvm -c "cd '$REPO_ROOT' && scripts/setup_firecracker_host.sh ${FC_ARGS[*]}"; then
+    if ! run_as_deploy sg kvm -c "cd '$REPO_ROOT' && scripts/setup_firecracker_host.sh ${FC_ARGS[*]}"; then
         warn "setup_firecracker_host.sh did not complete — build the rootfs/kernel manually (see deploy/firecracker/README.md)."
     fi
     # The FC compose expects the rootfs named redtusk-rootfs.ext4; the FC script
@@ -337,6 +365,21 @@ else
 fi
 
 # ── 10. summary ────────────────────────────────────────────────────────────
+# Say plainly when the FC tier CANNOT start. setup_firecracker_host.sh only warns
+# about a missing kernel and returns 0, and the fresh-node command in the README
+# passes neither --with-kernel nor --kernel-from -- so provisioning printed
+# `done` on a node whose Firecracker dispatcher would refuse at startup.
+fc_missing=""
+for asset in firecracker vmlinux redtusk-rootfs.ext4; do
+    [ -e "$REDTUSK_FC_DIR/$asset" ] || fc_missing="$fc_missing $asset"
+done
+if [ -n "$fc_missing" ]; then
+    warn "Firecracker tier NOT ready — missing from $REDTUSK_FC_DIR:$fc_missing"
+    warn "  kernel: re-run with --with-kernel (builds one) or --kernel-from <host>:/path/vmlinux"
+    warn "  rootfs: scripts/build_images.sh writes redtusk-rootfs.ext4 into that directory"
+    warn "  the cold and gVisor tiers do not need these and are unaffected"
+fi
+
 printf '\n\033[1;32m[prep-node] done.\033[0m\n'
 cat <<EOF
 
