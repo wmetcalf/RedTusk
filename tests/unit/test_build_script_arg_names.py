@@ -109,6 +109,10 @@ def test_the_firecracker_rootfs_declares_what_it_must_contain() -> None:
     fc = [r for r in PLAN.rootfs if r.kind == "ext4"]
     assert len(fc) == 1
     assert "/init" in fc[0].requires
+    # Overridable, as the export script it replaces was. A literal would
+    # silently shrink a rootfs a deployment had deliberately grown.
+    assert fc[0].resolved_size_mib({}) == 1536
+    assert fc[0].resolved_size_mib({"ROOTFS_MIB": "2048"}) == 2048
 
 
 def test_the_floor_matches_what_pyproject_pins() -> None:
