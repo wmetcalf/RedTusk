@@ -1,0 +1,76 @@
+# RedTusk's image chain, declared once.
+#
+# This replaces scripts/build_images.sh and scripts/export_warm_rootfs.sh.
+# Both were correct; the problem was that every engine had its own copy of the
+# same bash, and the copies had drifted in ways that silently produced a wrong
+# image -- a different ARG name here, a missing pull there, a rootfs exported
+# from an image nobody verified.
+#
+# Build and export with:
+#   BLASTBOX_SRC=<blastbox source tree> blastbox build-images . --tag <tag>
+# Add --dry-run to see exactly what it would do and touch nothing.
+
+[engine]
+name = "redtusk"
+
+[[image]]
+name = "redtusk-worker"
+dockerfile = "deploy/docker/Dockerfile.default"
+base = "eclipse-temurin:25-jre-jammy"
+
+[[image]]
+name = "redtusk-cold-worker"
+dockerfile = "deploy/docker/Dockerfile.cold-worker"
+base = "redtusk-worker"
+# Not a literal. A second copy of the pyproject pin would drift from it, and a
+# label naming one version over a venv holding another is the exact failure
+# this tooling exists to catch.
+build_args = { BLASTBOX_VERSION = "$BLASTBOX_VERSION" }
+
+[[image]]
+name = "redtusk"
+dockerfile = "deploy/docker/Dockerfile.host"
+base = "python:3.12-slim-bookworm"
+# BLASTBOX_WHEEL is the documented pre-release escape hatch (DEPLOYMENT.md
+# section 1). `${VAR:-}` rather than `$VAR`: unset, it must reach docker EMPTY,
+# which the Dockerfile treats as "ship the pinned PyPI blastbox" -- passing the
+# literal string would try to install a wheel named `$BLASTBOX_WHEEL`.
+build_args = { BLASTBOX_VERSION = "$BLASTBOX_VERSION", BLASTBOX_WHEEL = "${BLASTBOX_WHEEL:-}" }
+
+# The two warm tiers do NOT run the cold worker image: they boot a rootfs
+# exported from their own image, built from Dockerfiles that live in BLASTBOX.
+# Flipping REDTUSK_WORKER_IMAGE updates the cold tier and leaves these on
+# whatever they were last built from -- which is how a fleet ends up running two
+# versions while every tag says one.
+#
+# Note the ARG names DIFFER between the two files. docker silently ignores a
+# --build-arg the Dockerfile does not declare, so getting this wrong pins
+# nothing and stamps a digest the build never used; `blastbox build-images`
+# refuses rather than building that.
+[[image]]
+name = "redtusk-warm-gvisor"
+dockerfile = "deploy/gvisor/Dockerfile.redtusk"
+base = "redtusk-cold-worker"
+base_arg = "BASE"
+context = "$BLASTBOX_SRC"
+
+[[image]]
+name = "redtusk-fc-worker"
+dockerfile = "deploy/firecracker/Dockerfile.redtusk"
+base = "redtusk-cold-worker"
+context = "$BLASTBOX_SRC"
+
+[[rootfs]]
+kind = "dir"
+image = "redtusk-warm-gvisor"
+dest = "${REDTUSK_GVISOR_DIR:-/var/lib/redtusk-gvisor}/rootfs"
+
+[[rootfs]]
+kind = "ext4"
+image = "redtusk-fc-worker"
+dest = "$REDTUSK_FC_DIR/redtusk-rootfs.ext4"
+size_mib = 1536
+# The guest boots /init. A rootfs without it hangs every warm guest until the
+# boot timeout, which is what took the titanarum FC tier down on 2026-09-02 --
+# nothing checked, because nothing had written down what the artifact needed.
+requires = ["/init"]
