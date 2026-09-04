@@ -97,16 +97,30 @@ have "$([ -n "$SUDO" ] && echo sudo || echo sh)" || die "sudo required when not 
 id "$DEPLOY_USER" >/dev/null 2>&1 || die "deploy user '$DEPLOY_USER' does not exist"
 log "node: $PRETTY_NAME / $ARCH / deploy-user=$DEPLOY_USER / $(nproc)vCPU / $(free -g | awk '/^Mem:/{print $2"GB"}') RAM"
 
-_aws_creds_status() {
-    # The deploy user's home, from passwd rather than $HOME -- see the caller.
-    local home creds
+_aws_creds_home() {
+    # The deploy user's home from passwd, not $HOME: under the documented `sudo`
+    # invocation $HOME is /root, and every probe below would read /root/.aws.
+    local home
     home=$(getent passwd "$DEPLOY_USER" 2>/dev/null | cut -d: -f6)
     [ -n "$home" ] || home="$HOME"
+    echo "${AWS_CREDS_HOME:-$home}"
+}
+
+_aws_sts_ok() {
+    # `aws sts get-caller-identity` against the DEPLOY user's credentials.
+    local home; home="$(_aws_creds_home)"
+    AWS_SHARED_CREDENTIALS_FILE="$home/.aws/credentials" \
+    AWS_CONFIG_FILE="$home/.aws/config" \
+    aws sts get-caller-identity >/dev/null 2>&1
+}
+
+_aws_creds_status() {
+    local home creds
+    home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
     creds="$home/.aws/credentials"
     have aws || { echo "n/a (no aws cli)"; return; }
     [ -f "$creds" ] || { echo "absent — place $creds"; return; }
-    if AWS_SHARED_CREDENTIALS_FILE="$creds" AWS_CONFIG_FILE="$home/.aws/config" \
-       aws sts get-caller-identity >/dev/null 2>&1; then
+    if _aws_sts_ok; then
         echo "valid (sts ok, $creds)"
     else
         echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
@@ -254,7 +268,7 @@ if [ "$AWS_BURST" -eq 1 ]; then
     # (the runtime ALSO fails closed on this). Warn, don't die: creds may be placed later.
     if [ ! -r "${AWS_CREDS_HOME:-/home/$DEPLOY_USER}/.aws/credentials" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
         warn "no AWS credentials yet — place ~/.aws/credentials on this node, then re-run --check"
-    elif aws sts get-caller-identity >/dev/null 2>&1; then
+    elif _aws_sts_ok; then
         log "aws entitlement OK (sts get-caller-identity passed)"
     else
         warn "AWS credentials present but 'aws sts get-caller-identity' FAILED — the burst tier will fail closed"
@@ -351,7 +365,7 @@ cat <<EOF
 
 AWS burst tier (this is the control-plane node):
   aws cli   : $(aws --version 2>/dev/null | head -1 || echo 'MISSING')
-  aws creds : $(have aws && aws sts get-caller-identity >/dev/null 2>&1 && echo 'valid (sts ok)' || echo 'place ~/.aws/credentials, then re-run --check')
+  aws creds : $(_aws_creds_status)
   1. Put your AWS credentials at ~/.aws/credentials (this script never touches them).
   2. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
