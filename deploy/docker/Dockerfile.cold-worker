@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # the `blastbox>=0.1.33,<0.2` floor in pyproject.toml: the package is installed
 # `--no-deps` below, so a stale default here would NOT be upgraded to satisfy the
 # floor — the venv would silently run an incompatible blastbox.
-ARG BLASTBOX_VERSION=0.1.35
+ARG BLASTBOX_VERSION=0.1.38
 
 RUN python3.12 -m venv /opt/redtusk \
     && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
