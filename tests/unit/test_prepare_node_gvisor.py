@@ -18,9 +18,10 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prepare_node_ubuntu.
 
 # The script's preflight requires a real /dev/kvm (the Firecracker tier needs it) and dies
 # otherwise, which no unprivileged process can fake -- `unshare -r` cannot even map uids in
-# the usual container. So this is skipped in container CI and runs on the fleet nodes and any
-# KVM-capable workstation. Named precisely, because a skip nobody can satisfy is a test that
-# does not exist.
+# the usual container. Measured, not assumed: these DO run on the GitHub-hosted Linux runner,
+# which exposes /dev/kvm and runs unprivileged, as well as on the fleet nodes and any
+# KVM-capable workstation. The guard is named precisely so that if an environment ever lacks
+# it, the reason says so rather than the test quietly not existing.
 pytestmark = [
     pytest.mark.skipif(
         not os.path.exists("/dev/kvm"),
