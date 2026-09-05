@@ -51,7 +51,11 @@ done
 # file can keep `ARG TIKA_FORK_SHA` for the checker to find while checking out a
 # hardcoded commit. Require the pin to be USED, not merely present.
 for f in "${cloners[@]}"; do
-    if ! grep -qE 'checkout[^|&]*"?\$\{?TIKA_FORK_SHA\}?"?' "$f"; then
+    # Strip comment lines first. Matching the raw file lets a Dockerfile hardcode the
+    # real checkout while keeping an explanatory comment that mentions
+    # `checkout "$TIKA_FORK_SHA"` -- the grep hits the prose and the build ignores the pin.
+    if ! sed 's/[[:space:]]*#.*$//' "$f" \
+         | grep -qE 'checkout[^|&]*"?\$\{?TIKA_FORK_SHA\}?"?'; then
         echo "$f: declares TIKA_FORK_SHA but no checkout consumes it." >&2
         echo "  The pin must drive the checkout, or CI is validating a value the build ignores." >&2
         rc=1
