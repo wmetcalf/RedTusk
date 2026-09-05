@@ -98,7 +98,12 @@ for f in "${cloners[@]}"; do
     # line-oriented grep returns the whole physical line, so two checkouts sharing one
     # RUN line would pass as long as either mentioned the pin -- while the last one
     # still decides the build.
-    commands="$(sed -E 's/(\&\&|\|\||;|\|)/\n/g' <<<"$stripped")"
+    # Normalise the RUN prefix (and any --mount=... flags) before splitting: a checkout
+    # opening its own instruction reads as `RUN git ... checkout`, whose first token is
+    # RUN, not git. That is ordinary Dockerfile authoring, not evasion, so missing it
+    # would leave the gate blind to the most natural way to add an overriding checkout.
+    commands="$(sed -E 's/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/ /' <<<"$stripped" \
+                | sed -E 's/(\&\&|\|\||;|\|)/\n/g')"
     checkouts="$(grep -E '^[[:space:]]*git[[:space:]][^|&;]*checkout' <<<"$commands" || true)"
     # Commands that move HEAD without a checkout. Scoped to the tika worktree so an
     # unrelated `git reset` elsewhere in the file is not swept up. See the threat-model
