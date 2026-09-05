@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG BLASTBOX_VERSION=0.1.39
 RUN python3.12 -m venv /opt/redtusk \
     && /opt/redtusk/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/redtusk/bin/pip install --no-cache-dir "blastbox==${BLASTBOX_VERSION}"
+    && /opt/redtusk/bin/pip install --no-cache-dir "blastbox==${BLASTBOX_VERSION}" "jsonschema>=4.0,<5.0"
 
 COPY pyproject.toml /src/redtusk/
 COPY src /src/redtusk/src
