@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Every Dockerfile that CLONES the Tika fork must pin the SAME commit.
+#
+# They drifted to three different values once already (c4bcec9f / de08f007 /
+# 74997d72), so crac, localsrc and localtika were each building a different parser
+# set while looking uniform. Nothing caught it because nothing compared them.
+#
+# Discovery keys on the CLONE URL, never on the ARG this script enforces. An
+# earlier version listed files by `^ARG TIKA_FORK_SHA=`, which fails open: a
+# cloning Dockerfile that drops the ARG and hardcodes a checkout silently leaves
+# the check's scope while the surviving files keep reporting "consistent".
+# THREAT MODEL -- read before extending this script.
+#
+# This gate exists to catch ACCIDENTAL drift: pins edited in one Dockerfile and not the
+# others, a pin left behind on a file that no longer clones, a checkout that stops using
+# the pin. It is static text analysis, so it tests for the PRESENCE of tokens, never for
+# the EFFECT they have. It therefore cannot stop a Dockerfile author who is determined to
+# compile a different commit -- git offers unboundedly many ways to move HEAD (reset,
+# rebase, merge, cherry-pick, fetch + FETCH_HEAD, applying a patch, editing files
+# outright), and enumerating them is a losing game.
+#
+# The checks below close the accidental cases and the cheap deliberate ones. The sound
+# version of "the image really contains the pinned commit" builds the image and reads the
+# resulting HEAD; that is a different and much more expensive CI job than a pre-install
+# grep, and it belongs beside the image builds, not here.
+#
+# So: extend this for shapes a careless edit could plausibly produce. Do not try to make
+# it adversarial -- that ambition belongs in the build-and-verify job.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+CLONE_URL='github.com/wmetcalf/tika.git'
+
+mapfile -t cloners < <(grep -rlF "$CLONE_URL" deploy/ | sort)
+mapfile -t declarers < <(grep -rlE '^ARG TIKA_FORK_SHA=' deploy/ | sort)
+
+if [ "${#cloners[@]}" -eq 0 ]; then
+    echo "no Dockerfile clones $CLONE_URL -- has the fork URL changed?" >&2
+    exit 1
+fi
+
+rc=0
+
+# A pin on a file that never clones is decoration: it advertises a Tika the image
+# does not contain. Dockerfile.default.localsrc shipped exactly that for weeks.
+for f in "${declarers[@]}"; do
+    if ! printf '%s\n' "${cloners[@]}" | grep -qxF "$f"; then
+        echo "$f: declares TIKA_FORK_SHA but never clones $CLONE_URL." >&2
+        echo "  A pin nothing uses misleads anyone auditing which Tika is in the image." >&2
+        rc=1
+    fi
+done
+
+declare -A seen=()
+for f in "${cloners[@]}"; do
+    # Docker honours the LAST ARG default before the instruction that uses it, so a
+    # second declaration would silently drive the build while `head -1` reported the
+    # first. Rather than model Docker's resolution order, forbid the ambiguity.
+    ndecl="$(grep -cE '^ARG TIKA_FORK_SHA=' "$f" || true)"
+    if [ "$ndecl" -gt 1 ]; then
+        echo "$f: declares TIKA_FORK_SHA $ndecl times." >&2
+        echo "  Docker uses the last declaration before the checkout, so the pin this gate" >&2
+        echo "  reports and the pin the build uses can differ. Keep exactly one." >&2
+        rc=1
+        continue
+    fi
+    sha="$(grep -oE '^ARG TIKA_FORK_SHA=[0-9a-f]{40}' "$f" | head -1 | cut -d= -f2 || true)"
+    if [ -z "$sha" ]; then
+        echo "$f: clones the Tika fork but declares no full 40-char ARG TIKA_FORK_SHA." >&2
+        echo "  Every cloning image must pin a commit, or it builds an unknown Tika." >&2
+        rc=1
+        continue
+    fi
+    seen["$sha"]+="$f "
+done
+
+# A declared pin that no checkout consumes is the same lie in a different place: the
+# file can keep `ARG TIKA_FORK_SHA` for the checker to find while checking out a
+# hardcoded commit. Require the pin to be USED, not merely present.
+for f in "${cloners[@]}"; do
+    # Strip comment lines first. Matching the raw file lets a Dockerfile hardcode the
+    # real checkout while keeping an explanatory comment that mentions
+    # `checkout "$TIKA_FORK_SHA"` -- the grep hits the prose and the build ignores the pin.
+    #
+    # Materialised, NOT piped into grep: under `set -o pipefail`, `grep -q` exits at the
+    # first match and SIGPIPEs the still-writing sed, so the pipeline reports failure and
+    # the check claims the pin is unused on a tree where it plainly is.
+    stripped="$(sed 's/[[:space:]]*#.*$//' "$f")"
+    # Every revision-setting checkout must use the pin, not merely one of them: a later
+    # hardcoded `git checkout <other>` overrides an earlier pinned one, and the compiled
+    # revision is the LAST one to win.
+    #
+    # Matching is anchored on a command boundary (start of line, &&, ;, |) and must be a
+    # real `git ... checkout` COMMAND, so text that merely contains the words -- e.g.
+    # `echo checkout "$TIKA_FORK_SHA"` logging the intent -- does not qualify.
+    # Split on shell command separators FIRST so each command is judged on its own. A
+    # line-oriented grep returns the whole physical line, so two checkouts sharing one
+    # RUN line would pass as long as either mentioned the pin -- while the last one
+    # still decides the build.
+    # Normalise the RUN prefix (and any --mount=... flags) before splitting: a checkout
+    # opening its own instruction reads as `RUN git ... checkout`, whose first token is
+    # RUN, not git. That is ordinary Dockerfile authoring, not evasion, so missing it
+    # would leave the gate blind to the most natural way to add an overriding checkout.
+    commands="$(sed -E 's/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/ /' <<<"$stripped" \
+                | sed -E 's/(\&\&|\|\||;|\|)/\n/g')"
+    checkouts="$(grep -E '^[[:space:]]*git[[:space:]][^|&;]*checkout' <<<"$commands" || true)"
+    # Commands that move HEAD without a checkout. Scoped to the tika worktree so an
+    # unrelated `git reset` elsewhere in the file is not swept up. See the threat-model
+    # note at the top: this is defence in depth against accident, not a closed set.
+    moved="$(grep -E '^[[:space:]]*git[[:space:]].*/src/tika' <<<"$commands" \
+             | grep -E '[[:space:]](reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)([[:space:]]|$)' || true)"
+    if [ -n "$moved" ]; then
+        echo "$f: moves the Tika worktree's HEAD outside the pinned checkout:" >&2
+        while IFS= read -r line; do
+            [ -n "$line" ] && echo "    ${line#"${line%%[![:space:]]*}"}" >&2
+        done <<<"$moved"
+        echo "  The compiled revision would not be the pinned one." >&2
+        rc=1
+    fi
+
+    if [ -z "$checkouts" ]; then
+        echo "$f: clones the Tika fork but never checks out a revision." >&2
+        rc=1
+    else
+        # Match an exact expansion of TIKA_FORK_SHA. A substring test also accepts
+        # `$ALT_TIKA_FORK_SHA` / `$TIKA_FORK_SHA_OLD`, which are different variables
+        # holding different commits.
+        unpinned="$(grep -vE '\$\{?TIKA_FORK_SHA\}?([^A-Za-z0-9_]|$)' <<<"$checkouts" || true)"
+        if [ -n "$unpinned" ]; then
+            echo "$f: has a git checkout that does not use TIKA_FORK_SHA:" >&2
+            while IFS= read -r line; do
+                [ -n "$line" ] && echo "    ${line#"${line%%[![:space:]]*}"}" >&2
+            done <<<"$unpinned"
+            echo "  The LAST checkout wins, so an unpinned one silently decides the build." >&2
+            rc=1
+        fi
+    fi
+done
+
+if [ "$rc" -ne 0 ]; then
+    exit 1
+fi
+
+if [ "${#seen[@]}" -ne 1 ]; then
+    echo "TIKA_FORK_SHA has drifted -- ${#seen[@]} different pins across ${#cloners[@]} files:" >&2
+    for sha in "${!seen[@]}"; do
+        echo "  $sha" >&2
+        for f in ${seen[$sha]}; do echo "    $f" >&2; done
+    done
+    echo "" >&2
+    echo "All cloning Dockerfiles must build the same Tika commit." >&2
+    exit 1
+fi
+
+for sha in "${!seen[@]}"; do
+    echo "TIKA_FORK_SHA consistent across ${#cloners[@]} cloning Dockerfile(s): $sha"
+done

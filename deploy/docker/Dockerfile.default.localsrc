@@ -49,16 +49,57 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-# Clone Tika fork pinned to a specific commit for supply-chain integrity.
-# Update TIKA_FORK_SHA when intentionally pulling new commits.
-# Durable pin: `4.0-upstream-office-links` tip after the 200-commit upstream sync
-# (wmetcalf/tika #7) + the audit-hardening PRs (#8/#9/#10) merged, plus the
-# regenerated metadata-field inventory (#11). Validated end-to-end through the
-# RedTusk worker; metadata-field-inventory CI green on the branch.
-ARG TIKA_FORK_SHA=54c87af31f2da843ee97e76852dc880330a2c0ff
-# LOCAL SOURCE VARIANT: build the fork from .tika-src in the build context instead of
+# LOCAL SOURCE VARIANT: builds the fork from .tika-src in the build context instead of
 # cloning a pushed SHA, so an unpushed fix can be validated end-to-end before publishing.
+#
+# There is deliberately NO TIKA_FORK_SHA here. This file used to declare one, copied
+# from the cloning variants along with their "pinned to a specific commit for
+# supply-chain integrity" comment -- but nothing referenced it, because the source
+# comes from the COPY below. It advertised a Tika version the image did not contain,
+# which is worse than saying nothing: anyone auditing "which Tika is in this image?"
+# read that line and got a wrong answer. It was also invisible to any consistency
+# check, which is part of how the pins across these files drifted to three different
+# values.
+#
+# Provenance instead comes from the source actually used, recorded below.
 COPY .tika-src /src/tika
+
+# Record what was ACTUALLY built, so the image can answer the audit question the
+# deleted ARG answered wrongly. Best-effort: .tika-src may be an export rather than a
+# git checkout.
+#
+# A bare `rev-parse HEAD` is NOT sufficient: on a checkout with uncommitted edits it
+# names a commit whose contents differ from the bytes being compiled -- the same
+# confidently-wrong provenance the deleted ARG produced.
+#
+# The digest is therefore UNCONDITIONAL. Gating it on "does this look dirty?" just
+# moves the trust into that test, and the test is not sound: `git status --porcelain`
+# omits ignored files by default, so a tree carrying stale Maven `target/` output
+# reports clean while shipping bytes that HEAD does not describe. The digest is taken
+# over /src/tika as it exists IN THE IMAGE, so it describes what was really compiled
+# no matter what the context did or did not deliver. HEAD stays as a human-readable
+# hint; the digest is the identifier.
+#
+# Symlinks are hashed as path -> target, not followed: `-type f` alone omits the link
+# entry, so retargeting a link that Maven consumes would change the built tree without
+# changing the digest.
+RUN set -eu; \
+    digest="$( { find /src/tika -not -path '*/.git/*' -type f -print0 \
+                     | sort -z | xargs -0 sha256sum; \
+                   find /src/tika -not -path '*/.git/*' -type l -printf '%p -> %l\n' \
+                     | sort; } | sha256sum | cut -d' ' -f1)"; \
+    if head="$(git -C /src/tika rev-parse HEAD 2>/dev/null)"; then \
+        if [ -n "$(git -C /src/tika status --porcelain --ignored 2>/dev/null)" ]; then \
+            prov="$head-dirty (tree differs from this commit)"; \
+        else \
+            prov="$head"; \
+        fi; \
+    else \
+        prov="unknown (.tika-src is not a git checkout)"; \
+    fi; \
+    prov="$prov content-sha256=$digest"; \
+    printf '%s\n' "$prov" > /etc/tika-source-provenance; \
+    echo "tika source provenance: $prov"
 
 # Build all modules except gRPC (which needs protoc; not needed for worker).
 # Pre-flight: strip '#' comments from maven.config (apt Maven rejects them),
@@ -118,6 +159,11 @@ RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" 
 # archive is compatible (avoids JDK/JRE checksum mismatch with -Xshare:on).
 # --------------------------------------------------------------------------
 FROM eclipse-temurin:25-jre-jammy AS runtime
+
+# Carry provenance into the SHIPPED image. It is written in the tika-build stage, and
+# runtime starts from a fresh base -- without this COPY the record exists only in an
+# intermediate layer, so the delivered image still cannot say which Tika it contains.
+COPY --from=tika-build /etc/tika-source-provenance /etc/tika-source-provenance
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
