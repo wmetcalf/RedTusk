@@ -244,9 +244,18 @@ if [ "$WITH_GVISOR" -eq 1 ]; then
         curl -fsSL https://gvisor.dev/archive.key | $SUDO gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
             | $SUDO tee /etc/apt/sources.list.d/gvisor.list >/dev/null
-        $SUDO apt-get update -q && $SUDO apt-get install -y -q runsc
+        # SEPARATE statements. `set -e` does not fire for the left operand of `&&`, so an
+        # apt-get update that failed (unreachable repo, key problem) SKIPPED the install and
+        # provisioning carried on: `have runsc` was false, the line below warned about
+        # "registration", and the final log printed `runsc installed:` with an empty version
+        # because the failing `runsc --version` sits inside a command substitution whose
+        # status nothing reads. The node then joined the fleet with no gVisor tier at all,
+        # reporting success -- the same silent-tier failure as the per-host GID drift.
+        $SUDO apt-get update -q
+        $SUDO apt-get install -y -q runsc
+        have runsc || die "gVisor install reported success but runsc is not on PATH"
         # register the runsc docker runtime (for the gVisor tier if used directly)
-        have runsc && $SUDO runsc install >/dev/null 2>&1 && $SUDO systemctl restart docker || warn "runsc docker-runtime registration skipped"
+        $SUDO runsc install >/dev/null 2>&1 && $SUDO systemctl restart docker || warn "runsc docker-runtime registration skipped"
         log "runsc installed: $(runsc --version | head -1)"
     fi
 else
