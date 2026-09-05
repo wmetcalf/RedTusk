@@ -37,6 +37,17 @@ done
 
 declare -A seen=()
 for f in "${cloners[@]}"; do
+    # Docker honours the LAST ARG default before the instruction that uses it, so a
+    # second declaration would silently drive the build while `head -1` reported the
+    # first. Rather than model Docker's resolution order, forbid the ambiguity.
+    ndecl="$(grep -cE '^ARG TIKA_FORK_SHA=' "$f" || true)"
+    if [ "$ndecl" -gt 1 ]; then
+        echo "$f: declares TIKA_FORK_SHA $ndecl times." >&2
+        echo "  Docker uses the last declaration before the checkout, so the pin this gate" >&2
+        echo "  reports and the pin the build uses can differ. Keep exactly one." >&2
+        rc=1
+        continue
+    fi
     sha="$(grep -oE '^ARG TIKA_FORK_SHA=[0-9a-f]{40}' "$f" | head -1 | cut -d= -f2 || true)"
     if [ -z "$sha" ]; then
         echo "$f: clones the Tika fork but declares no full 40-char ARG TIKA_FORK_SHA." >&2
