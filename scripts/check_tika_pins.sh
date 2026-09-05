@@ -70,15 +70,27 @@ for f in "${cloners[@]}"; do
     # first match and SIGPIPEs the still-writing sed, so the pipeline reports failure and
     # the check claims the pin is unused on a tree where it plainly is.
     stripped="$(sed 's/[[:space:]]*#.*$//' "$f")"
-    # The match must be a real `git ... checkout ... $TIKA_FORK_SHA` COMMAND. Anchoring
-    # on a command boundary (start of line, &&, ;, |) rejects text that merely contains
-    # the words -- e.g. `echo checkout "$TIKA_FORK_SHA"` logging the intended pin beside
-    # a hardcoded checkout.
-    if ! grep -qE '(^|&&|;|\|)[[:space:]]*git[[:space:]][^|&;]*checkout[^|&;]*TIKA_FORK_SHA' \
-            <<<"$stripped"; then
-        echo "$f: declares TIKA_FORK_SHA but no checkout consumes it." >&2
-        echo "  The pin must drive the checkout, or CI is validating a value the build ignores." >&2
+    # Every revision-setting checkout must use the pin, not merely one of them: a later
+    # hardcoded `git checkout <other>` overrides an earlier pinned one, and the compiled
+    # revision is the LAST one to win.
+    #
+    # Matching is anchored on a command boundary (start of line, &&, ;, |) and must be a
+    # real `git ... checkout` COMMAND, so text that merely contains the words -- e.g.
+    # `echo checkout "$TIKA_FORK_SHA"` logging the intent -- does not qualify.
+    checkouts="$(grep -E '(^|&&|;|\|)[[:space:]]*git[[:space:]][^|&;]*checkout' <<<"$stripped" || true)"
+    if [ -z "$checkouts" ]; then
+        echo "$f: clones the Tika fork but never checks out a revision." >&2
         rc=1
+    else
+        unpinned="$(grep -vE 'TIKA_FORK_SHA' <<<"$checkouts" || true)"
+        if [ -n "$unpinned" ]; then
+            echo "$f: has a git checkout that does not use TIKA_FORK_SHA:" >&2
+            while IFS= read -r line; do
+                [ -n "$line" ] && echo "    ${line#"${line%%[![:space:]]*}"}" >&2
+            done <<<"$unpinned"
+            echo "  The LAST checkout wins, so an unpinned one silently decides the build." >&2
+            rc=1
+        fi
     fi
 done
 
