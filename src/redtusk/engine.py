@@ -438,22 +438,14 @@ def _run_worker(
             "filename_hint": filename_hint,
         }
 
-        def _signal_worker() -> None:
-            """Wait for control.ready, then write job.json + control.go."""
-            ready_file = control_dir / "control.ready"
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                if ready_file.exists():
-                    break
-                time.sleep(0.1)
-            # Write job.json then go-signal regardless (worker may have
-            # already timed out waiting for us if we're very slow).
-            (control_dir / "job.json").write_text(
-                json.dumps(job, ensure_ascii=False), encoding="utf-8"
-            )
-            (control_dir / "control.go").touch()
-
-        t = threading.Thread(target=_signal_worker, daemon=True)
+        # Set once the JVM has exited: nothing will read the go-signal after that, and the
+        # scratch dir is about to be removed with the enclosing TemporaryDirectory.
+        worker_done = threading.Event()
+        t = threading.Thread(
+            target=_signal_worker_loop,
+            args=(control_dir, job, timeout, worker_done),
+            daemon=True,
+        )
         t.start()
 
         # Launch the JVM worker in-process.  Isolation (network=none, cap-drop,
@@ -475,19 +467,66 @@ def _run_worker(
         }
 
         logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=timeout,
-            env=env,
-        )
-        t.join(timeout=5)
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=timeout,
+                env=env,
+            )
+        finally:
+            # In a finally: a TimeoutExpired (or any raise) leaves this thread polling until its
+            # own deadline, and the scratch dir goes away regardless.
+            worker_done.set()
+            t.join(timeout=5)
 
         if result.returncode != 0:
             stderr_tail = result.stderr.decode(errors="replace")[-2000:]
             raise RuntimeError(
                 f"redtusk-worker (jvm) exited {result.returncode}: {stderr_tail}"
             )
+
+
+def _signal_worker_loop(
+    control_dir: Path,
+    job: dict[str, Any],
+    timeout: float,
+    worker_done: threading.Event,
+) -> None:
+    """Wait for control.ready, then hand the JVM its job.json + control.go.
+
+    Module level, not a closure, so the test suite can drive THIS loop rather than a
+    reimplementation of it.
+
+    ``worker_done`` is what keeps this thread from outliving the job. The JVM runs inside a
+    ``tempfile.TemporaryDirectory`` and the caller only does ``join(timeout=5)``, which returns
+    whether or not this thread finished -- so before, a worker that exited early (fast failure,
+    timeout) left this polling until its OWN deadline, the scratch dir was removed underneath
+    it, and it then wrote into a deleted path. That is an unhandled ``FileNotFoundError`` in a
+    daemon thread: it goes nowhere, and only pytest's threadexception hook ever surfaced it
+    (RedTusk #53).
+    """
+    ready_file = control_dir / "control.ready"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if ready_file.exists():
+            break
+        # Event.wait, not sleep: end NOW when the worker is gone, not at our own deadline.
+        if worker_done.wait(0.1):
+            return
+    if worker_done.is_set():
+        return
+    # Write job.json then go-signal regardless (worker may have
+    # already timed out waiting for us if we're very slow).
+    try:
+        (control_dir / "job.json").write_text(
+            json.dumps(job, ensure_ascii=False), encoding="utf-8"
+        )
+        (control_dir / "control.go").touch()
+    except OSError as exc:
+        # Losing the race with teardown is not worth a traceback, but it must not be silent
+        # either: this thread has no other way to report anything at all.
+        logger.debug("signal thread: control dir gone before the go-signal (%s)", exc)
 
 
 def _crac_restore_worker(
