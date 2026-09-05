@@ -17,11 +17,12 @@ from __future__ import annotations
 import shutil
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 
-def _run_signal_thread(tmp_path, *, timeout: float, exit_after_s: float,
+def _run_signal_thread(tmp_path: Path, *, timeout: float, exit_after_s: float,
                        remove_scratch: bool) -> list[BaseException]:
     """Drive the real `_signal_worker` shape: start it, 'run' a worker, tear the dir down."""
     from redtusk import engine
@@ -30,8 +31,9 @@ def _run_signal_thread(tmp_path, *, timeout: float, exit_after_s: float,
     control_dir.mkdir(parents=True)
     caught: list[BaseException] = []
 
-    def _hook(args):  # threading.excepthook
-        caught.append(args.exc_value)
+    def _hook(args: threading.ExceptHookArgs) -> None:
+        if args.exc_value is not None:
+            caught.append(args.exc_value)
 
     old_hook = threading.excepthook
     threading.excepthook = _hook
@@ -58,7 +60,7 @@ def _run_signal_thread(tmp_path, *, timeout: float, exit_after_s: float,
     return caught
 
 
-def test_the_signal_thread_ends_when_the_worker_exits(tmp_path):
+def test_the_signal_thread_ends_when_the_worker_exits(tmp_path: Path) -> None:
     """control.ready never appears and the worker dies early: the thread must stop at once,
     not run to its own (much longer) deadline."""
     started = time.monotonic()
@@ -72,14 +74,14 @@ def test_the_signal_thread_ends_when_the_worker_exits(tmp_path):
     )
 
 
-def test_a_scratch_dir_removed_under_the_thread_raises_nothing(tmp_path):
+def test_a_scratch_dir_removed_under_the_thread_raises_nothing(tmp_path: Path) -> None:
     """Even if teardown wins the race, the thread must not die with an unhandled OSError."""
     caught = _run_signal_thread(tmp_path, timeout=2.0, exit_after_s=0.1, remove_scratch=True)
 
     assert not caught, f"the signal thread raised into the void: {caught}"
 
 
-def test_the_go_signal_is_still_written_for_a_worker_that_is_alive(tmp_path):
+def test_the_go_signal_is_still_written_for_a_worker_that_is_alive(tmp_path: Path) -> None:
     """The control: this thread exists to hand the worker its job, and must still do that."""
     from redtusk import engine
 
@@ -101,7 +103,7 @@ def test_the_go_signal_is_still_written_for_a_worker_that_is_alive(tmp_path):
     assert (control_dir / "control.go").exists(), "the worker was never released"
 
 
-def test_a_control_dir_it_cannot_write_does_not_kill_the_thread(tmp_path):
+def test_a_control_dir_it_cannot_write_does_not_kill_the_thread(tmp_path: Path) -> None:
     """The worker IS up (control.ready present) so the loop proceeds to the write -- and the
     write fails. That is the surviving race: teardown can win between the break and the write.
 
@@ -118,7 +120,11 @@ def test_a_control_dir_it_cannot_write_does_not_kill_the_thread(tmp_path):
 
     caught: list[BaseException] = []
     old_hook = threading.excepthook
-    threading.excepthook = lambda args: caught.append(args.exc_value)
+    def _hook(args: threading.ExceptHookArgs) -> None:
+        if args.exc_value is not None:
+            caught.append(args.exc_value)
+
+    threading.excepthook = _hook
     try:
         t = threading.Thread(
             target=engine._signal_worker_loop,
@@ -135,7 +141,9 @@ def test_a_control_dir_it_cannot_write_does_not_kill_the_thread(tmp_path):
     assert not caught, f"the signal thread died with an unhandled error: {caught}"
 
 
-def test_a_bad_java_opts_does_not_strand_the_signal_thread(tmp_path, monkeypatch):
+def test_a_bad_java_opts_does_not_strand_the_signal_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Everything fallible must happen BEFORE the thread starts.
 
     `_java_worker_argv` shlex-splits REDTUSK_JAVA_OPTS and raises on unbalanced quotes. When
