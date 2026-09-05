@@ -49,16 +49,27 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     && rm -f /tmp/maven.tar.gz /tmp/maven.tar.gz.sha512 \
     && ln -sf /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
 
-# Clone Tika fork pinned to a specific commit for supply-chain integrity.
-# Update TIKA_FORK_SHA when intentionally pulling new commits.
-# Durable pin: `4.0-upstream-office-links` tip after the 200-commit upstream sync
-# (wmetcalf/tika #7) + the audit-hardening PRs (#8/#9/#10) merged, plus the
-# regenerated metadata-field inventory (#11). Validated end-to-end through the
-# RedTusk worker; metadata-field-inventory CI green on the branch.
-ARG TIKA_FORK_SHA=54c87af31f2da843ee97e76852dc880330a2c0ff
-# LOCAL SOURCE VARIANT: build the fork from .tika-src in the build context instead of
+# LOCAL SOURCE VARIANT: builds the fork from .tika-src in the build context instead of
 # cloning a pushed SHA, so an unpushed fix can be validated end-to-end before publishing.
+#
+# There is deliberately NO TIKA_FORK_SHA here. This file used to declare one, copied
+# from the cloning variants along with their "pinned to a specific commit for
+# supply-chain integrity" comment -- but nothing referenced it, because the source
+# comes from the COPY below. It advertised a Tika version the image did not contain,
+# which is worse than saying nothing: anyone auditing "which Tika is in this image?"
+# read that line and got a wrong answer. It was also invisible to any consistency
+# check, which is part of how the pins across these files drifted to three different
+# values.
+#
+# Provenance instead comes from the source actually used, recorded below.
 COPY .tika-src /src/tika
+
+# Record what was ACTUALLY built, so the image can answer the audit question the
+# deleted ARG answered wrongly. Best-effort: .tika-src may be an export rather than a
+# git checkout.
+RUN (git -C /src/tika rev-parse HEAD 2>/dev/null \
+        || echo "unknown (.tika-src is not a git checkout)") > /etc/tika-source-provenance \
+    && echo "tika source provenance: $(cat /etc/tika-source-provenance)"
 
 # Build all modules except gRPC (which needs protoc; not needed for worker).
 # Pre-flight: strip '#' comments from maven.config (apt Maven rejects them),

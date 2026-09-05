@@ -10,6 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Cheap, runs before anything installs: every Dockerfile that CLONES the Tika fork
+      # must pin the same commit. They drifted to THREE different values once
+      # (c4bcec9f / de08f007 / 74997d72), so crac, localsrc and localtika were each
+      # building a different parser set while looking uniform. Nothing compared them, so
+      # nothing caught it -- for weeks.
+      - name: tika pin consistency
+        run: ./scripts/check_tika_pins.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
