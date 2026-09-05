@@ -47,6 +47,17 @@ for f in "${cloners[@]}"; do
     seen["$sha"]+="$f "
 done
 
+# A declared pin that no checkout consumes is the same lie in a different place: the
+# file can keep `ARG TIKA_FORK_SHA` for the checker to find while checking out a
+# hardcoded commit. Require the pin to be USED, not merely present.
+for f in "${cloners[@]}"; do
+    if ! grep -qE 'checkout[^|&]*"?\$\{?TIKA_FORK_SHA\}?"?' "$f"; then
+        echo "$f: declares TIKA_FORK_SHA but no checkout consumes it." >&2
+        echo "  The pin must drive the checkout, or CI is validating a value the build ignores." >&2
+        rc=1
+    fi
+done
+
 if [ "$rc" -ne 0 ]; then
     exit 1
 fi
