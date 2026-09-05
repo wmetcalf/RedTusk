@@ -3,8 +3,14 @@
 # (.tika-src 292M, .tika-fixed 100M, .tika-baseline 99M) plus .git goes over the wire each
 # time, on what is meant to be an inner-loop test command.
 #
-# Nothing here is a build input: Dockerfile.localtika now takes Tika from its own tika-build
-# stage at the pinned SHA, not from the context.
+# Nothing here is a build input FOR THE CLONING IMAGES: Dockerfile.localtika and friends take
+# Tika from their own tika-build stage at the pinned SHA, not from the context.
+#
+# The exception is Dockerfile.default.localsrc, which builds from a local checkout and so
+# genuinely needs .tika-src. Excluding it here broke that image outright ("/.tika-src": not
+# found). It carries its own Dockerfile.default.localsrc.dockerignore, which BuildKit prefers
+# over this file. If you add an exclusion here, add it there too -- BuildKit replaces this
+# list rather than merging with it.
 .git
 .tika-src/
 .tika-fixed/

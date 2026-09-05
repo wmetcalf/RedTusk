@@ -1,0 +1,26 @@
+# Per-Dockerfile ignore list for Dockerfile.default.localsrc, which is the ONE image that
+# builds Tika from a local checkout instead of cloning a pinned commit. BuildKit prefers
+# "<dockerfile-path>.dockerignore" over the context-root .dockerignore, so this file exists
+# solely to NOT exclude .tika-src.
+#
+# The root .dockerignore excludes .tika-src/ to keep ~0.5 GB off the wire on every ordinary
+# build. That is right for every other image and fatal for this one: `COPY .tika-src` against
+# an excluded path fails outright with
+#
+#     failed to compute cache key: "/.tika-src": not found
+#
+# which is what this Dockerfile did from the moment .tika-src/ was added to the root list.
+#
+# BuildKit REPLACES the root list rather than merging, so every other exclusion has to be
+# repeated here. Keep this file in sync with .dockerignore -- minus .tika-src/.
+#
+# `.git` excludes only the repo root's .git; the checkout's own .tika-src/.git is a
+# different path and is still copied, which is what lets the provenance step record a real
+# commit rather than "unknown".
+.git
+.tika-fixed/
+.tika-baseline/
+worker_jvm/target/
+**/__pycache__/
+.venv/
+*.ext4
