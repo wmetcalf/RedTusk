@@ -77,7 +77,12 @@ for f in "${cloners[@]}"; do
     # Matching is anchored on a command boundary (start of line, &&, ;, |) and must be a
     # real `git ... checkout` COMMAND, so text that merely contains the words -- e.g.
     # `echo checkout "$TIKA_FORK_SHA"` logging the intent -- does not qualify.
-    checkouts="$(grep -E '(^|&&|;|\|)[[:space:]]*git[[:space:]][^|&;]*checkout' <<<"$stripped" || true)"
+    # Split on shell command separators FIRST so each command is judged on its own. A
+    # line-oriented grep returns the whole physical line, so two checkouts sharing one
+    # RUN line would pass as long as either mentioned the pin -- while the last one
+    # still decides the build.
+    commands="$(sed -E 's/(\&\&|\|\||;|\|)/\n/g' <<<"$stripped")"
+    checkouts="$(grep -E '^[[:space:]]*git[[:space:]][^|&;]*checkout' <<<"$commands" || true)"
     if [ -z "$checkouts" ]; then
         echo "$f: clones the Tika fork but never checks out a revision." >&2
         rc=1
