@@ -62,6 +62,11 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # values.
 #
 # Provenance instead comes from the source actually used, recorded below.
+#
+# This COPY depends on Dockerfile.default.localsrc.dockerignore sitting beside this file:
+# the context-root .dockerignore excludes .tika-src/, and BuildKit prefers the
+# per-Dockerfile list. Delete that sibling and this image stops building with
+# `"/.tika-src": not found`.
 COPY .tika-src /src/tika
 
 # Record what was ACTUALLY built, so the image can answer the audit question the
