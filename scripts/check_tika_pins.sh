@@ -70,7 +70,12 @@ for f in "${cloners[@]}"; do
     # first match and SIGPIPEs the still-writing sed, so the pipeline reports failure and
     # the check claims the pin is unused on a tree where it plainly is.
     stripped="$(sed 's/[[:space:]]*#.*$//' "$f")"
-    if ! grep -qE 'checkout[^|&]*"?\$\{?TIKA_FORK_SHA\}?"?' <<<"$stripped"; then
+    # The match must be a real `git ... checkout ... $TIKA_FORK_SHA` COMMAND. Anchoring
+    # on a command boundary (start of line, &&, ;, |) rejects text that merely contains
+    # the words -- e.g. `echo checkout "$TIKA_FORK_SHA"` logging the intended pin beside
+    # a hardcoded checkout.
+    if ! grep -qE '(^|&&|;|\|)[[:space:]]*git[[:space:]][^|&;]*checkout[^|&;]*TIKA_FORK_SHA' \
+            <<<"$stripped"; then
         echo "$f: declares TIKA_FORK_SHA but no checkout consumes it." >&2
         echo "  The pin must drive the checkout, or CI is validating a value the build ignores." >&2
         rc=1
