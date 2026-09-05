@@ -5,31 +5,54 @@
 # 74997d72), so crac, localsrc and localtika were each building a different parser
 # set while looking uniform. Nothing caught it because nothing compared them.
 #
-# Dockerfile.default.localsrc is deliberately absent from this check: it builds from
-# .tika-src and carries no pin. It previously declared one that nothing used, which
-# is exactly the failure this script exists to prevent.
+# Discovery keys on the CLONE URL, never on the ARG this script enforces. An
+# earlier version listed files by `^ARG TIKA_FORK_SHA=`, which fails open: a
+# cloning Dockerfile that drops the ARG and hardcodes a checkout silently leaves
+# the check's scope while the surviving files keep reporting "consistent".
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-mapfile -t hits < <(grep -rlE '^ARG TIKA_FORK_SHA=' deploy/ | sort)
-if [ "${#hits[@]}" -eq 0 ]; then
-    echo "no Dockerfile declares TIKA_FORK_SHA -- has the pin been renamed?" >&2
+CLONE_URL='github.com/wmetcalf/tika.git'
+
+mapfile -t cloners < <(grep -rlF "$CLONE_URL" deploy/ | sort)
+mapfile -t declarers < <(grep -rlE '^ARG TIKA_FORK_SHA=' deploy/ | sort)
+
+if [ "${#cloners[@]}" -eq 0 ]; then
+    echo "no Dockerfile clones $CLONE_URL -- has the fork URL changed?" >&2
     exit 1
 fi
 
+rc=0
+
+# A pin on a file that never clones is decoration: it advertises a Tika the image
+# does not contain. Dockerfile.default.localsrc shipped exactly that for weeks.
+for f in "${declarers[@]}"; do
+    if ! printf '%s\n' "${cloners[@]}" | grep -qxF "$f"; then
+        echo "$f: declares TIKA_FORK_SHA but never clones $CLONE_URL." >&2
+        echo "  A pin nothing uses misleads anyone auditing which Tika is in the image." >&2
+        rc=1
+    fi
+done
+
 declare -A seen=()
-for f in "${hits[@]}"; do
-    sha="$(grep -oE '^ARG TIKA_FORK_SHA=[0-9a-f]{40}' "$f" | head -1 | cut -d= -f2)"
+for f in "${cloners[@]}"; do
+    sha="$(grep -oE '^ARG TIKA_FORK_SHA=[0-9a-f]{40}' "$f" | head -1 | cut -d= -f2 || true)"
     if [ -z "$sha" ]; then
-        echo "$f: TIKA_FORK_SHA is not a full 40-char sha" >&2
-        exit 1
+        echo "$f: clones the Tika fork but declares no full 40-char ARG TIKA_FORK_SHA." >&2
+        echo "  Every cloning image must pin a commit, or it builds an unknown Tika." >&2
+        rc=1
+        continue
     fi
     seen["$sha"]+="$f "
 done
 
+if [ "$rc" -ne 0 ]; then
+    exit 1
+fi
+
 if [ "${#seen[@]}" -ne 1 ]; then
-    echo "TIKA_FORK_SHA has drifted -- ${#seen[@]} different pins across ${#hits[@]} files:" >&2
+    echo "TIKA_FORK_SHA has drifted -- ${#seen[@]} different pins across ${#cloners[@]} files:" >&2
     for sha in "${!seen[@]}"; do
         echo "  $sha" >&2
         for f in ${seen[$sha]}; do echo "    $f" >&2; done
@@ -40,5 +63,5 @@ if [ "${#seen[@]}" -ne 1 ]; then
 fi
 
 for sha in "${!seen[@]}"; do
-    echo "TIKA_FORK_SHA consistent across ${#hits[@]} Dockerfile(s): $sha"
+    echo "TIKA_FORK_SHA consistent across ${#cloners[@]} cloning Dockerfile(s): $sha"
 done

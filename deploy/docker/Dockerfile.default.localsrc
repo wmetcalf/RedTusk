@@ -67,9 +67,30 @@ COPY .tika-src /src/tika
 # Record what was ACTUALLY built, so the image can answer the audit question the
 # deleted ARG answered wrongly. Best-effort: .tika-src may be an export rather than a
 # git checkout.
-RUN (git -C /src/tika rev-parse HEAD 2>/dev/null \
-        || echo "unknown (.tika-src is not a git checkout)") > /etc/tika-source-provenance \
-    && echo "tika source provenance: $(cat /etc/tika-source-provenance)"
+#
+# A bare `rev-parse HEAD` is NOT sufficient: on a checkout with uncommitted edits it
+# names a commit whose contents differ from the bytes being compiled -- the same
+# confidently-wrong provenance the deleted ARG produced. So dirty and non-git trees
+# additionally get a content digest, which is the only identifier that actually
+# describes what went into the image.
+RUN set -eu; \
+    if head="$(git -C /src/tika rev-parse HEAD 2>/dev/null)"; then \
+        if [ -n "$(git -C /src/tika status --porcelain 2>/dev/null)" ]; then \
+            prov="$head-dirty (working tree differs from this commit)"; \
+        else \
+            prov="$head"; \
+        fi; \
+    else \
+        prov="unknown (.tika-src is not a git checkout)"; \
+    fi; \
+    case "$prov" in \
+        *dirty*|unknown*) \
+            digest="$(find /src/tika -type f -not -path '*/.git/*' -print0 \
+                        | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"; \
+            prov="$prov content-sha256=$digest" ;; \
+    esac; \
+    printf '%s\n' "$prov" > /etc/tika-source-provenance; \
+    echo "tika source provenance: $prov"
 
 # Build all modules except gRPC (which needs protoc; not needed for worker).
 # Pre-flight: strip '#' comments from maven.config (apt Maven rejects them),
@@ -129,6 +150,11 @@ RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" 
 # archive is compatible (avoids JDK/JRE checksum mismatch with -Xshare:on).
 # --------------------------------------------------------------------------
 FROM eclipse-temurin:25-jre-jammy AS runtime
+
+# Carry provenance into the SHIPPED image. It is written in the tika-build stage, and
+# runtime starts from a fresh base -- without this COPY the record exists only in an
+# intermediate layer, so the delivered image still cannot say which Tika it contains.
+COPY --from=tika-build /etc/tika-source-provenance /etc/tika-source-provenance
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
