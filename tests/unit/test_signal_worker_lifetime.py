@@ -18,6 +18,8 @@ import shutil
 import threading
 import time
 
+import pytest
+
 
 def _run_signal_thread(tmp_path, *, timeout: float, exit_after_s: float,
                        remove_scratch: bool) -> list[BaseException]:
@@ -131,3 +133,34 @@ def test_a_control_dir_it_cannot_write_does_not_kill_the_thread(tmp_path):
 
     assert not t.is_alive()
     assert not caught, f"the signal thread died with an unhandled error: {caught}"
+
+
+def test_a_bad_java_opts_does_not_strand_the_signal_thread(tmp_path, monkeypatch):
+    """Everything fallible must happen BEFORE the thread starts.
+
+    `_java_worker_argv` shlex-splits REDTUSK_JAVA_OPTS and raises on unbalanced quotes. When
+    that raise happened after `t.start()` but before the try/finally, nothing set worker_done,
+    so the thread polled to its own deadline while the scratch dir was torn down -- exactly the
+    leak this module is about, reintroduced through the back door (raised by codex on #54).
+    """
+    from redtusk import engine
+
+    monkeypatch.setenv("REDTUSK_JAVA_OPTS", '"')          # No closing quotation
+    src = tmp_path / "in.txt"
+    src.write_text("hello")
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    before = {t.ident for t in threading.enumerate()}
+
+    with pytest.raises(ValueError):
+        engine._run_worker(src, outdir, timeout=30.0)
+
+    # No signal thread may still be polling: the argv must have been built first, so the
+    # thread was never started at all.
+    leaked = [
+        t for t in threading.enumerate()
+        if t.ident not in before and t.is_alive()
+        and getattr(t, "_target", None) is engine._signal_worker_loop
+    ]
+    assert not leaked, f"a signal thread outlived a failure in command setup: {leaked}"

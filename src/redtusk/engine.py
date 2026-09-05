@@ -438,16 +438,11 @@ def _run_worker(
             "filename_hint": filename_hint,
         }
 
-        # Set once the JVM has exited: nothing will read the go-signal after that, and the
-        # scratch dir is about to be removed with the enclosing TemporaryDirectory.
-        worker_done = threading.Event()
-        t = threading.Thread(
-            target=_signal_worker_loop,
-            args=(control_dir, job, timeout, worker_done),
-            daemon=True,
-        )
-        t.start()
-
+        # EVERYTHING FALLIBLE FIRST, then start the thread. `_java_worker_argv` shlex-splits
+        # REDTUSK_JAVA_OPTS and raises ValueError on unbalanced quotes; raising there after
+        # t.start() but before the try/finally below left the thread polling to its own
+        # deadline with no one to set worker_done -- reinstating the very leak this fixes.
+        # Building the argv up here removes the window rather than widening the guard.
         # Launch the JVM worker in-process.  Isolation (network=none, cap-drop,
         # tmpfs, memory/pids caps) is provided by the *outer* blastbox cold-worker
         # container — this used to be a nested ``docker run``, which the
@@ -467,6 +462,16 @@ def _run_worker(
         }
 
         logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
+        # Set once the JVM has exited: nothing will read the go-signal after that, and the
+        # scratch dir is about to be removed with the enclosing TemporaryDirectory.
+        worker_done = threading.Event()
+        t = threading.Thread(
+            target=_signal_worker_loop,
+            args=(control_dir, job, timeout, worker_done),
+            daemon=True,
+        )
+        t.start()
+
         try:
             result = subprocess.run(
                 cmd,
