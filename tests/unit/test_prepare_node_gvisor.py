@@ -21,10 +21,22 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prepare_node_ubuntu.
 # the usual container. So this is skipped in container CI and runs on the fleet nodes and any
 # KVM-capable workstation. Named precisely, because a skip nobody can satisfy is a test that
 # does not exist.
-pytestmark = pytest.mark.skipif(
-    not os.path.exists("/dev/kvm"),
-    reason="prepare_node_ubuntu.sh preflight requires /dev/kvm (run on a fleet node)",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not os.path.exists("/dev/kvm"),
+        reason="prepare_node_ubuntu.sh preflight requires /dev/kvm (run on a fleet node)",
+    ),
+    # NEVER as root. The script computes `SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo`, so as
+    # root the fake sudo is simply not used and every privileged call -- apt-get, usermod,
+    # mkdir -p /var/lib/... -- resolves to the REAL binary and mutates the host. Stubbing the
+    # individual tools (below) is defence in depth, but the set of privileged commands is
+    # open-ended, so the guarantee has to be "not root", not "we remembered them all".
+    pytest.mark.skipif(
+        os.geteuid() == 0,
+        reason="runs the real provisioning script; as root its $SUDO is empty and the "
+               "stubs are bypassed, so this must only run unprivileged",
+    ),
+]
 
 
 @pytest.fixture(scope="module")
@@ -52,39 +64,46 @@ def sysbin(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _stubs(tmp_path: Path, *, apt_update_fails_for_gvisor: bool) -> tuple[Path, Path]:
-    """Stub bin dir plus the log of everything that was run through `sudo`."""
+    """Stub bin dir plus a log of every privileged command the script ran.
+
+    The behaviour lives in the individual TOOL stubs, not in the `sudo` stub, because the
+    script drops `$SUDO` entirely when it is already root -- so a stub that only intercepts
+    `sudo` intercepts nothing there. `sudo` merely logs and executes, which means these
+    tests exercise the same stubs either way.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     ran = tmp_path / "ran.log"
     stage = tmp_path / "gvisor_stage"
 
-    fail = (
-        f'if [ "$1" = apt-get ] && [ "$2" = update ] && [ -f {stage} ]; then\n'
-        "  echo \"E: Could not resolve 'storage.googleapis.com'\" >&2; exit 100\n"
-        "fi\n"
-        if apt_update_fails_for_gvisor
-        else ""
-    )
-    (bin_dir / "sudo").write_text(
-        "#!/bin/sh\n"
-        f'echo "sudo $*" >> {ran}\n'
-        "case \"$1\" in gpg|tee) cat >/dev/null ;; esac\n"   # drain stdin; no SIGPIPE upstream
-        f'case "$*" in *gvisor.list*) : > {stage} ;; esac\n'  # the gvisor repo is now configured
-        f"{fail}"
-        "exit 0\n"
-    )
+    def stub(name: str, body: str) -> None:
+        (bin_dir / name).write_text(f'#!/bin/sh\necho "{name} $*" >> {ran}\n{body}')
+
+    stub("sudo", 'shift 0\nexec "$@"\n')          # log, then run the stubbed tool
+    stub("apt-get",
+         f'if [ "$1" = update ] && [ -f {stage} ]; then\n'
+         + ("  echo \"E: Could not resolve 'storage.googleapis.com'\" >&2; exit 100\n"
+            if apt_update_fails_for_gvisor else "  :\n")
+         + "fi\nexit 0\n")
+    # The gvisor repo is configured by `... | $SUDO tee /etc/apt/sources.list.d/gvisor.list`.
+    stub("tee", f'case "$*" in *gvisor.list*) : > {stage} ;; esac\ncat >/dev/null\nexit 0\n')
+    stub("gpg", "cat >/dev/null\nexit 0\n")       # drain stdin; no SIGPIPE upstream
+    for tool in ("systemctl", "usermod", "groupadd", "install", "apt-mark"):
+        stub(tool, "exit 0\n")
     # curl must emit something: `curl ... | $SUDO gpg` under pipefail turns an empty
     # producer into a 141 that stops the script before the code under test.
-    (bin_dir / "curl").write_text('#!/bin/sh\necho "dummy-key"\nexit 0\n')
+    stub("curl", 'echo "dummy-key"\nexit 0\n')
     for tool in ("docker", "firecracker", "jailer", "mkfs.ext4", "debugfs"):
-        (bin_dir / tool).write_text("#!/bin/sh\nexit 0\n")
+        stub(tool, "exit 0\n")
     for f in bin_dir.iterdir():
         f.chmod(0o755)
     return bin_dir, ran
 
 
-def _prep(tmp_path: Path, sysbin: Path, **kw) -> tuple[subprocess.CompletedProcess[str], str]:
-    bin_dir, ran = _stubs(tmp_path, **kw)
+def _prep(
+    tmp_path: Path, sysbin: Path, *, apt_update_fails_for_gvisor: bool
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    bin_dir, ran = _stubs(tmp_path, apt_update_fails_for_gvisor=apt_update_fails_for_gvisor)
     p = subprocess.run(
         ["bash", str(SCRIPT), "--deploy-user", os.environ.get("USER") or str(os.getuid()),
          "--no-fc-assets"],
@@ -112,6 +131,12 @@ def test_a_gvisor_repo_that_cannot_be_reached_fails_the_provision(
     assert p.returncode != 0, "provisioning reported success without installing runsc"
     assert "runsc installed:" not in p.stdout, "claimed an install that never ran"
     assert "apt-get install -y -q runsc" not in ran, "fixture: the install should not be reached"
+    # The apt-get STUB logged this line itself, not the sudo wrapper -- i.e. the interception
+    # does not depend on $SUDO being non-empty. That is the property that keeps this safe if
+    # the root guard above is ever relaxed.
+    assert any(ln.startswith("apt-get ") for ln in ran.splitlines()), (
+        f"the apt-get stub was bypassed; a real apt-get may have run: {ran!r}"
+    )
 
 
 def test_an_install_that_leaves_no_runsc_is_fatal(tmp_path: Path, sysbin: Path) -> None:
