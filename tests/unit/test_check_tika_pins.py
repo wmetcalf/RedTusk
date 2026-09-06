@@ -188,6 +188,18 @@ BYPASSES = [
     # Dockerfile instruction names are case-insensitive.
     pytest.param(
         'workdir /src/tika\nRUN git reset --hard HEAD^\n', id="lowercase-workdir"),
+    # ENV/ARG continue across `\` and the continuation belongs to the SAME
+    # instruction, so the later ROOT is the one in force.
+    pytest.param(
+        'ENV ROOT=/opt\nENV OTHER=x \\\n    ROOT=/src\n'
+        'WORKDIR $ROOT/tika\nRUN git reset --hard HEAD^\n',
+        id="continued-env-instruction"),
+    # git documents `-C ""` as leaving the current directory unchanged. The empty
+    # operand must survive tokenisation, or -C swallows the subcommand as its path.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git -C "" reset --hard HEAD^\n', id="empty-quoted-dash-C"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git -C . reset --hard HEAD^\n', id="explicit-dot-dash-C"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -305,6 +317,14 @@ BENIGN = [
     pytest.param(
         'WORKDIR /\nRUN cd /opt || cd /var && git reset --hard HEAD^\n',
         id="chained-fallback-cd-neither-branch-is-the-worktree"),
+    # Separators inside quotes are text, not command boundaries. Printing a recovery
+    # hint must not read as running it.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN echo "recovery: cd /src/tika; git reset --hard HEAD"\n',
+        id="separator-inside-a-quoted-string"),
+    pytest.param(
+        'WORKDIR /opt\nRUN git -C "" reset --hard HEAD^\n',
+        id="empty-dash-C-outside-the-worktree"),
 ]
 
 

@@ -137,6 +137,24 @@ for f in "${cloners[@]}"; do
             return (pth == "") ? "/" : pth
         }
         function unquote(v) { gsub(/["\x27]/, "", v); return v }
+        # Separators only count OUTSIDE quotes. An unconditional replacement split
+        # inside `echo "recovery: cd /src/tika; git reset --hard HEAD"` and presented the
+        # quoted text as a real command, rejecting a Dockerfile that only prints (codex).
+        function mark_separators(v,   out, i, c, q, nx) {
+            out = ""; q = ""
+            for (i = 1; i <= length(v); i++) {
+                c = substr(v, i, 1)
+                if (q != "") { out = out c; if (c == q) q = ""; continue }
+                if (c == "\"" || c == "\x27") { q = c; out = out c; continue }
+                nx = substr(v, i + 1, 1)
+                if (c == "|" && nx == "|") { out = out SEPCH "O"; i++; continue }
+                if (c == "&" && nx == "&") { out = out SEPCH "A"; i++; continue }
+                if (c == ";")              { out = out SEPCH "S"; continue }
+                if (c == "|")              { out = out SEPCH "P"; continue }
+                out = out c
+            }
+            return out
+        }
         # Docker expands build variables in WORKDIR, so `ENV ROOT=/src` + `WORKDIR
         # $ROOT/tika` really is the Tika worktree. Recorded literally, it read as
         # `/$ROOT/tika` -- outside Tika -- and the gate passed.
@@ -202,7 +220,16 @@ for f in "${cloners[@]}"; do
         BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = ""; seen_from = 0
                 SEPCH = sprintf("%c", 1); cwdalt = "" }
         { line = $0 }
-        toupper(line) ~ /^[[:space:]]*(ENV|ARG)[[:space:]]/ {
+        # ENV/ARG continue across `\` exactly as RUN does, and assignments on the
+        # continuation belong to the SAME instruction.
+        toupper(line) ~ /^[[:space:]]*(ENV|ARG)[[:space:]]/ || econt {
+            if (line ~ /\\[[:space:]]*$/) {
+                ebuf = (econt ? ebuf " " : "") line
+                sub(/\\[[:space:]]*$/, "", ebuf)
+                econt = 1
+                next
+            }
+            if (econt) { line = ebuf " " line; econt = 0; ebuf = "" }
             e = line
             isarg = (toupper(line) ~ /^[[:space:]]*ARG[[:space:]]/)
             sub(/^[[:space:]]*([Ee][Nn][Vv]|[Aa][Rr][Gg])[[:space:]]+/, "", e)
@@ -286,11 +313,7 @@ for f in "${cloners[@]}"; do
             # command before it succeeded. After `cd /missing || git reset`, the shell is
             # still where it started and the reset runs THERE -- modelling the cd as
             # having happened moved the scope to /missing and let it through.
-            tmp = line
-            gsub(/\|\|/, SEPCH "O", tmp)      # OR first: leaves no stray | behind
-            gsub(/&&/,   SEPCH "A", tmp)
-            gsub(/;/,    SEPCH "S", tmp)
-            gsub(/\|/,   SEPCH "P", tmp)
+            tmp = mark_separators(line)
             n = split(tmp, seg, SEPCH)
             for (i = 1; i <= n; i++) {
                 cmd = seg[i]
@@ -346,7 +369,14 @@ for f in "${cloners[@]}"; do
                 # the first put `git -C /src -C tika reset` in /src rather than /src/tika.
                 # Scanned only up to the SUBCOMMAND, because -C is a main-command option
                 # and later arguments can carry an unrelated -C.
-                bare = expand(unquote(cmd), envval)
+                # An EMPTY quoted operand has to survive tokenisation. git documents
+                # `-C ""` as leaving the current directory unchanged, so it is rewritten
+                # to the equivalent `.` BEFORE unquoting -- otherwise the operand vanishes,
+                # `-C` swallows the subcommand as its path, and the command is skipped as
+                # unrecognised while the reset really runs in the worktree (codex).
+                bare = cmd
+                gsub(/""|\x27\x27/, ".", bare)
+                bare = expand(unquote(bare), envval)
                 nt = split(bare, tok, /[[:space:]]+/)
                 tgt = cwd; seen_c = 0; wt = ""; gd = ""; subcmd = ""
                 for (t = 2; t <= nt; t++) {
@@ -380,6 +410,15 @@ for f in "${cloners[@]}"; do
                 # The verb must be the SUBCOMMAND. Matching it anywhere in the command
                 # rejected `git diff HEAD -- reset`, where `reset` is a pathspec and
                 # nothing moves -- a read-only inspection failing the gate (codex).
+                # A git command whose SUBCOMMAND could not be identified is UNKNOWN, and
+                # unknown fails closed if the scope reaches the worktree. Skipping instead
+                # meant any parse failure -- `git -C "" reset`, where the empty operand
+                # vanishes and `reset` is eaten as the path -- turned into a silent pass.
+                # This is the same rule already applied to unresolved directories.
+                if (subcmd == "") {
+                    if (scoped(cwd) || (cwdalt != "" && scoped(cwdalt))) print cmd
+                    continue
+                }
                 if (subcmd !~ /^(reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)$/) continue
                 # git(1) documents --work-tree/--git-dir as top-level options, and
                 # `git --git-dir=/src/tika/.git --work-tree=/src/tika reset` really does
