@@ -19,6 +19,7 @@ override rather than asserted from the source text.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -122,6 +123,8 @@ def _probe(sudo_behaviour: str, tmp_path: Path) -> int:
     text = SCRIPT.read_text()
     m = re.search(r"^_aws_readable_by_uid\(\) \{.*?^\}", text, re.S | re.M)
     assert m, "probe not found"
+    target = tmp_path / "creds"
+    target.write_text("[default]\n")
     bindir = tmp_path / "bin"
     bindir.mkdir()
     # Both mechanisms are stubbed, and `sudo` too: the probe picks a prefix from
@@ -134,7 +137,10 @@ def _probe(sudo_behaviour: str, tmp_path: Path) -> int:
         f'export PATH={str(bindir)!r}:$PATH',
         'SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo',
         m.group(0),
-        '_aws_readable_by_uid 10001 /some/file; echo "rc=$?"',
+        # A REAL path: the probe cds into the directory before dropping privilege,
+        # modelling the bind mount, so a fixture pointing at a nonexistent
+        # directory would measure the failed cd rather than the readability.
+        f'_aws_readable_by_uid 10001 {str(target)!r}; echo "rc=$?"',
     ])
     res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     m2 = re.search(r"rc=(\d+)", res.stdout)
@@ -181,7 +187,7 @@ def test_the_remediations_cover_the_config_file_too() -> None:
     assert ".aws/config" in acl_block[:600], "the ACL remediation skips config"
 
 
-def test_a_non_root_caller_runs_setpriv_through_sudo(tmp_path: Path) -> None:
+def test_the_prefix_matches_the_privilege_of_the_caller(tmp_path: Path) -> None:
     """The prefix has to COMPOSE with the tool, not replace it.
 
     A non-root caller must end up running `sudo -n setpriv ...`; the first version
@@ -206,15 +212,83 @@ def test_a_non_root_caller_runs_setpriv_through_sudo(tmp_path: Path) -> None:
             f'#!/bin/sh\necho "{name} $*" >> {str(argv_log)!r}\nexit 1\n'
         )
         (bindir / name).chmod(0o755)
+    target = tmp_path / "creds"
+    target.write_text("[default]\n")
     harness = "\n".join([
         "set -u",
         f'export PATH={str(bindir)!r}:$PATH',
         m.group(0),
-        "_aws_readable_by_uid 10001 /some/file || true",
+        f"_aws_readable_by_uid 10001 {str(target)!r} || true",
     ])
     subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     seen = argv_log.read_text() if argv_log.exists() else ""
-    assert "sudo -n setpriv --reuid=10001" in seen, (
-        f"a non-root caller did not run setpriv through sudo; saw: {seen!r}"
+    # Assert the branch this RUNNER actually takes. A root-run suite (a container,
+    # some CI images) legitimately takes the direct branch, and demanding the sudo
+    # form there fails on the runner rather than on the code (codex).
+    if os.geteuid() == 0:
+        assert "setpriv --reuid=10001" in seen and "sudo" not in seen.split("\n")[0], (
+            f"a root caller should invoke setpriv directly; saw: {seen!r}"
+        )
+    else:
+        assert "sudo -n setpriv --reuid=10001" in seen, (
+            f"a non-root caller did not run setpriv through sudo; saw: {seen!r}"
+        )
+
+
+def test_the_probe_tests_a_relative_name_from_inside_the_directory(tmp_path: Path) -> None:
+    """Docker bind-mounts the `.aws` DIRECTORY at /aws, so the container never
+    traverses the deploy user's home. Probing the absolute host path required that
+    traversal and reported a WORKING configuration as UNUSABLE whenever the home
+    denied it -- and led the remediation to widen the home unnecessarily (codex).
+
+    Verified on toolz2 with a real privilege drop, which a non-root test cannot do:
+
+        home denies traversal, .aws readable -> readable   (the mount works)
+        .aws itself denies                   -> not readable
+
+    What IS checkable here is the shape that produces those answers: the dropped
+    process must be handed a RELATIVE name, having been cd'd in beforehand.
+    """
+    text = SCRIPT.read_text()
+    m = re.search(r"^_aws_readable_by_uid\(\) \{.*?^\}", text, re.S | re.M)
+    assert m
+    creds_dir = tmp_path / "home" / ".aws"
+    creds_dir.mkdir(parents=True)
+    (creds_dir / "credentials").write_text("[default]\n")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv_log = tmp_path / "argv"
+    for name in ("sudo", "setpriv", "su"):
+        (bindir / name).write_text(
+            f'#!/bin/sh\necho "$*" >> {str(argv_log)!r}\nexit 1\n')
+        (bindir / name).chmod(0o755)
+    harness = "\n".join([
+        "set -u",
+        f'export PATH={str(bindir)!r}:$PATH',
+        m.group(0),
+        f"_aws_readable_by_uid 10001 {str(creds_dir / 'credentials')!r} || true",
+    ])
+    subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
+    seen = argv_log.read_text() if argv_log.exists() else ""
+    assert seen, "the probe invoked nothing"
+    assert str(creds_dir) not in seen, (
+        "the probe handed the dropped process an ABSOLUTE path, which forces it to "
+        f"traverse the home the bind mount bypasses: {seen!r}"
     )
+    assert "credentials" in seen, seen
+
+
+def test_the_acl_remediation_does_not_widen_the_home_directory() -> None:
+    """The overlay bind-mounts `.aws` itself, so the container never traverses the
+    home -- and an ACL granting traversal there exposes more of the deploy user's
+    account than the burst tier needs. Advice that over-grants is a defect in the
+    same way a missing check is: it is the instruction an operator actually runs.
+    """
+    text = SCRIPT.read_text()
+    acl_lines = [ln for ln in text.splitlines() if "setfacl -m" in ln]
+    assert acl_lines, "the ACL remediation vanished"
+    for ln in acl_lines:
+        assert "$(_aws_creds_home) " not in ln, (
+            f"the ACL remediation grants access to the HOME directory: {ln.strip()!r}"
+        )
 

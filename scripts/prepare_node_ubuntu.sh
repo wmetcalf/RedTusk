@@ -160,12 +160,19 @@ _aws_readable_by_uid() {
         return 2
     fi
     local pre="$1"
+    # Probed from INSIDE the directory, on a relative name. Docker bind-mounts the
+    # `.aws` directory itself at /aws, so the container never traverses the deploy
+    # user`s home -- testing the absolute host path required that traversal and
+    # reported a WORKING configuration as UNUSABLE whenever the home denied it
+    # (codex). The `cd` happens before the privilege drop, exactly as the mount does.
+    local dir base
+    dir="$(dirname "$file")"; base="$(basename "$file")"
     if command -v setpriv >/dev/null; then
-        out="$($pre setpriv --reuid="$uid" --regid="$uid" --clear-groups \
-                 sh -c 'test -r "$1" && echo YES || echo NO' _ "$file" 2>/dev/null)"
+        out="$(cd "$dir" 2>/dev/null && $pre setpriv --reuid="$uid" --regid="$uid" --clear-groups \
+                 sh -c 'test -r "$1" && echo YES || echo NO' _ "$base" 2>/dev/null)"
     fi
     if [ -z "$out" ]; then
-        out="$($pre su -s /bin/sh -c 'test -r "$0" && echo YES || echo NO' "#$uid" "$file" 2>/dev/null)"
+        out="$(cd "$dir" 2>/dev/null && $pre su -s /bin/sh -c 'test -r "$0" && echo YES || echo NO' "#$uid" "$base" 2>/dev/null)"
     fi
     case "$out" in
         YES) return 0 ;;
@@ -500,8 +507,10 @@ AWS burst tier (this is the control-plane node):
        sudo install -m 0400 -o ${REDTUSK_WORKER_UID:-10001} $(_aws_creds_home)/.aws/credentials /etc/redtusk/aws/
        [ -f $(_aws_creds_home)/.aws/config ] && sudo install -m 0400 -o ${REDTUSK_WORKER_UID:-10001} $(_aws_creds_home)/.aws/config /etc/redtusk/aws/
        AWS_CREDS_DIR=/etc/redtusk/aws
-     or grant it narrow access to the existing one (needs the acl package):
-       sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:x $(_aws_creds_home) $(_aws_creds_home)/.aws
+     or grant it narrow access to the existing one (needs the acl package; the
+     HOME directory is deliberately NOT widened -- the overlay bind-mounts .aws
+     itself, so the container never traverses it):
+       sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:x $(_aws_creds_home)/.aws
        sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:r $(_aws_creds_home)/.aws/credentials
        [ -f $(_aws_creds_home)/.aws/config ] && sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:r $(_aws_creds_home)/.aws/config
   3. Deploy the burst dispatcher with the overlay:
