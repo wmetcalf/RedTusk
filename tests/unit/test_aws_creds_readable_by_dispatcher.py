@@ -23,6 +23,21 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
+
+
+class Run(NamedTuple):
+    """What one `_aws_creds_status` invocation reported and did.
+
+    A record rather than attributes stashed on the function object: mypy rejects
+    those (correctly -- the annotation does not describe them), and I reintroduced
+    that mistake once already in this file after fixing it.
+    """
+
+    out: str
+    uid_asked: str
+    sts_files: str
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "prepare_node_ubuntu.sh"
@@ -31,7 +46,7 @@ DOCKERFILE = REPO_ROOT / "deploy" / "docker" / "Dockerfile.host"
 
 
 def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
-            make_config: bool = False, creds_dir: str = "") -> tuple[str, str]:
+            make_config: bool = False, creds_dir: str = "") -> Run:
     """Run the real `_aws_creds_status` with the probe forced either way.
 
     Only the function definitions are taken from the script -- running the
@@ -45,6 +60,7 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         return m.group(0)
 
     uid_log = tmp_path / "uid-asked"
+    sts_log = tmp_path / "sts-files"
     # A synthetic repo so the .env the status function consults is this test's.
     repo_root = tmp_path / "repo"
     (repo_root / "deploy" / "docker").mkdir(parents=True)
@@ -66,7 +82,11 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         # inert as root.
         'SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo',
         'have() { command -v "$1" >/dev/null; }',
-        "aws() { return 0; }",           # the sts probe passes
+        # Records WHICH credentials sts was pointed at -- a stub that only
+        # returns 0 cannot tell a check of the mounted copy from a check of
+        # the home one.
+        'aws() { echo "$AWS_SHARED_CREDENTIALS_FILE|$AWS_CONFIG_FILE"'
+        f' > {str(sts_log)!r}; return 0; }}',
         f'REPO_ROOT={str(repo_root)!r}',
         block("_aws_creds_home"),
         block("_aws_creds_dir"),
@@ -83,38 +103,41 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
     ])
     res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, res.stderr
-    asked = uid_log.read_text().strip() if uid_log.exists() else ""
-    return res.stdout.strip(), asked
+    return Run(
+        out=res.stdout.strip(),
+        uid_asked=uid_log.read_text().strip() if uid_log.exists() else "",
+        sts_files=sts_log.read_text().strip() if sts_log.exists() else "",
+    )
 
 
 def test_credentials_the_dispatcher_uid_cannot_read_are_reported_unusable(tmp_path: Path) -> None:
-    out, _ = _status("1", tmp_path)
-    assert "UNUSABLE" in out, out
-    assert "cannot read" in out
-    assert "fail closed" in out
+    out = _status("1", tmp_path)
+    assert "UNUSABLE" in out.out, out
+    assert "cannot read" in out.out
+    assert "fail closed" in out.out
 
 
 def test_credentials_the_dispatcher_uid_can_read_are_reported_valid(tmp_path: Path) -> None:
     """The counterweight. Without it, 'reports UNUSABLE' would also be satisfied
     by a probe that says UNUSABLE unconditionally."""
-    out, _ = _status("0", tmp_path)
-    assert out.startswith("valid"), out
-    assert "UNUSABLE" not in out
+    out = _status("0", tmp_path)
+    assert out.out.startswith("valid"), out
+    assert "UNUSABLE" not in out.out
 
 
 def test_an_unrunnable_probe_is_reported_as_unknown_not_as_valid(tmp_path: Path) -> None:
     """`sts ok` plus an unchecked uid is NOT the same claim as `sts ok`, and the
     difference is exactly the failure this file exists for."""
-    out, _ = _status("2", tmp_path)
-    assert "NOT CHECKED" in out, out
+    out = _status("2", tmp_path)
+    assert "NOT CHECKED" in out.out, out
 
 
 def test_the_uid_checked_is_the_uid_the_dispatcher_runs_as(tmp_path: Path) -> None:
     """A probe against the wrong uid would satisfy every test above and prove
     nothing, so the harness records the uid the REAL call site asks about."""
-    _out, asked = _status("0", tmp_path)
-    assert asked == "10001", (
-        f"the readability probe asked about uid {asked!r}, "
+    run = _status("0", tmp_path)
+    assert run.uid_asked == "10001", (
+        f"the readability probe asked about uid {run.uid_asked!r}, "
         "not the uid Dockerfile.host runs the dispatcher as"
     )
     assert re.search(r"^USER 10001:10001$", DOCKERFILE.read_text(), re.M), \
@@ -189,9 +212,9 @@ def test_an_unreadable_config_file_is_reported(tmp_path: Path) -> None:
     earlier version of this test pinned the literal `conf="$home/.aws/config"` and
     broke the moment that path was correctly derived from AWS_CREDS_DIR instead.
     """
-    out, _ = _status("0", tmp_path, unreadable="config", make_config=True)
-    assert "UNUSABLE" in out, out
-    assert "config" in out
+    out = _status("0", tmp_path, unreadable="config", make_config=True)
+    assert "UNUSABLE" in out.out, out
+    assert "config" in out.out
 
 
 def test_an_absent_config_file_is_not_treated_as_broken(tmp_path: Path) -> None:
@@ -200,8 +223,8 @@ def test_an_absent_config_file_is_not_treated_as_broken(tmp_path: Path) -> None:
     # The stub answers "unreadable" for anything named config, so WITHOUT the
     # existence guard the absent file would be probed and reported UNUSABLE.
     # With `make_config=False` and a permissive stub the test could not tell.
-    out, _ = _status("0", tmp_path, unreadable="config", make_config=False)
-    assert out.startswith("valid"), out
+    out = _status("0", tmp_path, unreadable="config", make_config=False)
+    assert out.out.startswith("valid"), out
 
 
 def test_the_remediations_cover_the_config_file_too() -> None:
@@ -369,9 +392,9 @@ def test_the_status_probes_the_configured_directory_not_the_home(tmp_path: Path)
     elsewhere = tmp_path / "etc-redtusk-aws"
     elsewhere.mkdir()
     (elsewhere / "credentials").write_text("[default]\n")
-    out, _ = _status("0", tmp_path, creds_dir=str(elsewhere))
-    assert str(elsewhere / "credentials") in out, (
-        f"the status reported on the home convention, not the configured mount: {out!r}"
+    out = _status("0", tmp_path, creds_dir=str(elsewhere))
+    assert str(elsewhere / "credentials") in out.out, (
+        f"the status reported on the home convention, not the configured mount: {out.out!r}"
     )
 
 
@@ -384,9 +407,26 @@ def test_the_config_probed_is_the_one_in_the_configured_directory(tmp_path: Path
     elsewhere.mkdir()
     (elsewhere / "credentials").write_text("[default]\n")
     (elsewhere / "config").write_text("[profile x]\n")
-    out, _ = _status("0", tmp_path, unreadable="config", creds_dir=str(elsewhere))
-    assert "UNUSABLE" in out, out
-    assert str(elsewhere / "config") in out, (
-        f"the status probed a config outside the configured mount: {out!r}"
+    out = _status("0", tmp_path, unreadable="config", creds_dir=str(elsewhere))
+    assert "UNUSABLE" in out.out, out
+    assert str(elsewhere / "config") in out.out, (
+        f"the status probed a config outside the configured mount: {out.out!r}"
+    )
+
+
+def test_sts_validates_the_configured_credentials(tmp_path: Path) -> None:
+    """`aws sts` has to check the copy the overlay will MOUNT.
+
+    Redirecting only the readability probes to the configured directory left this
+    validating the home copy, so a stale mounted copy read as valid because the
+    home one passed (codex). The stub records which files it was pointed at --
+    a stub that merely returns 0 cannot tell the two apart.
+    """
+    elsewhere = tmp_path / "etc-redtusk-aws"
+    elsewhere.mkdir()
+    (elsewhere / "credentials").write_text("[default]\n")
+    seen = _status("0", tmp_path, creds_dir=str(elsewhere)).sts_files
+    assert seen == f"{elsewhere}/credentials|{elsewhere}/config", (
+        f"sts validated the wrong credentials: {seen!r}"
     )
 

@@ -122,10 +122,14 @@ _aws_creds_home() {
 }
 
 _aws_sts_ok() {
-    # `aws sts get-caller-identity` against the DEPLOY user's credentials.
-    local home; home="$(_aws_creds_home)"
-    AWS_SHARED_CREDENTIALS_FILE="$home/.aws/credentials" \
-    AWS_CONFIG_FILE="$home/.aws/config" \
+    # Against the credentials the overlay will MOUNT, not the ones convention says
+    # are there. Redirecting only the readability probes to _aws_creds_dir left this
+    # validating the home copy: a stale mounted copy read as valid because the home
+    # one passed, and a good mounted copy read as invalid because the home one did
+    # not (codex). Same divergence as the probes, one layer along.
+    local dir; dir="$(_aws_creds_dir)"
+    AWS_SHARED_CREDENTIALS_FILE="$dir/credentials" \
+    AWS_CONFIG_FILE="$dir/config" \
     aws sts get-caller-identity >/dev/null 2>&1
 }
 
