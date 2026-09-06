@@ -610,7 +610,7 @@ class TestAFailedVersionCannotSatisfyTheFloor:
             "temp paths must come from mktemp, not from another temp path: " + "; ".join(offenders)
         )
 
-    def test_the_wrapper_runs_in_a_shell_where_BASHPID_is_unset(self, stub_cli: Path) -> None:
+    def test_the_wrapper_runs_in_a_shell_where_bashpid_is_unset(self, stub_cli: Path) -> None:
         """The same guard, EXECUTED -- which turns out to be possible after all.
 
         `unset BASHPID` makes bash 4+ behave exactly as Bash 3.2 does for this purpose:
