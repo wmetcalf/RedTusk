@@ -51,7 +51,8 @@ DOCKERFILE = REPO_ROOT / "deploy" / "docker" / "Dockerfile.host"
 
 def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
             make_config: bool = False, creds_dir: str = "",
-            symlink_to: str = "", extra_env: dict[str, str] | None = None) -> Run:
+            symlink_to: str = "", extra_env: dict[str, str] | None = None,
+            make_creds: bool = True, sts: str = "0") -> Run:
     """Run the real `_aws_creds_status` with the probe forced either way.
 
     Only the function definitions are taken from the script -- running the
@@ -74,11 +75,13 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
     shutil.copy2(DOCKERFILE, repo_root / "deploy" / "docker" / "Dockerfile.host")
     creds = tmp_path / ".aws" / "credentials"
     creds.parent.mkdir(parents=True, exist_ok=True)
-    creds.write_text("[default]\n")
+    if make_creds:
+        creds.write_text("[default]\n")
     if make_config:
         (tmp_path / ".aws" / "config").write_text("[profile x]\n")
     if symlink_to:
-        creds.unlink()
+        if creds.exists() or creds.is_symlink():
+            creds.unlink()
         creds.symlink_to(symlink_to)
     harness = "\n".join([
         "set -u",
@@ -95,7 +98,7 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         # returns 0 cannot tell a check of the mounted copy from a check of
         # the home one.
         'aws() { echo "$AWS_SHARED_CREDENTIALS_FILE|$AWS_CONFIG_FILE"'
-        f' > {str(sts_log)!r}; return 0; }}',
+        f' > {str(sts_log)!r}; return {sts}; }}',
         # REPO_ROOT is the scratch project for .env, but _dispatcher_uid reads the
         # real Dockerfile, so it is copied in.
         f'REPO_ROOT={str(repo_root)!r}',
@@ -428,7 +431,8 @@ def test_sts_validates_the_configured_credentials(tmp_path: Path) -> None:
 
 def _real_creds_dir(env: dict[str, str], *, env_file: str = "",
                    tmp_path: Path | None = None,
-                   deploy_home: str = "/home/deployuser") -> str:
+                   deploy_home: str = "/home/deployuser",
+                   override_stub: str | None = None) -> str:
     """Run the REAL `_aws_creds_dir` against the REAL compose files.
 
     When `env_file` is given the compose files are copied into a scratch project
@@ -439,6 +443,8 @@ def _real_creds_dir(env: dict[str, str], *, env_file: str = "",
     text = SCRIPT.read_text()
     m = re.search(r"^_aws_creds_dir\(\) \{.*?^\}", text, re.S | re.M)
     assert m, "_aws_creds_dir not found"
+    mo = re.search(r"^_aws_creds_env_override\(\) \{.*?^\}", text, re.S | re.M)
+    assert mo, "_aws_creds_env_override not found"
 
     root = REPO_ROOT
     if env_file:
@@ -455,6 +461,12 @@ def _real_creds_dir(env: dict[str, str], *, env_file: str = "",
         f'REPO_ROOT={str(root)!r}',
         'have() { command -v "$1" >/dev/null; }',
         f'_aws_creds_home() {{ echo {deploy_home!r}; }}',
+        # The REAL override lookup, not a stub: it decides what compose is asked
+        # with, and passing an empty value would defeat the .env file entirely.
+        # `override_stub` replaces only the SOURCE of that value, for the case
+        # that cannot be reached through this process's own environment.
+        (f'_aws_creds_env_override() {{ printf "%s" {override_stub!r}; }}'
+         if override_stub is not None else mo.group(0)),
         m.group(0),
         "_aws_creds_dir",
     ])
@@ -569,3 +581,235 @@ def test_an_absolute_symlink_is_reported_even_inside_the_mount(tmp_path: Path) -
     assert "UNUSABLE" in out.out, out.out
     assert "ABSOLUTE" in out.out
 
+
+
+# ---------------------------------------------------------------------------
+# A chain of symlinks: only the FIRST hop used to be inspected.
+# ---------------------------------------------------------------------------
+
+
+def test_a_later_hop_in_a_symlink_chain_may_not_be_absolute(tmp_path: Path) -> None:
+    """`credentials -> current -> /abs/path` resolves inside the mount on the
+    HOST, so checking only the first link's text printed `valid` -- while inside
+    the container the second hop still names an unmounted host path (codex).
+
+    Both hops land inside $mountdir here, so nothing but the per-hop text
+    distinguishes this from the accepted case below.
+    """
+    aws = tmp_path / ".aws"
+    aws.mkdir(parents=True, exist_ok=True)
+    actual = aws / "actual"
+    actual.write_text("[default]\n")
+    (aws / "current").symlink_to(actual)          # hop 2: ABSOLUTE
+    out = _status("0", tmp_path, symlink_to="current")   # hop 1: relative, inside
+    assert "UNUSABLE" in out.out, out.out
+    assert "ABSOLUTE" in out.out and "current" in out.out
+
+
+def test_a_multi_hop_relative_chain_inside_the_mount_is_accepted(tmp_path: Path) -> None:
+    """The counterweight. Without it, "reports the chain" is equally satisfied by
+    refusing every chain, and a dotfile manager's relative indirection is a
+    legitimate layout that resolves identically on both sides of the mount."""
+    aws = tmp_path / ".aws"
+    aws.mkdir(parents=True, exist_ok=True)
+    (aws / "actual").write_text("[default]\n")
+    (aws / "current").symlink_to("actual")        # hop 2: relative, inside
+    out = _status("0", tmp_path, symlink_to="current")
+    assert out.out.startswith("valid"), out.out
+
+
+def test_a_symlink_loop_is_reported_instead_of_hanging(tmp_path: Path) -> None:
+    """Walking every hop introduces a way to never stop, and `a -> b -> a` is the
+    ordinary accident that gets there. The 60s harness timeout is the backstop:
+    an unbounded walk fails this test by never returning rather than by asserting.
+
+    It is the CONFIG link that reaches the walk. A looping `credentials` link
+    resolves to no file, so `-f` sends it to the absent branch long before any
+    hop is followed -- and the kernel's own 40-link limit means a chain that
+    `-f` accepts cannot be over-long either. `config` has no such gate: it is
+    optional, so a dangling or looping one is walked as-is.
+    """
+    aws = tmp_path / ".aws"
+    aws.mkdir(parents=True, exist_ok=True)
+    (aws / "config").symlink_to("other")
+    (aws / "other").symlink_to("config")
+    out = _status("0", tmp_path, creds_dir=str(aws))
+    assert "UNUSABLE" in out.out, out.out
+    assert "loop" in out.out
+
+
+# ---------------------------------------------------------------------------
+# An unresolved mount makes every conclusion about the guessed path a guess.
+# ---------------------------------------------------------------------------
+
+
+def test_absent_credentials_are_not_diagnosed_when_the_mount_is_unresolved(
+    tmp_path: Path,
+) -> None:
+    """With compose unavailable the checked directory is a FALLBACK GUESS at the
+    home copy, so `absent — place ~/.aws/credentials` is a confident diagnosis of
+    a directory that is not necessarily the one mounted: a populated
+    /etc/redtusk/aws named in .env reads as missing, and the operator is sent to
+    create a second copy in the wrong place (codex).
+    """
+    out = _status("0", tmp_path, make_creds=False)      # creds_dir="" -> unresolved
+    assert out.out.startswith("UNKNOWN"), out.out
+    assert "could not resolve" in out.out
+
+
+def test_absent_credentials_are_still_diagnosed_when_the_mount_is_resolved(
+    tmp_path: Path,
+) -> None:
+    """The counterweight, and the one that can fail if the fix over-reaches: when
+    compose DID resolve the directory, an absent file is a fact about the right
+    directory and must still be reported plainly."""
+    resolved = tmp_path / ".aws"
+    resolved.mkdir(parents=True, exist_ok=True)
+    out = _status("0", tmp_path, make_creds=False, creds_dir=str(resolved))
+    assert out.out.startswith("absent"), out.out
+    assert "UNKNOWN" not in out.out
+
+
+def test_failed_sts_is_not_diagnosed_when_the_mount_is_unresolved(
+    tmp_path: Path,
+) -> None:
+    """Same class as the absent case: credentials that fail sts in the GUESSED
+    directory say nothing about the credentials the burst tier actually uses."""
+    out = _status("0", tmp_path, sts="1")
+    assert out.out.startswith("UNKNOWN"), out.out
+    assert "may not be the credentials" in out.out
+
+
+def test_failed_sts_is_still_diagnosed_when_the_mount_is_resolved(
+    tmp_path: Path,
+) -> None:
+    """The counterweight: a resolved directory whose credentials fail sts is
+    invalid, and deferring THAT would hide the failure this check exists for."""
+    resolved = tmp_path / ".aws"
+    out = _status("0", tmp_path, sts="1", creds_dir=str(resolved))
+    assert out.out.startswith("invalid"), out.out
+
+
+# ---------------------------------------------------------------------------
+# The override the DEPLOYMENT launches with, not just the one in .env.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+def test_an_exported_creds_dir_beats_the_env_file_in_the_resolution(
+    tmp_path: Path,
+) -> None:
+    """Compose gives an environment variable precedence over `.env`, so a node
+    whose operator exports AWS_CREDS_DIR mounts THAT -- and the check has to
+    resolve the same way or it validates a directory the stack never uses.
+
+    NOTE this one passes with the forwarding removed entirely, because the
+    variable is in this process's environment and `env` inherits it. It is here
+    as the precedence statement; the test below is the one that discriminates.
+    """
+    got = _real_creds_dir({"AWS_CREDS_DIR": "/etc/redtusk/aws"},
+                          env_file="AWS_CREDS_DIR=/some/other/place\n",
+                          tmp_path=tmp_path)
+    assert got == "/etc/redtusk/aws", got
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+def test_a_lookup_only_override_is_carried_into_the_compose_resolution(
+    tmp_path: Path,
+) -> None:
+    """The discriminating case: the override is NOT in this process's environment
+    -- it is the deploy user's, which the root-run check has to go and fetch --
+    so nothing is inherited and the resolution is correct only if the value is
+    explicitly forwarded.
+    """
+    got = _real_creds_dir({}, env_file="AWS_CREDS_DIR=/some/other/place\n",
+                          tmp_path=tmp_path, override_stub="/etc/redtusk/aws")
+    assert got == "/etc/redtusk/aws", got
+
+
+def _override(env: dict[str, str], *, uid: str = "0", sudo_prints: str = "",
+              deploy_user: str = "deployuser",
+              missing: tuple[str, ...] = ()) -> str:
+    """Run the REAL `_aws_creds_env_override` with `id`/`sudo` stubbed.
+
+    Its whole job is to see a value this process cannot see, so the deploy
+    user's login shell is the thing that has to be stubbed -- there is no
+    second account here to export anything in.
+    """
+    text = SCRIPT.read_text()
+    m = re.search(r"^_aws_creds_env_override\(\) \{.*?^\}", text, re.S | re.M)
+    assert m, "_aws_creds_env_override not found"
+    bindir = Path(tempfile.mkdtemp())
+    (bindir / "id").write_text(f"#!/bin/sh\necho {uid}\n")
+    # Stands in for the deploy user's login shell: `sudo -u X -i sh -c ...`.
+    (bindir / "sudo").write_text(f"#!/bin/sh\nprintf '%s' {sudo_prints!r}\n")
+    (bindir / "timeout").write_text('#!/bin/sh\nshift\nexec "$@"\n')
+    for n in ("id", "sudo", "timeout"):
+        (bindir / n).chmod(0o755)
+    path = f"{bindir}:{os.environ['PATH']}"
+    # A host that lacks the tool is modelled through the script's OWN capability
+    # probe. Truncating PATH instead removed `bash` from it and the fixture died
+    # before reaching the code -- which is not the same as the tool being absent.
+    absent = " ".join(missing)
+    harness = "\n".join([
+        "set -u",
+        f"export PATH={path!r}",
+        f"DEPLOY_USER={deploy_user!r}",
+        f'have() {{ for n in {absent}; do [ "$1" = "$n" ] && return 1; done;'
+        ' command -v "$1" >/dev/null; }',
+        m.group(0),
+        "_aws_creds_env_override",
+    ])
+    base = {k: v for k, v in os.environ.items() if k != "AWS_CREDS_DIR"}
+    r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
+                       timeout=60, env={**base, **env, "PATH": path})
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_the_override_is_read_from_the_deploy_users_login_environment() -> None:
+    """Plain `sudo` resets the environment -- measured on toolz2:
+
+        under sudo:    AWS_CREDS_DIR=[<stripped>]
+        under sudo -E: AWS_CREDS_DIR=[/etc/redtusk/aws]
+
+    so on the documented `sudo prepare_node_ubuntu.sh` path an override the
+    deploy user exports is invisible to the check, which then validated the
+    .env path while the stack ran on another (codex).
+    """
+    assert _override({}, sudo_prints="/etc/redtusk/aws") == "/etc/redtusk/aws"
+
+
+def test_this_processes_own_environment_wins_over_the_lookup() -> None:
+    """`sudo -E`, or a root shell that exported it: an explicit value here is
+    what compose would see, so it must not be overridden by the login lookup."""
+    got = _override({"AWS_CREDS_DIR": "/from/the/caller"},
+                    sudo_prints="/from/the/login/shell")
+    assert got == "/from/the/caller", got
+
+
+def test_no_override_anywhere_yields_nothing_rather_than_an_empty_forward() -> None:
+    """The counterweight for the set-but-empty trap: a deploy user who exports
+    nothing must produce NO value, not an empty one -- compose treats a
+    set-but-empty variable as an override of the .env file."""
+    assert _override({}, sudo_prints="") == ""
+
+
+def test_the_lookup_is_skipped_when_it_cannot_be_performed() -> None:
+    """A non-root caller cannot become the deploy user, and a host without sudo
+    cannot either. Neither is an override of empty -- both are 'unknown', and
+    the .env file is then the best available answer."""
+    assert _override({}, uid="1000", sudo_prints="/etc/redtusk/aws") == ""
+    assert _override({}, sudo_prints="/etc/redtusk/aws", missing=("sudo",)) == ""
+    assert _override({}, sudo_prints="/etc/redtusk/aws", missing=("timeout",)) == ""
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+def test_no_override_does_not_blank_the_env_file_value(tmp_path: Path) -> None:
+    """The trap the override support creates, and the reason it is passed only
+    when non-empty: compose treats a SET-BUT-EMPTY variable as an override of the
+    file, so forwarding an empty lookup result would silently defeat every .env
+    on every node that exports nothing -- which is most of them."""
+    got = _real_creds_dir({}, env_file="AWS_CREDS_DIR=/etc/redtusk/aws\n",
+                          tmp_path=tmp_path)
+    assert got == "/etc/redtusk/aws", got

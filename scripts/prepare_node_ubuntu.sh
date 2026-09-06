@@ -210,12 +210,45 @@ _aws_readable_by_uid() {
 #
 # If compose cannot be asked, the answer is UNKNOWN -- the same discipline the
 # readability probe uses. Guessing is what produced the bugs.
+# AWS_CREDS_DIR exported in the ENVIRONMENT beats .env for compose, so the check
+# has to resolve with the same override the deployment launches with. Under the
+# documented `sudo scripts/prepare_node_ubuntu.sh` invocation sudo resets the
+# environment -- measured on toolz2:
+#
+#     under sudo:    AWS_CREDS_DIR=[<stripped>]
+#     under sudo -E: AWS_CREDS_DIR=[/etc/redtusk/aws]
+#
+# so an override the deploy user exports is invisible to the root-run check, and
+# the check then validated the .env path while the stack ran on another (codex).
+#
+# Precedence mirrors what compose itself sees:
+#   1. this process`s own environment -- a root export, or `sudo -E`
+#   2. the deploy user`s LOGIN environment, where a persistent export lives; it
+#      is the same value their own `docker compose up` would carry
+#
+# An export made only in a one-off interactive shell is observable to no other
+# process, by anyone; that boundary is stated in the burst notes rather than
+# guessed at here.
+_aws_creds_env_override() {
+    if [ -n "${AWS_CREDS_DIR:-}" ]; then printf '%s' "$AWS_CREDS_DIR"; return; fi
+    [ "$(id -u)" = 0 ] || return 0
+    [ -n "${DEPLOY_USER:-}" ] && [ "$DEPLOY_USER" != root ] || return 0
+    have timeout && have sudo || return 0
+    timeout 10 sudo -n -u "$DEPLOY_USER" -i sh -c 'printf "%s" "${AWS_CREDS_DIR-}"' 2>/dev/null
+}
+
 _aws_creds_dir() {
-    local out=""
+    local out="" override=""
+    override="$(_aws_creds_env_override)"
+    # Passed only when NON-EMPTY: compose treats a set-but-empty variable as an
+    # override of the .env value, so exporting AWS_CREDS_DIR="" would silently
+    # defeat the file it is meant to be read alongside.
+    set -- HOME="$(_aws_creds_home)" \
+           POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder
+    [ -n "$override" ] && set -- "$@" AWS_CREDS_DIR="$override"
     if have docker && have python3; then
         out="$(cd "$REPO_ROOT/deploy/docker" 2>/dev/null &&
-               HOME="$(_aws_creds_home)" \
-               POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder \
+               env "$@" \
                docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml \
                               config --format json 2>/dev/null |
                python3 -c 'import json,sys
@@ -248,9 +281,26 @@ _aws_creds_status() {
     if [ -z "$mountdir" ]; then mountdir="$home/.aws"; unresolved=1; fi
     creds="$mountdir/credentials"
     have aws || { echo "n/a (no aws cli)"; return; }
-    [ -f "$creds" ] || { echo "absent — place $creds"; return; }
+    # When compose could not be asked, $mountdir is a GUESS at the home copy --
+    # so "absent" and "invalid" below would be diagnoses of a directory that is
+    # not necessarily the one mounted. A populated /etc/redtusk/aws named in
+    # .env was reported as `absent — place ~/.aws/credentials`, which sends the
+    # operator to create a SECOND copy in the wrong place (codex). The
+    # conclusion is deferred until the mount source is actually known.
+    if [ ! -f "$creds" ]; then
+        if [ -n "$unresolved" ]; then
+            echo "UNKNOWN — compose could not resolve the mounted directory (needs docker + python3 on PATH), and the fallback guess $creds is absent. Resolve the mount, or read AWS_CREDS_DIR out of deploy/docker/.env yourself, before treating this as missing."
+        else
+            echo "absent — place $creds"
+        fi
+        return
+    fi
     if ! _aws_sts_ok; then
-        echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
+        if [ -n "$unresolved" ]; then
+            echo "UNKNOWN — 'aws sts get-caller-identity' failed against the fallback guess $creds, but compose could not resolve the mounted directory, so these may not be the credentials the burst tier uses."
+        else
+            echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
+        fi
         return
     fi
     # `aws sts` above ran as the DEPLOY user (or root). The dispatcher does not:
@@ -279,18 +329,36 @@ _aws_creds_status() {
     # container`s mount namespace where it is absent or different. The host-side
     # checks all follow it happily and report valid. A dotfile-managed ~/.aws is
     # the ordinary way to end up here (codex).
-    local f raw target
+    local f raw target hop hops
     for f in "$creds" "$conf"; do
         [ -L "$f" ] || continue
-        raw="$(readlink "$f" 2>/dev/null)"
-        # A bind mount does NOT rewrite symlink TEXT. An absolute link still points
-        # at the host path inside the container -- where only AWS_CREDS_DIR is
-        # mounted, so even a link into the very same directory dangles. Only a
-        # RELATIVE link that stays inside resolves the same on both sides (codex).
-        case "$raw" in
-            /*) echo "UNUSABLE — $f is an ABSOLUTE symlink to $raw. A bind mount does not rewrite the link text, so inside the container it still points at $raw, which is not mounted. Replace it with a relative link inside $mountdir, or copy the file in."
-                return ;;
-        esac
+        # EVERY hop, not just the first: `credentials -> current` (relative, and
+        # inside) `-> /home/deploy/.aws/actual` (absolute) resolves inside
+        # $mountdir on the host, so checking only the first link`s text printed
+        # `valid` -- while inside the container the second hop still names an
+        # unmounted host path and authentication fails (codex).
+        hop="$f"; hops=0
+        while [ -L "$hop" ]; do
+            hops=$((hops + 1))
+            if [ "$hops" -gt 40 ]; then
+                echo "UNUSABLE — $f is a symlink chain over 40 hops deep, or a loop; point $mountdir at real files."
+                return
+            fi
+            raw="$(readlink "$hop" 2>/dev/null)" || break
+            # A bind mount does NOT rewrite symlink TEXT. An absolute link still points
+            # at the host path inside the container -- where only AWS_CREDS_DIR is
+            # mounted, so even a link into the very same directory dangles. Only a
+            # RELATIVE link that stays inside resolves the same on both sides (codex).
+            case "$raw" in
+                /*) if [ "$hop" = "$f" ]; then
+                        echo "UNUSABLE — $f is an ABSOLUTE symlink to $raw. A bind mount does not rewrite the link text, so inside the container it still points at $raw, which is not mounted. Replace it with a relative link inside $mountdir, or copy the file in."
+                    else
+                        echo "UNUSABLE — $f reaches $hop, an ABSOLUTE symlink to $raw. A bind mount does not rewrite the link text, so inside the container that hop still points at $raw, which is not mounted -- every hop of the chain has to stay relative and inside $mountdir. Copy the file in."
+                    fi
+                    return ;;
+            esac
+            hop="$(dirname "$hop")/$raw"
+        done
         target="$(readlink -f "$f" 2>/dev/null)" || continue
         case "$target" in
             "$mountdir"/*) ;;
