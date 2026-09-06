@@ -249,6 +249,15 @@ for f in "${cloners[@]}"; do
             # record DEST=/opt where Docker gives the previous /src.
             delete pre
             for (pk in envval) pre[pk] = envval[pk]
+            # Docker still accepts the legacy `ENV <key> <value>` form -- one pair, no
+            # `=`. Ignoring it left the PREVIOUS value of that name in force, so a
+            # WORKDIR built from it modelled the wrong directory.
+            if (!isarg && ne == 2 && ev[1] !~ /=/) {
+                envval[ev[1]] = expand(unquote(ev[2]), pre)
+                isenv[ev[1]] = 1
+                if (stage != "") stage_env[stage] = envsave()
+                next
+            }
             for (i = 1; i <= ne; i++) {
                 if (split(ev[i], kv, "=") == 2 && kv[1] != "") {
                     # Docker keeps an ENV value even when a later ARG declares the same
@@ -309,18 +318,34 @@ for f in "${cloners[@]}"; do
             # `RUN <<EOF` opens a heredoc whose BODY is the script. There is no trailing
             # backslash, so continuation tracking never saw it and every command inside
             # was ignored -- the text scan this parser replaced did catch them.
+            # Only a BARE `RUN <<EOF` runs its body as a script. `RUN cat <<EOF` feeds
+            # the body to a command as DATA, and scanning it reported generated text --
+            # a script or documentation being written out -- as an executed command
+            # (codex). What precedes `<<` decides.
             if (!cont && !heredoc && piece ~ /<<-?[\"\x27]?[A-Za-z_][A-Za-z0-9_]*/) {
+                lead = piece
+                sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]*/, "", lead)
+                if (lead ~ /^<<-?[\"\x27]?[A-Za-z_]/) {
+                    hd = lead
+                    sub(/^<<-?[\"\x27]?/, "", hd)
+                    sub(/[^A-Za-z0-9_].*$/, "", hd)
+                    if (hd != "") { heredoc = hd; hdbuf = ""; cwd = workdir; cwdalt = ""; next }
+                }
+                # A DATA heredoc: skip its body rather than reading it as commands.
                 hd = piece
                 sub(/^.*<<-?[\"\x27]?/, "", hd)
                 sub(/[^A-Za-z0-9_].*$/, "", hd)
-                if (hd != "") { heredoc = hd; hdbuf = ""; cwd = workdir; cwdalt = ""; next }
+                if (hd != "") { heredoc = hd; hdbuf = ""; hdskip = 1; cwd = workdir; cwdalt = ""; next }
             }
             if (heredoc) {
                 probe = line
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", probe)
                 gsub(/[\"\x27]/, "", probe)
-                if (probe == heredoc) { line = hdbuf; heredoc = ""; hdbuf = ""; buf = "" }
-                else { hdbuf = hdbuf " ; " line; next }
+                if (probe == heredoc) {
+                    heredoc = ""
+                    if (hdskip) { hdskip = 0; hdbuf = ""; next }
+                    line = hdbuf; hdbuf = ""; buf = ""
+                } else { hdbuf = hdbuf " ; " line; next }
             } else {
             if (!cont) {
                 cwd = workdir; cwdalt = ""; buf = ""
@@ -442,6 +467,9 @@ for f in "${cloners[@]}"; do
                 # meant any parse failure -- `git -C "" reset`, where the empty operand
                 # vanishes and `reset` is eaten as the path -- turned into a silent pass.
                 # This is the same rule already applied to unresolved directories.
+                # `git --version` / `git --help` legitimately have NO subcommand and are
+                # read-only. Only an otherwise-unparseable command fails closed.
+                if (subcmd == "" && bare ~ /[[:space:]](-v|--version|-h|--help)([[:space:]]|$)/) continue
                 if (subcmd == "") {
                     if (scoped(cwd) || (cwdalt != "" && scoped(cwdalt))) print cmd
                     continue

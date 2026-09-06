@@ -213,6 +213,10 @@ BYPASSES = [
     pytest.param(
         'RUN <<EOF\necho hello\nEOF\nRUN cd /src/tika && git reset --hard HEAD^\n',
         id="command-after-a-heredoc-is-still-seen"),
+    # Docker still accepts the legacy two-token `ENV <key> <value>` form.
+    pytest.param(
+        'ENV ROOT=/opt\nENV ROOT /src\nWORKDIR $ROOT/tika\nRUN git reset --hard HEAD^\n',
+        id="legacy-two-token-env"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -345,6 +349,18 @@ BENIGN = [
     pytest.param(
         'RUN <<EOF\ngit -C /src/other reset --hard HEAD^\nEOF\n',
         id="heredoc-body-in-another-worktree"),
+    # Only a BARE `RUN <<EOF` runs its body. `RUN cat <<EOF` feeds it to a command as
+    # DATA, so generated text must not read as executed commands.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cat <<EOF > /tmp/notes.txt\n'
+        'git reset --hard HEAD^\nEOF\n',
+        id="data-heredoc-is-not-a-script"),
+    # git documents `[-v | --version] [-h | --help]` as standalone modes: no
+    # subcommand, read-only, and valid outside a repository.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git --version\n', id="git-version-has-no-subcommand"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git --help\n', id="git-help-has-no-subcommand"),
 ]
 
 
