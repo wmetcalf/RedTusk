@@ -29,7 +29,7 @@ COMPOSE = REPO_ROOT / "deploy" / "docker" / "docker-compose.aws-burst.yml"
 DOCKERFILE = REPO_ROOT / "deploy" / "docker" / "Dockerfile.host"
 
 
-def _status(readable: str, tmp_path: Path) -> str:
+def _status(readable: str, tmp_path: Path) -> tuple[str, str]:
     """Run the real `_aws_creds_status` with the probe forced either way.
 
     Only the function definitions are taken from the script -- running the
@@ -64,12 +64,12 @@ def _status(readable: str, tmp_path: Path) -> str:
     ])
     res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, res.stderr
-    _status.last_uid = uid_log.read_text().strip() if uid_log.exists() else ""
-    return res.stdout.strip()
+    asked = uid_log.read_text().strip() if uid_log.exists() else ""
+    return res.stdout.strip(), asked
 
 
 def test_credentials_the_dispatcher_uid_cannot_read_are_reported_unusable(tmp_path: Path) -> None:
-    out = _status("1", tmp_path)
+    out, _ = _status("1", tmp_path)
     assert "UNUSABLE" in out, out
     assert "cannot read" in out
     assert "fail closed" in out
@@ -78,7 +78,7 @@ def test_credentials_the_dispatcher_uid_cannot_read_are_reported_unusable(tmp_pa
 def test_credentials_the_dispatcher_uid_can_read_are_reported_valid(tmp_path: Path) -> None:
     """The counterweight. Without it, 'reports UNUSABLE' would also be satisfied
     by a probe that says UNUSABLE unconditionally."""
-    out = _status("0", tmp_path)
+    out, _ = _status("0", tmp_path)
     assert out.startswith("valid"), out
     assert "UNUSABLE" not in out
 
@@ -86,16 +86,16 @@ def test_credentials_the_dispatcher_uid_can_read_are_reported_valid(tmp_path: Pa
 def test_an_unrunnable_probe_is_reported_as_unknown_not_as_valid(tmp_path: Path) -> None:
     """`sts ok` plus an unchecked uid is NOT the same claim as `sts ok`, and the
     difference is exactly the failure this file exists for."""
-    out = _status("2", tmp_path)
+    out, _ = _status("2", tmp_path)
     assert "NOT CHECKED" in out, out
 
 
 def test_the_uid_checked_is_the_uid_the_dispatcher_runs_as(tmp_path: Path) -> None:
     """A probe against the wrong uid would satisfy every test above and prove
     nothing, so the harness records the uid the REAL call site asks about."""
-    _status("0", tmp_path)
-    assert _status.last_uid == "10001", (
-        f"the readability probe asked about uid {_status.last_uid!r}, "
+    _out, asked = _status("0", tmp_path)
+    assert asked == "10001", (
+        f"the readability probe asked about uid {asked!r}, "
         "not the uid Dockerfile.host runs the dispatcher as"
     )
     assert re.search(r"^USER 10001:10001$", DOCKERFILE.read_text(), re.M), \
@@ -129,7 +129,9 @@ def _probe(sudo_behaviour: str, tmp_path: Path) -> int:
         '_aws_readable_by_uid 10001 /some/file; echo "rc=$?"',
     ])
     res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
-    return int(re.search(r"rc=(\d+)", res.stdout).group(1))
+    m2 = re.search(r"rc=(\d+)", res.stdout)
+    assert m2, f"probe produced no rc line: {res.stdout!r} {res.stderr!r}"
+    return int(m2.group(1))
 
 
 def test_the_probe_reports_unknown_when_it_cannot_run_at_all(tmp_path: Path) -> None:
