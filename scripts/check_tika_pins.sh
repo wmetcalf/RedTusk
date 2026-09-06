@@ -571,11 +571,16 @@ for f in "${cloners[@]}"; do
                 # reset that really ran elsewhere (codex).
                 if (cmd ~ /^false([[:space:]]|$)/) {
                     csucc = ""; cfail = S
+                    if (negated) { swaptmp = csucc; csucc = cfail; cfail = swaptmp }
                     if (subclose) { S = subsaved; csucc = ""; cfail = S = subsaved; orsucc = ""; andfail = ""; oldS = suboldS }
                     continue
                 }
+                # `!` inverts these as well. The early return skipped the swap applied to
+                # ordinary commands, so `! true || git reset` recorded a success the shell
+                # never had and the reset went unseen (codex).
                 if (cmd ~ /^(true|:)([[:space:]]|$)/) {
                     csucc = S; cfail = ""
+                    if (negated) { swaptmp = csucc; csucc = cfail; cfail = swaptmp }
                     if (subclose) { S = subsaved; csucc = subsaved; cfail = ""; orsucc = ""; andfail = ""; oldS = suboldS }
                     continue
                 }
@@ -622,6 +627,10 @@ for f in "${cloners[@]}"; do
                     continue
                 }
                 if (subclose) { csucc = subsaved; cfail = subsaved; orsucc = ""; andfail = ""; oldS = suboldS }
+                # A leading `VAR=value` is an environment prefix, not the command --
+                # `GIT_CONFIG_NOSYSTEM=1 git reset` still runs git here (codex).
+                while (cmd ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]/)
+                    sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", cmd)
                 if (cmd !~ /^git[[:space:]]/) continue
                 # `!` INVERTS the exit status, so the shell takes the other branch: after
                 # `! cd /missing && git reset` the cd FAILED, the `!` makes that a success,

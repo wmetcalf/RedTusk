@@ -328,6 +328,21 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /opt\nRUN (cd /src/tika && (cd /var); git reset --hard HEAD^)\n',
         id="outer-group-cd-survives-an-inner-group"),
+    # `!` inverts the fixed-status commands too. Their early return skipped the
+    # swap applied to ordinary commands.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN ! true || git reset --hard HEAD^\n',
+        id="negated-true-inverts"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN ! false && git reset --hard HEAD^\n',
+        id="negated-false-inverts"),
+    # A leading `VAR=value` is an environment prefix, not the command.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN GIT_CONFIG_NOSYSTEM=1 git reset --hard HEAD^\n',
+        id="leading-env-assignment"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN A=1 B=2 git reset --hard HEAD^\n',
+        id="several-leading-env-assignments"),
     # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
     # must not swallow the `-C` that follows.
     pytest.param(
@@ -563,6 +578,10 @@ BENIGN = [
     pytest.param(
         'WORKDIR /opt\nRUN (cd /src/tika && (cd /var)); git reset --hard HEAD^\n',
         id="nested-subshell-outer-confines-too"),
+    # An env prefix does not change WHERE the command runs.
+    pytest.param(
+        'WORKDIR /src/other\nRUN GIT_CONFIG_NOSYSTEM=1 git reset --hard HEAD^\n',
+        id="env-prefix-in-another-worktree"),
 ]
 
 
