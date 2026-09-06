@@ -332,6 +332,17 @@ for f in "${cloners[@]}"; do
             if (stage != "") { stage_wd[stage] = workdir; stage_env[stage] = envsave() }
             next
         }
+        # WORKDIR continues across `\` like every other instruction; recording the
+        # first physical line kept `/src/\` and lost the `tika` that followed.
+        toupper(line) ~ /^[[:space:]]*WORKDIR[[:space:]]/ || wcont {
+            if (line ~ /\\[[:space:]]*$/) {
+                wbuf = (wcont ? wbuf : "") line
+                sub(/\\[[:space:]]*$/, "", wbuf)
+                wcont = 1
+                next
+            }
+            if (wcont) { line = wbuf line; wcont = 0; wbuf = "" }
+        }
         toupper(line) ~ /^[[:space:]]*WORKDIR[[:space:]]/ {
             sub(/^[[:space:]]*[Ww][Oo][Rr][Kk][Dd][Ii][Rr][[:space:]]+/, "", line)
             line = expand(unquote(line), envval); sub(/[[:space:]]+$/, "", line)
@@ -376,7 +387,7 @@ for f in "${cloners[@]}"; do
                 gsub(/[\"\x27]/, "", hd)
                 if (hd != "") {
                     heredoc = hd; hdbuf = ""; hdskip = 1
-                    if (!cont) { S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = "" }
+                    if (!cont) { S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; subdepth = 0 }
                     # The OPENER still carries real commands -- `cat <<EOF >/tmp/x && git
                     # -C /src/tika reset` runs the reset once cat succeeds. Skipping the
                     # whole line lost it. Judge the opener with the heredoc token removed.
@@ -399,7 +410,7 @@ for f in "${cloners[@]}"; do
                 } else { hdbuf = hdbuf " ; " line; next }
             } else if (!justopened) {
             if (!cont) {
-                S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; buf = ""
+                S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; subdepth = 0; buf = ""
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
             }
             cont = (piece ~ /\\[[:space:]]*$/)
@@ -429,7 +440,23 @@ for f in "${cloners[@]}"; do
                 # cd was invisible and the git ran against the outer WORKDIR (codex).
                 # A subshell does not survive the group, but nothing here reads the cwd
                 # after it, so tracking the entry is enough.
-                gsub(/^[({][[:space:]]*/, "", cmd)
+                # `RUN (cd X && ...)` is ordinary grouping. The opener leaves the first
+                # segment starting with `(cd`, matching neither test below -- but a
+                # subshell also CONFINES the cd, and my first version stripped the paren
+                # without restoring afterwards, so `(cd /src/tika && echo ok); git reset`
+                # carried the worktree past the group and convicted a reset elsewhere
+                # (codex). Enter and leave it properly.
+                while (cmd ~ /^[({][[:space:]]*/) {
+                    if (subdepth == 0) subsaved = S
+                    subdepth++
+                    sub(/^[({][[:space:]]*/, "", cmd)
+                }
+                subclose = 0
+                while (cmd ~ /[[:space:]]*[)}]$/ && subdepth > 0) {
+                    sub(/[[:space:]]*[)}]$/, "", cmd)
+                    subdepth--
+                    if (subdepth == 0) subclose = 1
+                }
                 # Which directories the shell can be in HERE, from the previous command
                 # and the separator that joined them:
                 #   &&  runs on success -- and the previous FAILURE is remembered, because
@@ -465,8 +492,10 @@ for f in "${cloners[@]}"; do
                     for (si = 1; si <= nS; si++)
                         csucc = sadd(csucc, (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : sp[si] "/" d))
                     cfail = S
+                    if (subclose) { S = subsaved; csucc = S; cfail = S }
                     continue
                 }
+                if (subclose) { csucc = subsaved; cfail = subsaved }
                 if (cmd !~ /^git[[:space:]]/) continue
                 # `-C` names the worktree explicitly; otherwise the shell cwd decides.
                 # Compared UNQUOTED: `git -C "/src/tika"` is the ordinary written form,

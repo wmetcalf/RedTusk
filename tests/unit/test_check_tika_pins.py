@@ -252,6 +252,9 @@ BYPASSES = [
     # `RUN (cd X && ...)` is ordinary grouping; the opener hid the cd.
     pytest.param(
         'RUN (cd /src/tika && git reset --hard HEAD^)\n', id="subshell-opener-before-cd"),
+    # WORKDIR continues across `\` like every other instruction.
+    pytest.param(
+        'WORKDIR /src/\\\ntika\nRUN git reset --hard HEAD^\n', id="continued-workdir"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -415,6 +418,11 @@ BENIGN = [
     # `git --help reset` DISPLAYS documentation; the word after it is a help target.
     pytest.param(
         'WORKDIR /src/tika\nRUN git --help reset\n', id="help-target-is-not-a-subcommand"),
+    # A subshell CONFINES its cd. Stripping the opener without restoring the parent
+    # carried the worktree past the group and convicted a reset elsewhere.
+    pytest.param(
+        'WORKDIR /src/other\nRUN (cd /src/tika && echo ok); git reset --hard HEAD^\n',
+        id="subshell-confines-its-cd"),
 ]
 
 
