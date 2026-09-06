@@ -147,13 +147,25 @@ _aws_sts_ok() {
 # setpriv takes raw uids and needs no passwd entry, which is exactly this case.
 _aws_readable_by_uid() {
     local uid="$1" file="$2" out=""
-    [ "$(id -u)" = 0 ] || command -v sudo >/dev/null || return 2
+    # `$SUDO -n ...` is WRONG when already root: the documented invocation is
+    # `sudo scripts/prepare_node_ubuntu.sh`, so SUDO is "" and the command began
+    # with `-n`, which is not a program. Every probe then returned unknown and the
+    # check reported NOT CHECKED on the primary deployment path -- inert exactly
+    # where it matters (codex). Root runs the tool directly.
+    if [ "$(id -u)" = 0 ]; then
+        set -- ""            # no prefix
+    elif command -v sudo >/dev/null; then
+        set -- "sudo -n"
+    else
+        return 2
+    fi
+    local pre="$1"
     if command -v setpriv >/dev/null; then
-        out="$($SUDO -n setpriv --reuid="$uid" --regid="$uid" --clear-groups \
+        out="$($pre setpriv --reuid="$uid" --regid="$uid" --clear-groups \
                  sh -c 'test -r "$1" && echo YES || echo NO' _ "$file" 2>/dev/null)"
     fi
     if [ -z "$out" ]; then
-        out="$($SUDO -n -u "#$uid" sh -c 'test -r "$1" && echo YES || echo NO' _ "$file" 2>/dev/null)"
+        out="$($pre su -s /bin/sh -c 'test -r "$0" && echo YES || echo NO' "#$uid" "$file" 2>/dev/null)"
     fi
     case "$out" in
         YES) return 0 ;;
@@ -180,12 +192,24 @@ _aws_creds_status() {
     #
     # Same class as the node-share directory above, which had to be owned by the
     # worker uid for exactly this reason.
-    _aws_readable_by_uid "${REDTUSK_WORKER_UID:-10001}" "$creds"
-    case "$?" in
-        0) echo "valid (sts ok, $creds; readable by uid ${REDTUSK_WORKER_UID:-10001})" ;;
-        2) echo "valid (sts ok, $creds; NOT CHECKED for uid ${REDTUSK_WORKER_UID:-10001} — needs sudo)" ;;
-        *) echo "UNUSABLE — $creds passes sts as $(id -un) but uid ${REDTUSK_WORKER_UID:-10001} (the dispatcher) cannot read it; the burst tier will fail closed. See the burst notes below." ;;
-    esac
+    # The overlay sets AWS_CONFIG_FILE=/aws/config as well, and a role profile does
+    # not resolve without it -- so an unreadable config fails the tier just as an
+    # unreadable credentials file does. Absent is fine (a plain key profile needs
+    # no config); present-but-unreadable is not.
+    local wuid="${REDTUSK_WORKER_UID:-10001}" conf="$home/.aws/config" bad="" unknown=""
+    _aws_readable_by_uid "$wuid" "$creds"
+    case "$?" in 1) bad="$creds" ;; 2) unknown=1 ;; esac
+    if [ -z "$bad" ] && [ -f "$conf" ]; then
+        _aws_readable_by_uid "$wuid" "$conf"
+        case "$?" in 1) bad="$conf" ;; 2) unknown=1 ;; esac
+    fi
+    if [ -n "$bad" ]; then
+        echo "UNUSABLE — $creds passes sts as $(id -un) but uid $wuid (the dispatcher) cannot read $bad; the burst tier will fail closed. See the burst notes below."
+    elif [ -n "$unknown" ]; then
+        echo "valid (sts ok, $creds; NOT CHECKED for uid $wuid — no setpriv/su)"
+    else
+        echo "valid (sts ok, $creds; readable by uid $wuid)"
+    fi
 }
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
@@ -474,10 +498,12 @@ AWS burst tier (this is the control-plane node):
      copy it owns (this script never writes credentials itself):
        sudo install -d -m 0500 -o ${REDTUSK_WORKER_UID:-10001} /etc/redtusk/aws
        sudo install -m 0400 -o ${REDTUSK_WORKER_UID:-10001} $(_aws_creds_home)/.aws/credentials /etc/redtusk/aws/
+       [ -f $(_aws_creds_home)/.aws/config ] && sudo install -m 0400 -o ${REDTUSK_WORKER_UID:-10001} $(_aws_creds_home)/.aws/config /etc/redtusk/aws/
        AWS_CREDS_DIR=/etc/redtusk/aws
      or grant it narrow access to the existing one (needs the acl package):
        sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:x $(_aws_creds_home) $(_aws_creds_home)/.aws
        sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:r $(_aws_creds_home)/.aws/credentials
+       [ -f $(_aws_creds_home)/.aws/config ] && sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:r $(_aws_creds_home)/.aws/config
   3. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
   4. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:

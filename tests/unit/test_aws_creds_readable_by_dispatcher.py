@@ -50,7 +50,12 @@ def _status(readable: str, tmp_path: Path) -> tuple[str, str]:
         "set -u",
         f'DEPLOY_USER={Path.home().name!r}',
         f'AWS_CREDS_HOME={str(tmp_path)!r}',
-        "SUDO=sudo",
+        # Derived the way the script derives it, NOT hardcoded: `sudo
+        # prepare_node_ubuntu.sh` is the documented invocation, so SUDO is ""
+        # on the primary path. A harness that pinned it to "sudo" tested a
+        # configuration the deployment never uses -- and hid a probe that was
+        # inert as root.
+        'SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo',
         'have() { command -v "$1" >/dev/null; }',
         "aws() { return 0; }",           # the sts probe passes
         block("_aws_creds_home"),
@@ -119,12 +124,15 @@ def _probe(sudo_behaviour: str, tmp_path: Path) -> int:
     assert m, "probe not found"
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    (bindir / "sudo").write_text(sudo_behaviour)
-    (bindir / "sudo").chmod(0o755)
+    # Both mechanisms are stubbed, and `sudo` too: the probe picks a prefix from
+    # whether it is root, so pinning only one of them would leave a path untested.
+    for name in ("sudo", "setpriv", "su"):
+        (bindir / name).write_text(sudo_behaviour)
+        (bindir / name).chmod(0o755)
     harness = "\n".join([
         "set -u",
         f'export PATH={str(bindir)!r}:$PATH',
-        "SUDO=sudo",
+        'SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo',
         m.group(0),
         '_aws_readable_by_uid 10001 /some/file; echo "rc=$?"',
     ])
@@ -151,4 +159,62 @@ def test_the_probe_reports_not_readable_only_on_an_actual_no(tmp_path: Path) -> 
 
 def test_the_probe_reports_readable_on_yes(tmp_path: Path) -> None:
     assert _probe("#!/bin/sh\necho YES\n", tmp_path) == 0
+
+
+def test_the_config_file_is_checked_when_it_exists(tmp_path: Path) -> None:
+    """The overlay sets `AWS_CONFIG_FILE=/aws/config`, and a role profile does not
+    resolve without it -- so an unreadable config fails the tier exactly as an
+    unreadable credentials file does. Absent is fine; present-but-unreadable is not.
+    """
+    text = SCRIPT.read_text()
+    assert 'conf="$home/.aws/config"' in text
+    assert "[ -f \"$conf\" ]" in text, "an absent config must not be treated as broken"
+
+
+def test_the_remediations_cover_the_config_file_too() -> None:
+    """A remediation that exposes only `credentials` leaves a role profile broken
+    in the same silent way, so both documented fixes have to mention config."""
+    text = SCRIPT.read_text()
+    copy_block = text[text.index("install -d -m 0500"):]
+    assert ".aws/config /etc/redtusk/aws/" in copy_block[:600], "the copy remediation skips config"
+    acl_block = text[text.index("setfacl -m"):]
+    assert ".aws/config" in acl_block[:600], "the ACL remediation skips config"
+
+
+def test_a_non_root_caller_runs_setpriv_through_sudo(tmp_path: Path) -> None:
+    """The prefix has to COMPOSE with the tool, not replace it.
+
+    A non-root caller must end up running `sudo -n setpriv ...`; the first version
+    of this probe built the command as `$SUDO -n <tool>`, which as root -- the
+    documented `sudo prepare_node_ubuntu.sh` invocation, where SUDO is "" --
+    expanded to a command literally beginning with `-n`. Every probe then returned
+    unknown and the check was inert on the primary deployment path (codex).
+
+    The root half of that decision cannot be exercised from a test that is not
+    root; it is verified on toolz2 instead, where as root the probe returns 1 for
+    the deploy user's 0600 credentials and 0 for a world-readable file. This test
+    pins the half that IS reachable, so the composition cannot silently regress.
+    """
+    text = SCRIPT.read_text()
+    m = re.search(r"^_aws_readable_by_uid\(\) \{.*?^\}", text, re.S | re.M)
+    assert m
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv_log = tmp_path / "argv"
+    for name in ("sudo", "setpriv", "su"):
+        (bindir / name).write_text(
+            f'#!/bin/sh\necho "{name} $*" >> {str(argv_log)!r}\nexit 1\n'
+        )
+        (bindir / name).chmod(0o755)
+    harness = "\n".join([
+        "set -u",
+        f'export PATH={str(bindir)!r}:$PATH',
+        m.group(0),
+        "_aws_readable_by_uid 10001 /some/file || true",
+    ])
+    subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
+    seen = argv_log.read_text() if argv_log.exists() else ""
+    assert "sudo -n setpriv --reuid=10001" in seen, (
+        f"a non-root caller did not run setpriv through sudo; saw: {seen!r}"
+    )
 
