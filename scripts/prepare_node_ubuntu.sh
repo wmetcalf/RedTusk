@@ -192,9 +192,22 @@ _aws_readable_by_uid() {
 # The check has to follow the configuration, not the convention.
 _aws_creds_dir() {
     local env_file="$REPO_ROOT/deploy/docker/.env" configured=""
-    if [ -f "$env_file" ]; then
+    # Compose PRECEDENCE: a value in the environment of the shell that launches
+    # compose overrides the .env file. Checking the file first reported on a
+    # directory the dispatcher would never be given (codex).
+    if [ -n "${AWS_CREDS_DIR:-}" ]; then
+        configured="$AWS_CREDS_DIR"
+    elif [ -f "$env_file" ]; then
         configured="$(sed -n 's/^[[:space:]]*AWS_CREDS_DIR=//p' "$env_file" | tail -1)"
         configured="${configured%\"}"; configured="${configured#\"}"
+    fi
+    # Compose INTERPOLATION: `AWS_CREDS_DIR=${HOME}/.aws` is a supported value, and
+    # the literal is not a path. Expanded against the environment, as compose does.
+    # `docker compose config` would be the authority, but resolving it needs every
+    # other required variable in the merged stack (POSTGRES_PASSWORD, the region,
+    # ...), so it fails on precisely the half-configured node this check is for.
+    if [ -n "$configured" ]; then
+        configured="$(eval "printf '%s' \"$(printf '%s' "$configured" | sed 's/[\\`"]/\\&/g; s/\$\([A-Za-z_][A-Za-z0-9_]*\)/${\1}/g')\"" 2>/dev/null)"
     fi
     if [ -n "$configured" ]; then echo "$configured"; else echo "$(_aws_creds_home)/.aws"; fi
 }

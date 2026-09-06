@@ -359,7 +359,7 @@ def test_the_check_follows_aws_creds_dir_not_the_convention(tmp_path: Path) -> N
     home = tmp_path / "home"
     (home / ".aws").mkdir(parents=True)
 
-    def resolve(env_body: str | None) -> str:
+    def resolve(env_body: str | None, env: dict[str, str] | None = None) -> str:
         env_file = repo / "deploy" / "docker" / ".env"
         if env_body is None:
             env_file.unlink(missing_ok=True)
@@ -372,7 +372,8 @@ def test_the_check_follows_aws_creds_dir_not_the_convention(tmp_path: Path) -> N
             m.group(0),
             "_aws_creds_dir",
         ])
-        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
+                           timeout=60, env={**os.environ, **(env or {})})
         assert r.returncode == 0, r.stderr
         return r.stdout.strip()
 
@@ -429,4 +430,49 @@ def test_sts_validates_the_configured_credentials(tmp_path: Path) -> None:
     assert seen == f"{elsewhere}/credentials|{elsewhere}/config", (
         f"sts validated the wrong credentials: {seen!r}"
     )
+
+
+def test_the_configured_directory_follows_compose_precedence_and_interpolation(
+    tmp_path: Path,
+) -> None:
+    """Compose interpolates values and lets the environment override the file.
+
+    `AWS_CREDS_DIR=${HOME}/.aws` is a supported value whose LITERAL is not a path,
+    and a variable exported in the shell that launches compose wins over the file.
+    Reading the file verbatim reported on a directory the dispatcher would never
+    be given (codex).
+
+    `docker compose config` would be the authority, but resolving it needs every
+    other required variable in the merged stack -- so it fails on exactly the
+    half-configured node this check exists for. Hence the precedence is mirrored.
+    """
+    text = SCRIPT.read_text()
+    m = re.search(r"^_aws_creds_dir\(\) \{.*?^\}", text, re.S | re.M)
+    assert m
+
+    repo = tmp_path / "repo"
+    (repo / "deploy" / "docker").mkdir(parents=True)
+
+    def resolve(env_body: str, env: dict[str, str]) -> str:
+        (repo / "deploy" / "docker" / ".env").write_text(env_body)
+        harness = "\n".join([
+            "set -u",
+            f'REPO_ROOT={str(repo)!r}',
+            '_aws_creds_home() { echo /home/deploy; }',
+            m.group(0),
+            "_aws_creds_dir",
+        ])
+        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
+                           timeout=60, env={**os.environ, **env})
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
+
+    plain = {"HOME": "/home/tester", "AWS_CREDS_DIR": ""}
+    assert resolve("AWS_CREDS_DIR=/etc/redtusk/aws\n", plain) == "/etc/redtusk/aws"
+    assert resolve("AWS_CREDS_DIR=${HOME}/.aws\n", plain) == "/home/tester/.aws"
+    assert resolve("AWS_CREDS_DIR=$HOME/.aws\n", plain) == "/home/tester/.aws"
+    # The environment wins over the file, as compose resolves it.
+    assert resolve(
+        "AWS_CREDS_DIR=/from/dotenv\n", {**plain, "AWS_CREDS_DIR": "/from/env"}
+    ) == "/from/env"
 
