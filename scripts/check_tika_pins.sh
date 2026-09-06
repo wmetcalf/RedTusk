@@ -422,7 +422,7 @@ for f in "${cloners[@]}"; do
                     hddash = (hd ~ /^<<-/)
                     sub(/^<<-?/, "", hd)
                     sub(/[[:space:]<>&|;].*$/, "", hd)
-                    gsub(/[\"\x27]/, "", hd)
+                    gsub(/[\"\x27\\]/, "", hd)   # <<\EOF quotes the delimiter too
                     if (hd != "") { heredoc = hd; hdbuf = ""; S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; next }
                 }
                 # A DATA heredoc: skip its body rather than reading it as commands.
@@ -430,7 +430,7 @@ for f in "${cloners[@]}"; do
                 hddash = (hd ~ /<<-/)
                 sub(/^.*<<-?/, "", hd)
                 sub(/[[:space:]<>&|;].*$/, "", hd)
-                gsub(/[\"\x27]/, "", hd)
+                gsub(/[\"\x27\\]/, "", hd)   # <<\EOF quotes the delimiter too
                 if (hd != "") {
                     heredoc = hd; hdbuf = ""; hdskip = 1
                     if (!cont) { S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; subdepth = 0 }
@@ -601,7 +601,12 @@ for f in "${cloners[@]}"; do
                         gd = substr(o, 11)
                     } else if (o == "--git-dir" && t < nt) {
                         gd = tok[++t]
-                    } else if (o ~ /^(-c|--namespace|--super-prefix|--config-env|--exec-path)$/ && t < nt) {
+                    } else if (o ~ /^(--exec-path|--html-path|--man-path|--info-path)$/) {
+                        # Operandless, these PRINT a path and exit with no subcommand.
+                        # `--exec-path` takes `=<path>` when it is setting one, never a
+                        # separate operand, so it must not swallow the next token either.
+                        info = 1
+                    } else if (o ~ /^(-c|--namespace|--super-prefix|--config-env)$/ && t < nt) {
                         # These take a SEPARATE operand. `git -c advice.x=false -C /src/tika
                         # reset` is ordinary, and reading the operand as the subcommand
                         # stopped the scan before the -C ever came into view.

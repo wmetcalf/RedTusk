@@ -283,6 +283,16 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /opt\nRUN true && cd /src/tika; git reset --hard HEAD^\n',
         id="true-always-runs-what-follows"),
+    # `<<\EOF` quotes the delimiter with a backslash; keeping it meant the real
+    # terminator was never recognised and the REST OF THE FILE was swallowed.
+    pytest.param(
+        'RUN <<\\EOF\ngit -C /src/tika reset --hard HEAD^\nEOF\n',
+        id="backslash-quoted-heredoc-delimiter"),
+    # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
+    # must not swallow the `-C` that follows.
+    pytest.param(
+        'RUN git --exec-path=/usr/lib/git-core -C /src/tika reset --hard HEAD^\n',
+        id="exec-path-with-a-value-does-not-eat-the-next-token"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -479,6 +489,11 @@ BENIGN = [
     pytest.param(
         'WORKDIR /opt\nRUN cd /src/tika | true; git reset --hard HEAD\n',
         id="cd-inside-a-pipeline-does-not-move-the-parent"),
+    # Operandless, these PRINT a path and exit: informational, no subcommand.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git --exec-path\n', id="git-exec-path-is-informational"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git --man-path\n', id="git-man-path-is-informational"),
 ]
 
 
