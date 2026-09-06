@@ -50,7 +50,8 @@ DOCKERFILE = REPO_ROOT / "deploy" / "docker" / "Dockerfile.host"
 
 
 def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
-            make_config: bool = False, creds_dir: str = "") -> Run:
+            make_config: bool = False, creds_dir: str = "",
+            symlink_to: str = "") -> Run:
     """Run the real `_aws_creds_status` with the probe forced either way.
 
     Only the function definitions are taken from the script -- running the
@@ -71,10 +72,13 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
     if creds_dir:
         (repo_root / "deploy" / "docker" / ".env").write_text(f"AWS_CREDS_DIR={creds_dir}\n")
     creds = tmp_path / ".aws" / "credentials"
-    creds.parent.mkdir(parents=True)
+    creds.parent.mkdir(parents=True, exist_ok=True)
     creds.write_text("[default]\n")
     if make_config:
         (tmp_path / ".aws" / "config").write_text("[profile x]\n")
+    if symlink_to:
+        creds.unlink()
+        creds.symlink_to(symlink_to)
     harness = "\n".join([
         "set -u",
         f'DEPLOY_USER={Path.home().name!r}',
@@ -494,4 +498,30 @@ def test_home_interpolation_uses_the_deploy_users_home_not_the_callers(
         assert got == "/home/deployuser/.aws", (
             f"caller HOME={caller_home} leaked into the resolution: {got!r}"
         )
+
+
+def test_a_credentials_symlink_escaping_the_mount_is_reported(tmp_path: Path) -> None:
+    """The overlay bind-mounts AWS_CREDS_DIR alone, so a symlink whose target lies
+    OUTSIDE it dangles in the container's mount namespace -- while every host-side
+    check follows it happily and reports valid. A dotfile-managed ~/.aws is the
+    ordinary way to arrive here (codex).
+    """
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    real = outside / "real-credentials"
+    real.write_text("[default]\n")
+    out = _status("0", tmp_path, symlink_to=str(real))
+    assert "UNUSABLE" in out.out, out.out
+    assert "symlink" in out.out and str(real) in out.out
+
+
+def test_a_symlink_that_stays_inside_the_mount_is_accepted(tmp_path: Path) -> None:
+    """The counterweight: the mount carries the whole directory, so a link WITHIN
+    it resolves in the container exactly as it does on the host. Rejecting every
+    symlink would be a false alarm on a perfectly good layout."""
+    inside = tmp_path / ".aws" / "actual"
+    inside.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_text("[default]\n")
+    out = _status("0", tmp_path, symlink_to=str(inside))
+    assert out.out.startswith("valid"), out.out
 

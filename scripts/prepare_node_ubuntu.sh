@@ -260,6 +260,21 @@ _aws_creds_status() {
         _aws_readable_by_uid "$wuid" "$conf"
         case "$?" in 1) bad="$conf" ;; 2) unknown=1 ;; esac
     fi
+    # A symlink that ESCAPES the mounted directory dangles in the container: the
+    # overlay bind-mounts AWS_CREDS_DIR alone, so the target resolves in the
+    # container`s mount namespace where it is absent or different. The host-side
+    # checks all follow it happily and report valid. A dotfile-managed ~/.aws is
+    # the ordinary way to end up here (codex).
+    local f target
+    for f in "$creds" "$conf"; do
+        [ -L "$f" ] || continue
+        target="$(readlink -f "$f" 2>/dev/null)" || continue
+        case "$target" in
+            "$mountdir"/*) ;;
+            *) echo "UNUSABLE — $f is a symlink to $target, outside the directory the overlay mounts ($mountdir); it will dangle inside the container. Copy the file in, or point AWS_CREDS_DIR at the directory that holds the real one."
+               return ;;
+        esac
+    done
     [ -n "$unresolved" ] && unknown=1
     if [ -n "$bad" ]; then
         echo "UNUSABLE — $creds passes sts as $(id -un) but uid $wuid (the dispatcher) cannot read $bad; the burst tier will fail closed. See the burst notes below."
