@@ -294,6 +294,10 @@ BYPASSES = [
     pytest.param(
         'RUN echo "<<EOF" && git -C /src/tika reset --hard HEAD^\n',
         id="quoted-heredoc-operator-is-an-argument"),
+    # `cd -` is $OLDPWD, an OPERAND -- the option loop was deleting the dash.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /opt && cd - && git reset --hard HEAD^\n',
+        id="cd-dash-returns-to-oldpwd"),
     # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
     # must not swallow the `-C` that follows.
     pytest.param(
@@ -500,6 +504,19 @@ BENIGN = [
         'WORKDIR /src/tika\nRUN git --exec-path\n', id="git-exec-path-is-informational"),
     pytest.param(
         'WORKDIR /src/tika\nRUN git --man-path\n', id="git-man-path-is-informational"),
+    # `cd -` the other way: back OUT of the worktree, so the reset is elsewhere.
+    pytest.param(
+        'WORKDIR /opt\nRUN cd /src/tika && cd - && git reset --hard HEAD^\n',
+        id="cd-dash-can-leave-the-worktree-too"),
+    # `-P` is still an option, not an operand.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd -P /opt && git reset --hard HEAD^\n',
+        id="cd-dash-P-is-still-an-option"),
+    # The BRANCH state is subshell-local as well as the cwd: leaving orsucc behind
+    # let the next separator union a directory the parent never entered.
+    pytest.param(
+        'WORKDIR /opt\nRUN (cd /src/tika || echo fallback); git reset --hard HEAD^\n',
+        id="subshell-branch-state-is-local-too"),
 ]
 
 

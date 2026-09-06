@@ -475,7 +475,7 @@ for f in "${cloners[@]}"; do
                 } else { hdbuf = hdbuf " ; " line; next }
             } else if (!justopened) {
             if (!cont) {
-                S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; subdepth = 0; buf = ""
+                S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; subdepth = 0; oldS = ""; buf = ""
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
             }
             cont = (piece ~ /\\[[:space:]]*$/)
@@ -553,7 +553,10 @@ for f in "${cloners[@]}"; do
                     d = cmd; sub(/^cd[[:space:]]*/, "", d)
                     # `cd [-L|[-P [-e]] [-@]] [dir]` -- skip the options and `--`, or the
                     # first one is read as the directory and the real target is lost.
-                    while (d ~ /^-/) {
+                    # `cd -` is $OLDPWD, an OPERAND. The option loop was deleting the
+                    # dash, after which the empty operand resolved through HOME and the
+                    # return to the previous directory was lost (codex).
+                    while (d ~ /^-/ && d !~ /^-([[:space:]]|$)/) {
                         if (d ~ /^--([[:space:]]|$)/) { sub(/^--[[:space:]]*/, "", d); break }
                         sub(/^-[^[:space:]]*[[:space:]]*/, "", d)
                     }
@@ -564,10 +567,15 @@ for f in "${cloners[@]}"; do
                     # builds run as root unless told otherwise, hence the fallback.
                     if (d == "") d = ("HOME" in envval) ? envval["HOME"] : "/root"
                     # On success the shell is in the target; on failure it has not moved.
-                    csucc = ""
-                    nS = split(S, sp, " ")
-                    for (si = 1; si <= nS; si++)
-                        csucc = sadd(csucc, (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : sp[si] "/" d))
+                    if (d == "-") {
+                        csucc = (oldS == "") ? S : oldS     # $OLDPWD
+                    } else {
+                        csucc = ""
+                        nS = split(S, sp, " ")
+                        for (si = 1; si <= nS; si++)
+                            csucc = sadd(csucc, (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : sp[si] "/" d))
+                    }
+                    oldS = S
                     cfail = S
                     # A cd that is part of a PIPELINE runs in a pipeline subshell and
                     # cannot move the parent shell. Unioning its success carried the
@@ -575,10 +583,12 @@ for f in "${cloners[@]}"; do
                     if (sepc == "P" || (i < n && substr(seg[i+1], 1, 1) == "P")) {
                         csucc = S; cfail = S
                     }
-                    if (subclose) { S = subsaved; csucc = S; cfail = S }
+                    # The branch state is subshell-local too: leaving orsucc/andfail behind let
+                    # the next separator union a directory the parent never entered (codex).
+                    if (subclose) { S = subsaved; csucc = S; cfail = S; orsucc = ""; andfail = "" }
                     continue
                 }
-                if (subclose) { csucc = subsaved; cfail = subsaved }
+                if (subclose) { csucc = subsaved; cfail = subsaved; orsucc = ""; andfail = "" }
                 if (cmd !~ /^git[[:space:]]/) continue
                 # `-C` names the worktree explicitly; otherwise the shell cwd decides.
                 # Compared UNQUOTED: `git -C "/src/tika"` is the ordinary written form,
