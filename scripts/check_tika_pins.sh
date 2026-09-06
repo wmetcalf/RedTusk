@@ -250,7 +250,10 @@ for f in "${cloners[@]}"; do
             cont = (line ~ /\\[[:space:]]*$/)
             sub(/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", line)
             sub(/\\[[:space:]]*$/, "", line)
-            n = split(line, seg, /&&|\|\||;/)
+            # A single `|` is a command boundary as much as `&&`. The sed this awk
+            # replaced split on it; dropping it left `cat x.patch | git -C /src/tika
+            # apply` as ONE segment starting with `cat`, so the git test skipped it.
+            n = split(line, seg, /&&|\|\||;|\|/)
             for (i = 1; i <= n; i++) {
                 cmd = seg[i]
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
@@ -276,16 +279,42 @@ for f in "${cloners[@]}"; do
                 # and later arguments can carry an unrelated -C.
                 bare = expand(unquote(cmd), envval)
                 nt = split(bare, tok, /[[:space:]]+/)
-                tgt = cwd; seen_c = 0
+                tgt = cwd; seen_c = 0; wt = ""; gd = ""
                 for (t = 2; t <= nt; t++) {
-                    if (tok[t] == "-C" && t < nt) {
+                    o = tok[t]
+                    if (o == "-C" && t < nt) {
                         arg = tok[++t]; seen_c = 1
                         tgt = (arg ~ /\$/) ? arg : normpath((arg ~ /^\//) ? arg : tgt "/" arg)
-                    } else if (tok[t] ~ /^-/) {
+                    } else if (o ~ /^--work-tree=/) {
+                        wt = substr(o, 13)
+                    } else if (o == "--work-tree" && t < nt) {
+                        wt = tok[++t]
+                    } else if (o ~ /^--git-dir=/) {
+                        gd = substr(o, 11)
+                    } else if (o == "--git-dir" && t < nt) {
+                        gd = tok[++t]
+                    } else if (o ~ /^(-c|--namespace|--super-prefix|--config-env|--exec-path)$/ && t < nt) {
+                        # These take a SEPARATE operand. `git -c advice.x=false -C /src/tika
+                        # reset` is ordinary, and reading the operand as the subcommand
+                        # stopped the scan before the -C ever came into view.
+                        t++
+                    } else if (o ~ /^-/) {
                         continue
                     } else {
                         break   # the subcommand: stop reading main-command options
                     }
+                }
+                # git(1) documents --work-tree/--git-dir as top-level options, and
+                # `git --git-dir=/src/tika/.git --work-tree=/src/tika reset` really does
+                # reset that checkout from anywhere. --work-tree names the tree being
+                # changed, so it wins; a bare --git-dir implies the tree beside it.
+                if (wt != "") {
+                    tgt = (wt ~ /\$/) ? wt : normpath((wt ~ /^\//) ? wt : tgt "/" wt)
+                    seen_c = 1
+                } else if (gd != "") {
+                    if (gd !~ /\$/) { sub(/\/\.git\/?$/, "", gd) }
+                    tgt = (gd ~ /\$/) ? gd : normpath((gd ~ /^\//) ? gd : tgt "/" gd)
+                    seen_c = 1
                 }
                 if (seen_c) { if (scoped(tgt)) print cmd; continue }
                 if (scoped(cwd)) print cmd

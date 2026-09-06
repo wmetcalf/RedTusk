@@ -142,6 +142,23 @@ BYPASSES = [
     # against the preceding one. Reading only the first put this in /src.
     pytest.param(
         'RUN git -C /src -C tika reset --hard HEAD^\n', id="multiple-dash-C-accumulate"),
+    # A single `|` is a command boundary as much as `&&`; patching through a pipe is
+    # ordinary. `apply` changes the tree without a checkout.
+    pytest.param(
+        'RUN cat /tmp/change.patch | git -C /src/tika apply\n', id="pipe-is-a-boundary"),
+    # git(1) global options that take a SEPARATE operand: reading the operand as the
+    # subcommand stops the scan before a later -C comes into view.
+    pytest.param(
+        'RUN git -c advice.detachedHead=false -C /src/tika reset --hard HEAD^\n',
+        id="dash-c-consumes-its-operand"),
+    # --work-tree / --git-dir reach the checkout from anywhere, naming no cwd at all.
+    pytest.param(
+        'RUN git --git-dir=/src/tika/.git --work-tree=/src/tika reset --hard HEAD^\n',
+        id="explicit-work-tree"),
+    pytest.param(
+        'RUN git --git-dir=/src/tika/.git reset --hard HEAD^\n', id="explicit-git-dir"),
+    pytest.param(
+        'RUN git --work-tree /src/tika reset --hard HEAD^\n', id="work-tree-space-form"),
 ]
 
 
@@ -203,6 +220,11 @@ BENIGN = [
     pytest.param(
         'RUN git -C /src/other -C sub reset --hard HEAD^\n',
         id="multiple-dash-C-accumulating-elsewhere"),
+    pytest.param(
+        'RUN git --work-tree=/src/other --git-dir=/src/other/.git reset --hard HEAD^\n',
+        id="explicit-work-tree-elsewhere"),
+    pytest.param(
+        'RUN cat /tmp/p.patch | git -C /src/other apply\n', id="pipe-into-another-worktree"),
 ]
 
 
