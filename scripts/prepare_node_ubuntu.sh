@@ -129,17 +129,63 @@ _aws_sts_ok() {
     aws sts get-caller-identity >/dev/null 2>&1
 }
 
+# Can the uid the dispatcher runs as actually READ this file? Asked of the OS, as
+# that uid, rather than computed from the mode bits -- the answer depends on every
+# parent directory as well as the file, and re-deriving that here would be a second,
+# worse implementation of the kernel.
+#
+# Returns 0 readable, 1 NOT readable, 2 could-not-test. The three are different
+# answers and collapsing the last two is how this check goes wrong in the other
+# direction -- reporting a working setup as broken.
+#
+# The probe echoes YES/NO from inside the target uid rather than relying on the
+# outer command`s exit status: `sudo -u "#10001"` fails with `unknown user #10001`
+# on a host with no passwd entry for that uid, which is EVERY host here (the user
+# exists only inside the image). Reading that failure as "cannot read" was wrong
+# and would have convicted correctly-provisioned nodes. Measured on toolz2.
+#
+# setpriv takes raw uids and needs no passwd entry, which is exactly this case.
+_aws_readable_by_uid() {
+    local uid="$1" file="$2" out=""
+    [ "$(id -u)" = 0 ] || command -v sudo >/dev/null || return 2
+    if command -v setpriv >/dev/null; then
+        out="$($SUDO -n setpriv --reuid="$uid" --regid="$uid" --clear-groups \
+                 sh -c 'test -r "$1" && echo YES || echo NO' _ "$file" 2>/dev/null)"
+    fi
+    if [ -z "$out" ]; then
+        out="$($SUDO -n -u "#$uid" sh -c 'test -r "$1" && echo YES || echo NO' _ "$file" 2>/dev/null)"
+    fi
+    case "$out" in
+        YES) return 0 ;;
+        NO)  return 1 ;;
+        *)   return 2 ;;   # neither could run: unknown, not "broken"
+    esac
+}
+
 _aws_creds_status() {
     local home creds
     home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
     creds="$home/.aws/credentials"
     have aws || { echo "n/a (no aws cli)"; return; }
     [ -f "$creds" ] || { echo "absent — place $creds"; return; }
-    if _aws_sts_ok; then
-        echo "valid (sts ok, $creds)"
-    else
+    if ! _aws_sts_ok; then
         echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
+        return
     fi
+    # `aws sts` above ran as the DEPLOY user (or root). The dispatcher does not:
+    # Dockerfile.host runs it as UID ${REDTUSK_WORKER_UID:-10001}, and a normal
+    # ~/.aws is 0700/0600 owned by the deploy user, so mounting it read-only still
+    # leaves that process unable to read a byte. The tier then fails closed and stays
+    # on the local tiers, which is silent -- and this line used to say "valid".
+    #
+    # Same class as the node-share directory above, which had to be owned by the
+    # worker uid for exactly this reason.
+    _aws_readable_by_uid "${REDTUSK_WORKER_UID:-10001}" "$creds"
+    case "$?" in
+        0) echo "valid (sts ok, $creds; readable by uid ${REDTUSK_WORKER_UID:-10001})" ;;
+        2) echo "valid (sts ok, $creds; NOT CHECKED for uid ${REDTUSK_WORKER_UID:-10001} — needs sudo)" ;;
+        *) echo "UNUSABLE — $creds passes sts as $(id -un) but uid ${REDTUSK_WORKER_UID:-10001} (the dispatcher) cannot read it; the burst tier will fail closed. See the burst notes below." ;;
+    esac
 }
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
@@ -422,6 +468,16 @@ AWS burst tier (this is the control-plane node):
   2. Add this line to deploy/docker/.env -- the overlay mounts the directory and
      REQUIRES the variable, so 'docker compose up' aborts without it:
        AWS_CREDS_DIR=$(_aws_creds_home)/.aws
+     The dispatcher runs as UID ${REDTUSK_WORKER_UID:-10001} and a normal ~/.aws is
+     0700/0600, so mounting it is not enough -- that uid must be able to READ it.
+     The 'aws creds' line above says UNUSABLE when it cannot. Either give that uid a
+     copy it owns (this script never writes credentials itself):
+       sudo install -d -m 0500 -o ${REDTUSK_WORKER_UID:-10001} /etc/redtusk/aws
+       sudo install -m 0400 -o ${REDTUSK_WORKER_UID:-10001} $(_aws_creds_home)/.aws/credentials /etc/redtusk/aws/
+       AWS_CREDS_DIR=/etc/redtusk/aws
+     or grant it narrow access to the existing one (needs the acl package):
+       sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:x $(_aws_creds_home) $(_aws_creds_home)/.aws
+       sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:r $(_aws_creds_home)/.aws/credentials
   3. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
   4. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:
