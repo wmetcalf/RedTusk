@@ -217,6 +217,24 @@ BYPASSES = [
     pytest.param(
         'ENV ROOT=/opt\nENV ROOT /src\nWORKDIR $ROOT/tika\nRUN git reset --hard HEAD^\n',
         id="legacy-two-token-env"),
+    # The `&&` skips after a failed cd, then the `||` catches the failure -- so the
+    # reset runs in the ORIGINAL directory.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /missing && echo ok || git reset --hard HEAD^\n',
+        id="failure-branch-reached-through-and-then-or"),
+    # `false` returns a status; it does not end the shell the way `exit` does.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /missing || false; git reset --hard HEAD^\n',
+        id="false-is-not-an-aborting-handler"),
+    # A data heredoc still has real commands on its OPENING line.
+    pytest.param(
+        'RUN cat <<EOF >/tmp/note && git -C /src/tika reset --hard HEAD^\nx\nEOF\n',
+        id="command-trailing-a-data-heredoc-redirect"),
+    # Inside SINGLE quotes a backslash is literal, so the quote closes and the
+    # semicolon really is a boundary.
+    pytest.param(
+        "WORKDIR /src/tika\nRUN echo 'x\\'; git reset --hard HEAD^\n",
+        id="backslash-is-literal-inside-single-quotes"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -361,6 +379,11 @@ BENIGN = [
         'WORKDIR /src/tika\nRUN git --version\n', id="git-version-has-no-subcommand"),
     pytest.param(
         'WORKDIR /src/tika\nRUN git --help\n', id="git-help-has-no-subcommand"),
+    # The counterweight for the failure-branch rule: here the reset can only run
+    # AFTER a successful cd, so the original directory is not reachable at it.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /opt/elsewhere && git reset --hard HEAD^ || echo failed\n',
+        id="reset-only-reachable-after-a-successful-cd"),
 ]
 
 

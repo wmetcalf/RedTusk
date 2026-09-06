@@ -153,6 +153,10 @@ for f in "${cloners[@]}"; do
                 # A backslash escapes the next character, so `echo recovery\; git reset`
                 # is ONE echo. Treating the escaped separator as a boundary reported a
                 # harmless command (codex).
+                # Quote state FIRST: inside single quotes a backslash is literal, so
+                # consuming the next character there ate the closing quote and left the
+                # scanner stuck in quoted mode, hiding a real separator (codex).
+                if (q == "\x27") { out = out c; if (c == q) q = ""; continue }
                 if (c == "\\" && i < length(v)) { out = out c substr(v, i + 1, 1); i++; continue }
                 if (q != "") { out = out c; if (c == q) q = ""; continue }
                 if (c == "\"" || c == "\x27") { q = c; out = out c; continue }
@@ -329,15 +333,23 @@ for f in "${cloners[@]}"; do
                     hd = lead
                     sub(/^<<-?[\"\x27]?/, "", hd)
                     sub(/[^A-Za-z0-9_].*$/, "", hd)
-                    if (hd != "") { heredoc = hd; hdbuf = ""; cwd = workdir; cwdalt = ""; next }
+                    if (hd != "") { heredoc = hd; hdbuf = ""; cwd = workdir; cwdalt = ""; altpend = ""; altlive = 0; next }
                 }
                 # A DATA heredoc: skip its body rather than reading it as commands.
                 hd = piece
                 sub(/^.*<<-?[\"\x27]?/, "", hd)
                 sub(/[^A-Za-z0-9_].*$/, "", hd)
-                if (hd != "") { heredoc = hd; hdbuf = ""; hdskip = 1; cwd = workdir; cwdalt = ""; next }
+                if (hd != "") {
+                    heredoc = hd; hdbuf = ""; hdskip = 1
+                    if (!cont) { cwd = workdir; cwdalt = ""; altpend = ""; altlive = 0 }
+                    # The OPENER still carries real commands -- `cat <<EOF >/tmp/x && git
+                    # -C /src/tika reset` runs the reset once cat succeeds. Skipping the
+                    # whole line lost it. Judge the opener with the heredoc token removed.
+                    sub(/<<-?[\"\x27]?[A-Za-z_][A-Za-z0-9_]*[\"\x27]?/, "", piece)
+                    line = piece; buf = ""; justopened = 1
+                }
             }
-            if (heredoc) {
+            if (heredoc && !justopened) {
                 probe = line
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", probe)
                 gsub(/[\"\x27]/, "", probe)
@@ -346,9 +358,9 @@ for f in "${cloners[@]}"; do
                     if (hdskip) { hdskip = 0; hdbuf = ""; next }
                     line = hdbuf; hdbuf = ""; buf = ""
                 } else { hdbuf = hdbuf " ; " line; next }
-            } else {
+            } else if (!justopened) {
             if (!cont) {
-                cwd = workdir; cwdalt = ""; buf = ""
+                cwd = workdir; cwdalt = ""; altpend = ""; altlive = 0; buf = ""
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
             }
             cont = (piece ~ /\\[[:space:]]*$/)
@@ -357,6 +369,7 @@ for f in "${cloners[@]}"; do
             if (cont) next
             line = buf
             }
+            justopened = 0
             # A single `|` is a command boundary as much as `&&`. The sed this awk
             # replaced split on it; dropping it left `cat x.patch | git -C /src/tika
             # apply` as ONE segment starting with `cat`, so the git test skipped it.
@@ -369,8 +382,22 @@ for f in "${cloners[@]}"; do
             n = split(tmp, seg, SEPCH)
             for (i = 1; i <= n; i++) {
                 cmd = seg[i]
+                sepc = (i > 1) ? substr(cmd, 1, 1) : ""
                 if (i > 1) cmd = substr(cmd, 2)      # drop the separator code
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
+                if (altpend != "") {
+                    # Which separator reaches the failure branch:
+                    #   &&  only the SUCCESS path continues -- the old directory is not
+                    #       reachable at what follows
+                    #   ||  only the failure path, so it is -- unless the handler is
+                    #       `exit`, which ends the shell. `false` merely returns a status,
+                    #       and grouping the two discarded a reachable directory (codex).
+                    #   ; | test nothing, so BOTH paths arrive and it is reachable
+                    if (sepc == "O") {
+                        if (cmd ~ /^exit([[:space:]]|$)/) { altpend = ""; altlive = 0 }
+                        else altlive = 1
+                    } else if (sepc == "S" || sepc == "P") altlive = 1
+                }
                 if (cmd ~ /^cd([[:space:]]|$)/) {
                     d = cmd; sub(/^cd[[:space:]]*/, "", d)
                     # `cd [-L|[-P [-e]] [-@]] [dir]` -- skip the options and `--`, or the
@@ -392,20 +419,20 @@ for f in "${cloners[@]}"; do
                     # idiom, where a failed cd terminates the shell rather than carrying
                     # on in the old directory. Keeping the old scope there rejected
                     # `cd /src/other || exit 1; git reset`, which is ordinary (codex).
-                    # A cd that is ITSELF a fallback (`cd A || cd B && ...`) may never
-                    # run: the shell groups that as `(cd A || cd B) && ...`, so when A
-                    # succeeds the second cd is skipped and the command runs in A. Its
-                    # trailing `&&` therefore proves nothing about THIS cd, and clearing
-                    # the alternative on it discarded the directory actually in force.
-                    cursep = (i > 1) ? substr(seg[i], 1, 1) : ""
-                    # The branch it falls back FROM is the live alternative, not whatever
-                    # directory preceded the pair: after `cd A || cd B`, the shell is in A
-                    # or in B and nowhere else, so prev (which is A here) replaces the
-                    # older candidate rather than deferring to it.
-                    if (cursep == "O") cwdalt = prev
-                    else if (nxtsep == "A") cwdalt = ""
-                    else if (nxtsep == "O" && nxtcmd ~ /^(exit|false)([[:space:]]|$)/) cwdalt = ""
-                    else if (cwdalt == "") cwdalt = prev
+                    # The directory a failed cd leaves us in stays REACHABLE until a
+                    # failure branch actually consumes it. Deciding that from the one
+                    # separator next to the cd was wrong in both directions:
+                    #   cd /missing && echo ok || git reset   -- the `&&` skips, the `||`
+                    #       catches the failure, and the reset runs in the ORIGINAL dir
+                    #   cd /opt && git reset || echo failed    -- here the reset only ever
+                    #       runs after a SUCCESSFUL cd, so the old dir is not reachable
+                    # So the pre-cd directory is recorded as a PENDING alternative and only
+                    # becomes live when an `||` is actually reached (below), which is the
+                    # point the shell would take the failure branch.
+                    # A cd reached through `||` was only taken because the previous
+                    # branch failed -- so that branch`s directory is where we would be
+                    # otherwise, and it is reachable, not merely pending.
+                    altpend = prev; altlive = (sepc == "O") ? 1 : 0
                     continue
                 }
                 if (cmd !~ /^git[[:space:]]/) continue
@@ -471,7 +498,7 @@ for f in "${cloners[@]}"; do
                 # read-only. Only an otherwise-unparseable command fails closed.
                 if (subcmd == "" && bare ~ /[[:space:]](-v|--version|-h|--help)([[:space:]]|$)/) continue
                 if (subcmd == "") {
-                    if (scoped(cwd) || (cwdalt != "" && scoped(cwdalt))) print cmd
+                    if (scoped(cwd) || (altlive && scoped(altpend))) print cmd
                     continue
                 }
                 if (subcmd !~ /^(reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)$/) continue
@@ -511,7 +538,7 @@ for f in "${cloners[@]}"; do
                 # it replaced, structurally rather than by my remembering to check.
                 if (index(bare, TIKA) > 0) { print cmd; continue }
                 if (seen_c) { if (scoped(tgt)) print cmd; continue }
-                if (scoped(cwd) || (cwdalt != "" && scoped(cwdalt))) print cmd
+                if (scoped(cwd) || (altlive && scoped(altpend))) print cmd
             }
         }
     ' <<<"$stripped" || true)"
