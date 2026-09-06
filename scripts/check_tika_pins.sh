@@ -121,20 +121,48 @@ for f in "${cloners[@]}"; do
     # WORKDIR sets it for the rest of the file, a `cd` sets it for the rest of ITS RUN
     # (each RUN starts a fresh shell, so the cd does not carry to the next instruction).
     moved="$(awk '
+        # Collapse . and .. so `cd /src/tika/../tika` and `WORKDIR /src` + `WORKDIR tika`
+        # both land on the same answer as the shell would give.
+        function normpath(pth,   parts, n, i, out, k) {
+            gsub(/\/+/, "/", pth)
+            n = split(pth, parts, "/")
+            k = 0
+            for (i = 1; i <= n; i++) {
+                if (parts[i] == "" || parts[i] == ".") continue
+                if (parts[i] == "..") { if (k > 0) k--; continue }
+                out[++k] = parts[i]
+            }
+            pth = ""
+            for (i = 1; i <= k; i++) pth = pth "/" out[i]
+            return (pth == "") ? "/" : pth
+        }
+        function unquote(v) { gsub(/["\x27]/, "", v); return v }
         function scoped(dir) { return dir == TIKA || index(dir, TIKA "/") == 1 }
-        BEGIN { TIKA = "/src/tika"; workdir = "/"; }
-        # Physical-line bookkeeping happens on the ORIGINAL text, before splitting.
+        BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = "" }
         { line = $0 }
-        # WORKDIR persists across instructions until the next WORKDIR (or a new FROM,
-        # which resets the build stage entirely).
-        line ~ /^[[:space:]]*FROM[[:space:]]/  { workdir = "/"; next }
+        # A new stage starts at its BASE stage`s working directory when that base is one
+        # of this file`s own stages -- Docker inherits it -- and at / otherwise.
+        line ~ /^[[:space:]]*FROM[[:space:]]/ {
+            hdr = line
+            sub(/^[[:space:]]*FROM[[:space:]]+/, "", hdr)
+            nf = split(hdr, ft, /[[:space:]]+/)
+            base = unquote(ft[1]); stage = ""
+            for (i = 2; i <= nf; i++) if (tolower(ft[i]) == "as" && i < nf) stage = unquote(ft[i+1])
+            workdir = (base in stage_wd) ? stage_wd[base] : "/"
+            if (stage != "") stage_wd[stage] = workdir
+            next
+        }
         line ~ /^[[:space:]]*WORKDIR[[:space:]]/ {
             sub(/^[[:space:]]*WORKDIR[[:space:]]+/, "", line)
-            gsub(/["\x27]/, "", line); sub(/[[:space:]]+$/, "", line)
-            workdir = line; next
+            line = unquote(line); sub(/[[:space:]]+$/, "", line)
+            # RELATIVE WORKDIR resolves against the one in force, not against /.
+            workdir = normpath((line ~ /^\//) ? line : workdir "/" line)
+            if (stage != "") stage_wd[stage] = workdir
+            next
         }
         line ~ /^[[:space:]]*RUN[[:space:]]/ || cont {
-            # A RUN starts a fresh shell at the current WORKDIR.
+            # Each RUN starts a fresh shell at the current WORKDIR, so a `cd` in one
+            # instruction does not carry into the next.
             if (!cont) cwd = workdir
             cont = (line ~ /\\[[:space:]]*$/)
             sub(/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", line)
@@ -145,14 +173,22 @@ for f in "${cloners[@]}"; do
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
                 if (cmd ~ /^cd[[:space:]]/) {
                     d = cmd; sub(/^cd[[:space:]]+/, "", d)
-                    gsub(/["\x27]/, "", d); sub(/[[:space:]].*$/, "", d)
-                    if (d ~ /^\//) cwd = d; else cwd = cwd "/" d
+                    d = unquote(d); sub(/[[:space:]].*$/, "", d)
+                    cwd = normpath((d ~ /^\//) ? d : cwd "/" d)
                     continue
                 }
                 if (cmd !~ /^git[[:space:]]/) continue
                 if (cmd !~ /[[:space:]](reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)([[:space:]]|$)/) continue
-                # -C names the worktree explicitly; otherwise the shell cwd decides.
-                if (cmd ~ /-C[[:space:]]+\/src\/tika([[:space:]]|$)/ || scoped(cwd)) print cmd
+                # `-C` names the worktree explicitly; otherwise the shell cwd decides.
+                # Compared UNQUOTED: `git -C "/src/tika"` is the ordinary written form,
+                # and requiring a bare path there silently un-scoped it.
+                bare = unquote(cmd)
+                if (match(bare, /-C[[:space:]]+[^[:space:]]+/)) {
+                    arg = substr(bare, RSTART, RLENGTH)
+                    sub(/^-C[[:space:]]+/, "", arg)
+                    if (scoped(normpath((arg ~ /^\//) ? arg : cwd "/" arg))) { print cmd; continue }
+                }
+                if (scoped(cwd)) print cmd
             }
         }
     ' <<<"$stripped" || true)"

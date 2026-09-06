@@ -93,6 +93,31 @@ BYPASSES = [
         f'RUN git -C /src/tika checkout {OTHER_PIN}\n', id="overriding-checkout"),
     pytest.param(
         f'RUN cd /src/tika && git checkout {OTHER_PIN}\n', id="cd-scoped-checkout"),
+    # Quoting the -C argument is the ordinary written form, not evasion. An earlier
+    # revision of the cwd tracking regressed this: it required a bare path after
+    # `-C`, so `git -C "/src/tika"` stopped being scoped to the worktree and the
+    # gate accepted it, while the implementation it replaced had caught it (codex).
+    pytest.param(
+        'RUN git -C "/src/tika" reset --hard HEAD^\n', id="double-quoted-dash-C"),
+    pytest.param(
+        "RUN git -C '/src/tika' reset --hard HEAD^\n", id="single-quoted-dash-C"),
+    pytest.param(
+        'RUN cd "/src/tika" && git reset --hard HEAD^\n', id="quoted-cd"),
+    # Docker resolves a relative WORKDIR against the one in force.
+    pytest.param(
+        'WORKDIR /src\nWORKDIR tika\nRUN git reset --hard HEAD^\n', id="relative-workdir"),
+    pytest.param(
+        'WORKDIR /src/tika/tika-core\nWORKDIR ..\nRUN git reset --hard HEAD^\n',
+        id="workdir-dotdot-back-into-the-worktree"),
+    # A stage built FROM a named earlier stage inherits that stage's WORKDIR.
+    pytest.param(
+        'FROM scratch AS pinned\nWORKDIR /src/tika\n'
+        'FROM pinned AS later\nRUN git reset --hard HEAD^\n',
+        id="workdir-inherited-from-a-named-base-stage"),
+    # A relative `cd` resolves against the WORKDIR in force, the same as a relative
+    # WORKDIR does. Without this case the two are not tested by the same rule.
+    pytest.param(
+        'WORKDIR /src\nRUN cd tika && git reset --hard HEAD^\n', id="relative-cd"),
 ]
 
 
@@ -121,6 +146,17 @@ BENIGN = [
         id="cd-does-not-leak-into-the-next-run"),
     pytest.param(
         'RUN echo "remember to git checkout $TIKA_FORK_SHA"\n', id="prose-mentioning-checkout"),
+    # The counterweight to stage inheritance: a stage from an UNRELATED base starts
+    # at /, so a bare reset there is not in the Tika worktree.
+    pytest.param(
+        'FROM scratch AS pinned\nWORKDIR /src/tika\n'
+        'FROM scratch AS unrelated\nRUN git reset --hard HEAD^\n',
+        id="fresh-stage-does-not-inherit-an-unrelated-workdir"),
+    pytest.param(
+        'WORKDIR /src/tika\nWORKDIR ..\nRUN git reset --hard HEAD^\n',
+        id="workdir-dotdot-out-of-the-worktree"),
+    pytest.param(
+        'RUN git -C "/src/other" reset --hard HEAD^\n', id="quoted-dash-C-elsewhere"),
 ]
 
 
