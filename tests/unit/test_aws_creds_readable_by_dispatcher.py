@@ -200,6 +200,81 @@ def _uid(*, docker_says: str | None, env: dict[str, str] | None = None,
     return r.stdout.strip()
 
 
+def _image(env_file: str = "", env: dict[str, str] | None = None,
+           *, tmp_path: Path) -> str:
+    """Run the REAL `_dispatcher_image` against the REAL compose files.
+
+    `.env` is a compose-file rule, so the project is copied into a scratch
+    directory to carry one without touching the repository.
+    """
+    text = SCRIPT.read_text()
+    m = re.search(r"^_dispatcher_image\(\) \{.*?^\}", text, re.S | re.M)
+    assert m, "_dispatcher_image not found"
+    root = Path(tempfile.mkdtemp(dir=tmp_path, prefix="project-"))
+    (root / "deploy" / "docker").mkdir(parents=True)
+    for name in ("docker-compose.yml", "docker-compose.aws-burst.yml"):
+        shutil.copy2(REPO_ROOT / "deploy" / "docker" / name,
+                     root / "deploy" / "docker" / name)
+    if env_file:
+        (root / "deploy" / "docker" / ".env").write_text(env_file)
+    harness = "\n".join([
+        "set -u",
+        f'REPO_ROOT={str(root)!r}',
+        'have() { command -v "$1" >/dev/null; }',
+        "_aws_creds_home() { echo /home/tester; }",
+        m.group(0),
+        "_dispatcher_image",
+    ])
+    base = {k: v for k, v in os.environ.items() if k != "REDTUSK_IMAGE"}
+    r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
+                       timeout=180, env={**base, **(env or {})})
+    return r.stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+def test_the_image_is_the_one_compose_will_actually_launch(tmp_path: Path) -> None:
+    """`REDTUSK_IMAGE` is documented as a per-host `deploy/docker/.env` value,
+    and .env is compose's file to read -- it is never exported into this script.
+    Reading the environment alone inspected `redtusk:dev` while the node launches
+    something else, so --check could validate credentials for the wrong uid and
+    provisioning chown the node share to it (codex).
+
+    The middle row is the finding, and the only one that discriminates: it is
+    also the only row whose answer the environment cannot supply.
+    """
+    assert _image(tmp_path=tmp_path) == "redtusk:dev"
+    assert _image("REDTUSK_IMAGE=redtusk:prod-42\n", tmp_path=tmp_path) == "redtusk:prod-42"
+    assert _image("REDTUSK_IMAGE=redtusk:from-the-file\n",
+                  {"REDTUSK_IMAGE": "redtusk:exported"},
+                  tmp_path=tmp_path) == "redtusk:exported"
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+def test_the_image_is_readable_without_a_configured_creds_dir(tmp_path: Path) -> None:
+    """The placeholder passed for AWS_CREDS_DIR has to be an ABSOLUTE path:
+    compose reads a bare name as a NAMED VOLUME and rejects the whole project
+    ("refers to undefined volume placeholder"), which would make the image
+    unreadable on exactly the nodes being provisioned -- the ones whose .env is
+    not finished yet. This fixture writes no AWS_CREDS_DIR at all.
+    """
+    assert _image("REDTUSK_IMAGE=redtusk:prod-42\n", tmp_path=tmp_path) == "redtusk:prod-42"
+
+
+def test_the_image_is_resolved_once_before_anything_interpolates_the_uid() -> None:
+    """Asking compose costs about a second and the burst notes interpolate
+    `_dispatcher_uid` eight times, so the answer is resolved into a global once,
+    at the top level -- a memo inside the function would not survive the `$( )`
+    each of those call sites uses.
+    """
+    text = SCRIPT.read_text()
+    assign = text.index('REDTUSK_IMAGE_RESOLVED="$(_dispatcher_image)"')
+    check = text.index('if [ "$CHECK_ONLY" -eq 1 ]; then')
+    assert assign < check, "the image is resolved after the check block already ran"
+    assert 'image="${REDTUSK_IMAGE_RESOLVED:-${REDTUSK_IMAGE:-redtusk:dev}}"' in text, (
+        "_dispatcher_uid no longer consumes the resolved image"
+    )
+
+
 OVERRIDE = {"REDTUSK_WORKER_UID": "2000"}
 
 

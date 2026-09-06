@@ -296,11 +296,42 @@ for m in c.get("services", {}).get("dispatcher-aws-burst", {}).get("volumes", []
 # Probing the wrong uid reports credentials as readable by a user the dispatcher
 # never becomes; ignoring the override chowns the node share to a uid a custom
 # dispatcher image cannot write, silently disabling node sizing.
+# WHICH image the burst dispatcher will run. `REDTUSK_IMAGE` is documented as a
+# per-host `deploy/docker/.env` value, and .env is compose`s to read -- it is not
+# exported into this script, so reading the environment alone inspects
+# `redtusk:dev` while the node launches something else (codex). Same rule as the
+# credentials directory: ask compose, do not reimplement its precedence.
+_dispatcher_image() {
+    local out=""
+    if have docker && have python3; then
+        # An ABSOLUTE placeholder: compose reads a bare name as a NAMED VOLUME
+        # and rejects the whole project ("refers to undefined volume
+        # placeholder"), which would make the image unreadable on every node
+        # whose .env does not set AWS_CREDS_DIR -- i.e. exactly the ones being
+        # provisioned. The image must be readable independently of it.
+        set -- HOME="$(_aws_creds_home)" \
+               POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder \
+               AWS_CREDS_DIR=/nonexistent-placeholder
+        out="$(cd "$REPO_ROOT/deploy/docker" 2>/dev/null &&
+               env "$@" \
+               docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml \
+                              config --format json 2>/dev/null |
+               python3 -c 'import json,sys
+try: c = json.load(sys.stdin)
+except Exception: raise SystemExit
+print(c.get("services", {}).get("dispatcher-aws-burst", {}).get("image", ""))' 2>/dev/null)"
+    fi
+    if [ -n "$out" ]; then printf '%s' "$out"; else printf '%s' "${REDTUSK_IMAGE:-redtusk:dev}"; fi
+}
+
 _dispatcher_uid() {
-    local from_image="" user=""
+    local from_image="" user="" image=""
+    # Resolved ONCE per run into REDTUSK_IMAGE_RESOLVED (asking compose costs a
+    # second, and the notes below interpolate this function eight times).
+    image="${REDTUSK_IMAGE_RESOLVED:-${REDTUSK_IMAGE:-redtusk:dev}}"
     if have docker; then
         user="$(docker image inspect --format '{{.Config.User}}' \
-                    "${REDTUSK_IMAGE:-redtusk:dev}" 2>/dev/null | head -1)"
+                    "$image" 2>/dev/null | head -1)"
         # `user` may be "10001:10001", a NAME, or empty. Only a numeric uid can be
         # used here: a name resolves against the image`s passwd, not this host`s.
         case "${user%%:*}" in
@@ -461,6 +492,9 @@ _aws_creds_status() {
         echo "valid (sts ok, $creds; readable by uid $wuid)"
     fi
 }
+
+# One compose call, before anything interpolates the dispatcher uid.
+REDTUSK_IMAGE_RESOLVED="$(_dispatcher_image)"
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
     log "--check: reporting current state, changing nothing"
