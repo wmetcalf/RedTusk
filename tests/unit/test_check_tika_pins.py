@@ -288,6 +288,12 @@ BYPASSES = [
     pytest.param(
         'RUN <<\\EOF\ngit -C /src/tika reset --hard HEAD^\nEOF\n',
         id="backslash-quoted-heredoc-delimiter"),
+    # A QUOTED `<<EOF` is an argument to echo, not a heredoc operator. Opening one
+    # there ate part of the quoted text and left the scanner inside an unmatched
+    # quote, so the real command was never seen.
+    pytest.param(
+        'RUN echo "<<EOF" && git -C /src/tika reset --hard HEAD^\n',
+        id="quoted-heredoc-operator-is-an-argument"),
     # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
     # must not swallow the `-C` that follows.
     pytest.param(

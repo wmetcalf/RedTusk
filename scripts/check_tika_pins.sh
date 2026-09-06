@@ -164,6 +164,21 @@ for f in "${cloners[@]}"; do
         # Separators only count OUTSIDE quotes. An unconditional replacement split
         # inside `echo "recovery: cd /src/tika; git reset --hard HEAD"` and presented the
         # quoted text as a real command, rejecting a Dockerfile that only prints (codex).
+        # Where a real `<<` operator starts, or 0. A quoted one is an argument:
+        # `echo "<<EOF" && git -C /src/tika reset` opened a phantom heredoc, ate part
+        # of the quoted text, and left the separator scanner inside an unmatched quote
+        # so the real command was never seen (codex).
+        function heredoc_at(v,   i, c, q) {
+            q = ""
+            for (i = 1; i <= length(v); i++) {
+                c = substr(v, i, 1)
+                if (q != "") { if (c == q) q = ""; continue }
+                if (c == "\"" || c == "\x27") { q = c; continue }
+                if (c == "\\" && i < length(v)) { i++; continue }
+                if (c == "<" && substr(v, i + 1, 1) == "<") return i
+            }
+            return 0
+        }
         function mark_separators(v,   out, i, c, q, nx) {
             out = ""; q = ""
             for (i = 1; i <= length(v); i++) {
@@ -414,7 +429,8 @@ for f in "${cloners[@]}"; do
             # the body to a command as DATA, and scanning it reported generated text --
             # a script or documentation being written out -- as an executed command
             # (codex). What precedes `<<` decides.
-            if (!cont && !heredoc && piece ~ /<<-?[\"\x27]?[^[:space:]<>&|;]+/) {
+            if (!cont && !heredoc && heredoc_at(piece) > 0 &&
+                substr(piece, heredoc_at(piece)) ~ /^<<-?[\"\x27\\]?[^[:space:]<>&|;]+/) {
                 lead = piece
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]*/, "", lead)
                 if (lead ~ /^<<-?[\"\x27]?[^[:space:]<>&|;]/) {
