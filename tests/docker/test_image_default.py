@@ -16,6 +16,8 @@ from typing import Any, cast
 
 import pytest
 
+from redtusk.engine import _signal_worker_loop
+
 pytestmark = pytest.mark.docker
 
 IMAGE = "redtusk-worker:default"
@@ -42,11 +44,19 @@ def run_worker(input_text: str, filename_hint: str = "test.txt") -> dict[str, An
         scratch.mkdir()
         (scratch / "in").mkdir()
         (scratch / "out").mkdir()
+        control = scratch / "control"
+        control.mkdir()
 
-        # Fix permissions so container UID 10001 can read/write
+        # Fix permissions so container UID 10001 can read/write. `control` is
+        # created HERE rather than left to the worker for a second reason: the
+        # worker runs as 10001, and a control dir it owns is one this test's
+        # own tempdir cleanup cannot empty -- `PermissionError: control.ready`
+        # out of shutil.rmtree. Unlinking depends on the DIRECTORY's mode, so a
+        # dir we own at 0777 stays removable whatever the worker writes into it.
         scratch.chmod(0o777)
         (scratch / "in").chmod(0o777)
         (scratch / "out").chmod(0o777)
+        control.chmod(0o777)
 
         # Write input file
         input_file = scratch / "in" / filename_hint
@@ -81,19 +91,23 @@ def run_worker(input_text: str, filename_hint: str = "test.txt") -> dict[str, An
             "ocr_skip_blank": True,
             "enable_thumbnails": True,
         }
-        (scratch / "job.json").write_text(json.dumps(job))
-
-        # Background thread: signal the file-based handshake after container starts.
-        def signal_worker() -> None:
-            time.sleep(2)
-            try:
-                (scratch / "control.go").touch()
-            except Exception:
-                pass
-
-        t = threading.Thread(target=signal_worker, daemon=True)
+        # Drive the PRODUCT's handshake loop rather than a copy of it. That is
+        # what `_signal_worker_loop` is module-level for, and this test had a
+        # copy that still spoke the pre-`control/` protocol: job.json and
+        # control.go at the slot ROOT, and a fixed 2s sleep instead of waiting
+        # for control.ready. The worker has announced readiness in
+        # `control/control.ready` and taken its job from `control/` for some
+        # time now, so it waited for a go-signal that was never written where
+        # it looks, and every test here died on the 90s docker timeout.
+        worker_done = threading.Event()
+        t = threading.Thread(
+            target=_signal_worker_loop,
+            args=(control, job, 60.0, worker_done),
+            daemon=True,
+        )
         t.start()
 
+        started = time.monotonic()
         result = subprocess.run(
             [
                 "docker", "run", "--rm",
@@ -110,7 +124,21 @@ def run_worker(input_text: str, filename_hint: str = "test.txt") -> dict[str, An
             capture_output=True,
             timeout=90,
         )
+        elapsed = time.monotonic() - started
+        worker_done.set()
         t.join(timeout=5)
+
+        # The handshake's readiness wait is otherwise unobservable from out here:
+        # `_signal_worker_loop` writes the go-signal even if control.ready never
+        # appears, so a broken ready-file path costs LATENCY, not correctness, and
+        # every assertion below still passes. Measured on this image: 2.35s with
+        # readiness detection working, 61.87s with it pointed at a filename nothing
+        # writes. This bound sits an order of magnitude above the former and below
+        # the 60s fallback, so it can only fire when that path is broken.
+        assert elapsed < 30, (
+            f"worker took {elapsed:.1f}s; the go-signal is most likely arriving "
+            f"from the loop's fallback rather than from seeing control.ready"
+        )
 
         assert result.returncode == 0, (
             f"Worker exited {result.returncode}\n"
