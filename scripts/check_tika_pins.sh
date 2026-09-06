@@ -285,6 +285,9 @@ for f in "${cloners[@]}"; do
                     if (o == "-C" && t < nt) {
                         arg = tok[++t]; seen_c = 1
                         tgt = (arg ~ /\$/) ? arg : normpath((arg ~ /^\//) ? arg : tgt "/" arg)
+                    } else if (o ~ /^-C./) {
+                        arg = substr(o, 3); seen_c = 1      # attached form: -C<path>
+                        tgt = (arg ~ /\$/) ? arg : normpath((arg ~ /^\//) ? arg : tgt "/" arg)
                     } else if (o ~ /^--work-tree=/) {
                         wt = substr(o, 13)
                     } else if (o == "--work-tree" && t < nt) {
@@ -316,6 +319,18 @@ for f in "${cloners[@]}"; do
                     tgt = (gd ~ /\$/) ? gd : normpath((gd ~ /^\//) ? gd : tgt "/" gd)
                     seen_c = 1
                 }
+                # DEFENCE IN DEPTH, and the reason it is here: this parser replaced a
+                # one-line text scan that asked only "does the command name the
+                # worktree?". The parser gains the cases where nothing names it -- a cd,
+                # a WORKDIR -- and it independently LOST four that the text scan caught,
+                # each time silently and each time found by review rather than by CI: a
+                # pipe boundary, `-c <name>=<value>` eating the scan, --work-tree/--git-dir,
+                # and the attached `-C<path>`. Enumerating the git option grammar correctly
+                # is not a thing to be confident about, so the two are UNIONED: whatever
+                # the parser concludes, a HEAD-moving command that mentions the worktree
+                # is still reported. That makes this strictly at least as strong as what
+                # it replaced, structurally rather than by my remembering to check.
+                if (index(bare, TIKA) > 0) { print cmd; continue }
                 if (seen_c) { if (scoped(tgt)) print cmd; continue }
                 if (scoped(cwd)) print cmd
             }

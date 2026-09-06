@@ -159,6 +159,11 @@ BYPASSES = [
         'RUN git --git-dir=/src/tika/.git reset --hard HEAD^\n', id="explicit-git-dir"),
     pytest.param(
         'RUN git --work-tree /src/tika reset --hard HEAD^\n', id="work-tree-space-form"),
+    # `-C<path>` attached is valid git and was caught by the text scan this parser
+    # replaced. It is the fourth catch the rewrite silently gave up, which is why the
+    # two approaches are now unioned rather than swapped.
+    pytest.param(
+        'RUN git -C/src/tika reset --hard HEAD^\n', id="attached-dash-C-path"),
 ]
 
 
@@ -345,5 +350,29 @@ def test_a_derived_stage_inherits_its_base_stages_env(tmp_path: Path) -> None:
     res = _run(_repo(tmp_path, default=text))
     assert res.returncode == 0, (
         f"a reset in the inherited /opt/app was reported as touching Tika: {res.stderr}"
+    )
+
+
+@pytest.mark.parametrize("verb", ["reset --hard HEAD^", "rebase upstream/main",
+                                  "merge other", "apply /tmp/x.patch"])
+def test_naming_the_worktree_is_always_reported_whatever_the_option_grammar(
+    tmp_path: Path, verb: str
+) -> None:
+    """The invariant that keeps this gate from getting weaker as it gets smarter.
+
+    The parser replaced a one-line text scan, and independently lost FOUR catches
+    the text scan had -- a pipe boundary, `-c <name>=<value>` eating the scan,
+    `--work-tree`/`--git-dir`, and attached `-C<path>` -- each silently, each found
+    by review rather than by CI. Getting the git option grammar exactly right is
+    not something to be confident about, so the parser's verdict is UNIONED with
+    the old question: does the command name the worktree at all?
+
+    This test states that union directly. It is deliberately indifferent to HOW
+    the command reaches /src/tika, because that is the part that kept changing.
+    """
+    text = CLONES_AND_PINS + f"RUN git --exec-path=/usr/lib/git-core -C /src/tika {verb}\n"
+    res = _run(_repo(tmp_path, default=text, crac=CLONES_AND_PINS))
+    assert res.returncode == 1, (
+        f"a HEAD-moving command naming the worktree was accepted: {verb}"
     )
 
