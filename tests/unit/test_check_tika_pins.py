@@ -351,6 +351,27 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /opt\nRUN FOO=1 cd /src/tika && git reset --hard HEAD^\n',
         id="env-prefix-before-cd-with-an-operand"),
+    # A single `&` is an ASYNC boundary: the parent shell does not move.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /opt & git reset --hard HEAD^\n',
+        id="single-ampersand-is-async"),
+    # GIT_DIR / GIT_WORK_TREE scope the repository exactly as the flags do.
+    pytest.param(
+        'WORKDIR /opt\nRUN GIT_DIR=/src/tika/.git git reset --hard HEAD^\n',
+        id="git-dir-env-prefix"),
+    pytest.param(
+        'WORKDIR /opt\nRUN GIT_WORK_TREE=/src/tika git reset --hard HEAD^\n',
+        id="git-work-tree-env-prefix"),
+    # A bare GIT_DIR leaves the WORKTREE as the cwd, so this rewrites the worktree
+    # even though the repository named is elsewhere -- verified against git 2.43.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN GIT_DIR=/src/other/.git git reset --hard HEAD^\n',
+        id="git-dir-elsewhere-still-rewrites-the-cwd"),
+    # The group's OUTCOME survives the subshell restore: `! false` succeeds, so the
+    # outer `&&` proceeds and the reset runs in the parent directory.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN (cd /opt && ! false) && git reset --hard HEAD^\n',
+        id="negation-inside-a-subshell"),
     # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
     # must not swallow the `-C` that follows.
     pytest.param(
@@ -593,6 +614,16 @@ BENIGN = [
     pytest.param(
         'WORKDIR /opt\nRUN HOME=/elsewhere cd && git reset --hard HEAD^\n',
         id="home-prefix-pointing-elsewhere"),
+    pytest.param(
+        'WORKDIR /opt\nRUN cd /src/tika & git reset --hard HEAD^\n',
+        id="async-cd-does-not-move-the-parent"),
+    pytest.param(
+        'WORKDIR /opt\nRUN GIT_DIR=/src/other/.git git reset --hard HEAD^\n',
+        id="git-dir-and-cwd-both-elsewhere"),
+    # `! true` FAILS, so the `&&` after the group is never taken.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN (cd /opt && ! true) && git reset --hard HEAD^\n',
+        id="negated-true-inside-a-subshell-fails"),
 ]
 
 

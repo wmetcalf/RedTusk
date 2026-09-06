@@ -196,6 +196,10 @@ for f in "${cloners[@]}"; do
                 nx = substr(v, i + 1, 1)
                 if (c == "|" && nx == "|") { out = out SEPCH "O"; i++; continue }
                 if (c == "&" && nx == "&") { out = out SEPCH "A"; i++; continue }
+                # A single `&` runs the preceding command ASYNCHRONOUSLY and is a
+                # boundary; the parent shell does not move, so it behaves like `;` for
+                # the directory model (codex).
+                if (c == "&")              { out = out SEPCH "B"; continue }
                 if (c == ";")              { out = out SEPCH "S"; continue }
                 if (c == "|")              { out = out SEPCH "P"; continue }
                 out = out c
@@ -498,6 +502,7 @@ for f in "${cloners[@]}"; do
             for (i = 1; i <= n; i++) {
                 cmd = seg[i]
                 sepc = (i > 1) ? substr(cmd, 1, 1) : ""
+                async = (i < n && substr(seg[i+1], 1, 1) == "B")
                 if (i > 1) cmd = substr(cmd, 2)      # drop the separator code
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
                 # `RUN (cd /src/tika && git reset)` is ordinary grouping. The opener made
@@ -520,7 +525,7 @@ for f in "${cloners[@]}"; do
                 #   ; | run unconditionally, so everything outstanding arrives
                 if (sepc == "A")      { andfail = sunion(andfail, cfail); S = sunion(csucc, orsucc); orsucc = "" }
                 else if (sepc == "O") { orsucc  = sunion(orsucc,  csucc); S = sunion(cfail, andfail); andfail = "" }
-                else if (sepc != "")  { S = sunion(sunion(csucc, cfail), sunion(orsucc, andfail)); orsucc = ""; andfail = "" }
+                else if (sepc != "")  { S = sunion(sunion(csucc, cfail), sunion(orsucc, andfail)); orsucc = ""; andfail = "" }   # ; | B
                 # `exit` ENDS the shell, so nothing after it is reachable by any path.
                 # `false` merely returns a status, which is why the two cannot be grouped.
                 # AFTER the separator, so the group records the set that is actually in
@@ -562,7 +567,12 @@ for f in "${cloners[@]}"; do
                 # (codex). Each early exit applies it first.
                 if (cmd ~ /^exit([[:space:]]|$)/) {
                     csucc = ""; cfail = ""
-                    if (subclose) { S = subsaved; csucc = S; cfail = S; orsucc = ""; andfail = ""; oldS = suboldS }
+                    if (subclose) {
+                        if (csucc != "") csucc = subsaved
+                        if (cfail != "") cfail = subsaved
+                        if (csucc == "" && cfail == "") { csucc = subsaved; cfail = subsaved }
+                        S = subsaved; orsucc = ""; andfail = ""; oldS = suboldS
+                    }
                     continue
                 }
                 # `false` NEVER succeeds and `true`/`:` never fail. Giving every command
@@ -572,7 +582,12 @@ for f in "${cloners[@]}"; do
                 if (cmd ~ /^false([[:space:]]|$)/) {
                     csucc = ""; cfail = S
                     if (negated) { swaptmp = csucc; csucc = cfail; cfail = swaptmp }
-                    if (subclose) { S = subsaved; csucc = ""; cfail = S = subsaved; orsucc = ""; andfail = ""; oldS = suboldS }
+                    if (subclose) {
+                        if (csucc != "") csucc = subsaved
+                        if (cfail != "") cfail = subsaved
+                        if (csucc == "" && cfail == "") { csucc = subsaved; cfail = subsaved }
+                        S = subsaved; orsucc = ""; andfail = ""; oldS = suboldS
+                    }
                     continue
                 }
                 # `!` inverts these as well. The early return skipped the swap applied to
@@ -581,7 +596,12 @@ for f in "${cloners[@]}"; do
                 if (cmd ~ /^(true|:)([[:space:]]|$)/) {
                     csucc = S; cfail = ""
                     if (negated) { swaptmp = csucc; csucc = cfail; cfail = swaptmp }
-                    if (subclose) { S = subsaved; csucc = subsaved; cfail = ""; orsucc = ""; andfail = ""; oldS = suboldS }
+                    if (subclose) {
+                        if (csucc != "") csucc = subsaved
+                        if (cfail != "") cfail = subsaved
+                        if (csucc == "" && cfail == "") { csucc = subsaved; cfail = subsaved }
+                        S = subsaved; orsucc = ""; andfail = ""; oldS = suboldS
+                    }
                     continue
                 }
                 # Any other command leaves the directory alone.
@@ -590,10 +610,15 @@ for f in "${cloners[@]}"; do
                 # to be stripped before BOTH tests: `GIT_CONFIG_NOSYSTEM=1 git reset` runs
                 # git, and `HOME=/src/tika cd` runs cd -- and that assignment also decides
                 # where a bare `cd` lands, so it is captured rather than only skipped.
-                cmdhome = ""
+                cmdhome = ""; envgd = ""; envwt = ""
                 while (cmd ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]/) {
                     asg = cmd; sub(/[[:space:]].*$/, "", asg)
                     if (asg ~ /^HOME=/) { cmdhome = substr(asg, 6); cmdhome = expand(unquote(cmdhome), envval) }
+                    # GIT_DIR / GIT_WORK_TREE scope the repository exactly as --git-dir
+                    # and --work-tree do; discarding them left a bare reset looking as
+                    # though it ran under the shell cwd (codex).
+                    if (asg ~ /^GIT_DIR=/)       { envgd = expand(unquote(substr(asg, 9)), envval) }
+                    if (asg ~ /^GIT_WORK_TREE=/) { envwt = expand(unquote(substr(asg, 15)), envval) }
                     sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", cmd)
                 }
                 if (cmd ~ /^cd([[:space:]]|$)/) {
@@ -632,12 +657,26 @@ for f in "${cloners[@]}"; do
                     if (sepc == "P" || (i < n && substr(seg[i+1], 1, 1) == "P")) {
                         csucc = S; cfail = S
                     }
+                    if (async) { csucc = S; cfail = S }
                     # The branch state is subshell-local too: leaving orsucc/andfail behind let
                     # the next separator union a directory the parent never entered (codex).
-                    if (subclose) { S = subsaved; csucc = S; cfail = S; orsucc = ""; andfail = ""; oldS = suboldS }
+                    if (subclose) {
+                        if (csucc != "") csucc = subsaved
+                        if (cfail != "") cfail = subsaved
+                        if (csucc == "" && cfail == "") { csucc = subsaved; cfail = subsaved }
+                        S = subsaved; orsucc = ""; andfail = ""; oldS = suboldS
+                    }
                     continue
                 }
-                if (subclose) { csucc = subsaved; cfail = subsaved; orsucc = ""; andfail = ""; oldS = suboldS }
+                # The group`s own OUTCOME survives the restore: only the directory sets
+                # come from the parent. `(cd /opt && ! false)` SUCCEEDS, so the outer
+                # `&&` proceeds -- overwriting both sets discarded that (codex).
+                if (subclose) {
+                    if (csucc != "") csucc = subsaved
+                    if (cfail != "") cfail = subsaved
+                    if (csucc == "" && cfail == "") { csucc = subsaved; cfail = subsaved }
+                    orsucc = ""; andfail = ""; oldS = suboldS
+                }
                 if (cmd !~ /^git[[:space:]]/) continue
                 # `!` INVERTS the exit status, so the shell takes the other branch: after
                 # `! cd /missing && git reset` the cd FAILED, the `!` makes that a success,
@@ -665,7 +704,7 @@ for f in "${cloners[@]}"; do
                 gsub(/""|\x27\x27/, ".", bare)
                 bare = expand(unquote(bare), envval)
                 nt = split(bare, tok, /[[:space:]]+/)
-                tgt = ""; seen_c = 0; wt = ""; gd = ""; subcmd = ""; info = 0
+                tgt = ""; seen_c = 0; wt = envwt; gd = envgd; subcmd = ""; info = 0
                 for (t = 2; t <= nt; t++) {
                     o = tok[t]
                     if (o == "-C" && t < nt) {
