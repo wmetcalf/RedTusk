@@ -118,6 +118,26 @@ BYPASSES = [
     # WORKDIR does. Without this case the two are not tested by the same rule.
     pytest.param(
         'WORKDIR /src\nRUN cd tika && git reset --hard HEAD^\n', id="relative-cd"),
+    # `FROM --platform=... base AS name` is the standard form; the base is the first
+    # NON-flag token. Reading the flag as the base silently reset the inherited dir.
+    pytest.param(
+        'FROM scratch AS pinned\nWORKDIR /src/tika\n'
+        'FROM --platform=linux/amd64 pinned AS later\nRUN git reset --hard HEAD^\n',
+        id="from-with-a-platform-flag"),
+    # Docker expands build variables in WORKDIR and in the shell.
+    pytest.param(
+        'ENV ROOT=/src\nWORKDIR $ROOT/tika\nRUN git reset --hard HEAD^\n',
+        id="workdir-from-an-env-var"),
+    pytest.param(
+        'ENV ROOT=/src\nWORKDIR ${ROOT}/tika\nRUN git reset --hard HEAD^\n',
+        id="workdir-from-a-braced-env-var"),
+    pytest.param(
+        'ARG R=/src\nRUN cd $R/tika && git reset --hard HEAD^\n', id="cd-from-an-arg"),
+    # A directory that still holds an unresolved variable is UNKNOWN, and a gate treats
+    # unknown as in scope: a false alarm a human can read beats silent acceptance.
+    pytest.param(
+        'WORKDIR $UNSET_VAR/x\nRUN git reset --hard HEAD^\n',
+        id="unresolvable-workdir-fails-closed"),
 ]
 
 
@@ -157,6 +177,25 @@ BENIGN = [
         id="workdir-dotdot-out-of-the-worktree"),
     pytest.param(
         'RUN git -C "/src/other" reset --hard HEAD^\n', id="quoted-dash-C-elsewhere"),
+    # git -C: "Run as if git was started in <path> instead of the current working
+    # directory". So when it is present it DECIDES -- falling through to the shell cwd
+    # flagged a legitimate operation on a different repository (codex).
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git -C /src/other reset --hard HEAD^\n',
+        id="explicit-dash-C-overrides-the-shell-cwd"),
+    pytest.param(
+        'RUN cd /src/tika && git -C /src/other reset --hard HEAD^\n',
+        id="explicit-dash-C-overrides-a-cd"),
+    pytest.param(
+        'ENV APPDIR=/opt/app\nWORKDIR $APPDIR\nRUN git reset --hard HEAD^\n',
+        id="resolved-env-workdir-outside-the-worktree"),
+    # The counterweight that makes `cd` expansion observable. Unexpanded, `$APPDIR`
+    # still holds a `$`, the unknown-directory rule fails CLOSED, and the command is
+    # flagged -- so a bypass case alone cannot tell whether expansion happened. Only a
+    # variable path resolving OUTSIDE the worktree distinguishes them.
+    pytest.param(
+        'ENV APPDIR=/opt/app\nRUN cd $APPDIR && git reset --hard HEAD^\n',
+        id="resolved-env-cd-outside-the-worktree"),
 ]
 
 

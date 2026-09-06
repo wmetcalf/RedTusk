@@ -137,26 +137,82 @@ for f in "${cloners[@]}"; do
             return (pth == "") ? "/" : pth
         }
         function unquote(v) { gsub(/["\x27]/, "", v); return v }
-        function scoped(dir) { return dir == TIKA || index(dir, TIKA "/") == 1 }
+        # Docker expands build variables in WORKDIR, so `ENV ROOT=/src` + `WORKDIR
+        # $ROOT/tika` really is the Tika worktree. Recorded literally, it read as
+        # `/$ROOT/tika` -- outside Tika -- and the gate passed.
+        function expand(v,   out, i, c, rest, name, j, ch) {
+            # Written as an explicit scan rather than gsub: a gsub replacement cannot
+            # express "the value, and then whatever character terminated the name"
+            # without `&`, which re-inserts the WHOLE match -- that produced
+            # `/src$ROOT/tika` from `$ROOT/tika` and the case it was written for still
+            # slipped through.
+            out = ""; i = 1
+            while (i <= length(v)) {
+                c = substr(v, i, 1)
+                if (c == "$") {
+                    rest = substr(v, i + 1)
+                    if (substr(rest, 1, 1) == "{") {
+                        j = index(rest, "}")
+                        if (j > 0) {
+                            name = substr(rest, 2, j - 2)
+                            if (name in envval) { out = out envval[name]; i += 1 + j; continue }
+                        }
+                    } else {
+                        name = ""; j = 1
+                        while (j <= length(rest)) {
+                            ch = substr(rest, j, 1)
+                            if (ch ~ /[A-Za-z0-9_]/) { name = name ch; j++ } else break
+                        }
+                        if (name != "" && (name in envval)) {
+                            out = out envval[name]; i += 1 + length(name); continue
+                        }
+                    }
+                }
+                out = out c; i++
+            }
+            return out
+        }
+        # A directory still holding an unresolved variable is UNKNOWN, and a gate treats
+        # unknown as in-scope. Failing closed costs a false alarm a human can read; failing
+        # open is the silent acceptance this whole script exists to prevent.
+        function scoped(dir) {
+            if (dir ~ /\$/) return 1
+            return dir == TIKA || index(dir, TIKA "/") == 1
+        }
         BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = "" }
         { line = $0 }
+        line ~ /^[[:space:]]*(ENV|ARG)[[:space:]]/ {
+            e = line
+            sub(/^[[:space:]]*(ENV|ARG)[[:space:]]+/, "", e)
+            ne = split(e, ev, /[[:space:]]+/)
+            for (i = 1; i <= ne; i++) {
+                if (split(ev[i], kv, "=") == 2 && kv[1] != "")
+                    envval[kv[1]] = expand(unquote(kv[2]))
+            }
+            next
+        }
         # A new stage starts at its BASE stage`s working directory when that base is one
         # of this file`s own stages -- Docker inherits it -- and at / otherwise.
         line ~ /^[[:space:]]*FROM[[:space:]]/ {
             hdr = line
             sub(/^[[:space:]]*FROM[[:space:]]+/, "", hdr)
             nf = split(hdr, ft, /[[:space:]]+/)
-            base = unquote(ft[1]); stage = ""
-            for (i = 2; i <= nf; i++) if (tolower(ft[i]) == "as" && i < nf) stage = unquote(ft[i+1])
+            # `FROM --platform=$BUILDPLATFORM base AS name` is the standard form, so the
+            # base is the first NON-FLAG token. Taking ft[1] blindly read the flag as the
+            # base, found it in no stage, and silently reset the inherited directory to /.
+            b = 1
+            while (b <= nf && ft[b] ~ /^--/) b++
+            base = unquote(ft[b]); stage = ""
+            for (i = b + 1; i <= nf; i++) if (tolower(ft[i]) == "as" && i < nf) stage = unquote(ft[i+1])
             workdir = (base in stage_wd) ? stage_wd[base] : "/"
             if (stage != "") stage_wd[stage] = workdir
             next
         }
         line ~ /^[[:space:]]*WORKDIR[[:space:]]/ {
             sub(/^[[:space:]]*WORKDIR[[:space:]]+/, "", line)
-            line = unquote(line); sub(/[[:space:]]+$/, "", line)
+            line = expand(unquote(line)); sub(/[[:space:]]+$/, "", line)
             # RELATIVE WORKDIR resolves against the one in force, not against /.
-            workdir = normpath((line ~ /^\//) ? line : workdir "/" line)
+            workdir = (line ~ /\$/) ? line : normpath((line ~ /^\//) ? line : workdir "/" line)
             if (stage != "") stage_wd[stage] = workdir
             next
         }
@@ -173,8 +229,8 @@ for f in "${cloners[@]}"; do
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
                 if (cmd ~ /^cd[[:space:]]/) {
                     d = cmd; sub(/^cd[[:space:]]+/, "", d)
-                    d = unquote(d); sub(/[[:space:]].*$/, "", d)
-                    cwd = normpath((d ~ /^\//) ? d : cwd "/" d)
+                    d = expand(unquote(d)); sub(/[[:space:]].*$/, "", d)
+                    cwd = (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : cwd "/" d)
                     continue
                 }
                 if (cmd !~ /^git[[:space:]]/) continue
@@ -182,11 +238,17 @@ for f in "${cloners[@]}"; do
                 # `-C` names the worktree explicitly; otherwise the shell cwd decides.
                 # Compared UNQUOTED: `git -C "/src/tika"` is the ordinary written form,
                 # and requiring a bare path there silently un-scoped it.
-                bare = unquote(cmd)
+                # git -C: "Run as if git was started in <path> instead of the current
+                # working directory". So when it is present it DECIDES -- falling through
+                # to the shell cwd flagged `cd /src/tika && git -C /src/other reset`, a
+                # legitimate operation on a different repository (codex).
+                bare = expand(unquote(cmd))
                 if (match(bare, /-C[[:space:]]+[^[:space:]]+/)) {
                     arg = substr(bare, RSTART, RLENGTH)
                     sub(/^-C[[:space:]]+/, "", arg)
-                    if (scoped(normpath((arg ~ /^\//) ? arg : cwd "/" arg))) { print cmd; continue }
+                    tgt = (arg ~ /\$/) ? arg : normpath((arg ~ /^\//) ? arg : cwd "/" arg)
+                    if (scoped(tgt)) print cmd
+                    continue
                 }
                 if (scoped(cwd)) print cmd
             }
