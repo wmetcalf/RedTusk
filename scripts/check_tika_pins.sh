@@ -475,7 +475,7 @@ for f in "${cloners[@]}"; do
                 } else { hdbuf = hdbuf " ; " line; next }
             } else if (!justopened) {
             if (!cont) {
-                S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; subdepth = 0; oldS = ""; buf = ""
+                S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; subdepth = 0; oldS = ""; delete subsavedA; delete suboldSA; buf = ""
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
             }
             cont = (piece ~ /\\[[:space:]]*$/)
@@ -511,6 +511,22 @@ for f in "${cloners[@]}"; do
                 # without restoring afterwards, so `(cd /src/tika && echo ok); git reset`
                 # carried the worktree past the group and convicted a reset elsewhere
                 # (codex). Enter and leave it properly.
+                # Which directories the shell can be in HERE, from the previous command
+                # and the separator that joined them:
+                #   &&  runs on success -- and the previous FAILURE is remembered, because
+                #       a later `||` catches it (`cd X && echo ok || git reset`)
+                #   ||  runs on failure -- and the previous SUCCESS is remembered, because
+                #       the command after the or-list runs if ANY branch succeeded
+                #   ; | run unconditionally, so everything outstanding arrives
+                if (sepc == "A")      { andfail = sunion(andfail, cfail); S = sunion(csucc, orsucc); orsucc = "" }
+                else if (sepc == "O") { orsucc  = sunion(orsucc,  csucc); S = sunion(cfail, andfail); andfail = "" }
+                else if (sepc != "")  { S = sunion(sunion(csucc, cfail), sunion(orsucc, andfail)); orsucc = ""; andfail = "" }
+                # `exit` ENDS the shell, so nothing after it is reachable by any path.
+                # `false` merely returns a status, which is why the two cannot be grouped.
+                # AFTER the separator, so the group records the set that is actually in
+                # force here. Saving before it stored the PREVIOUS command`s S, and an
+                # inner group then restored a stale directory -- `(cd /src/tika && (cd
+                # /var); git reset)` passed although the reset runs in the worktree.
                 # ONLY parentheses make a subshell. `{ cd X; }` is a brace group and runs
                 # in the CURRENT shell, so its cd persists -- restoring there accepted a
                 # reset that really had moved (codex). Braces are stepped over without
@@ -526,29 +542,21 @@ for f in "${cloners[@]}"; do
                 sub(/^(fi|done|esac)[[:space:]]*$/, "", cmd)
                 while (cmd ~ /^\{[[:space:]]*/) sub(/^\{[[:space:]]*/, "", cmd)
                 while (cmd ~ /^\([[:space:]]*/) {
-                    if (subdepth == 0) { subsaved = S; suboldS = oldS }
+                    # Saved at EVERY depth. Keeping one slot meant closing an inner
+                    # group restored nothing, so its cd escaped into the outer one
+                    # (codex). The stack is indexed by depth.
                     subdepth++
+                    subsavedA[subdepth] = S; suboldSA[subdepth] = oldS
                     sub(/^\([[:space:]]*/, "", cmd)
                 }
                 subclose = 0
                 while (cmd ~ /[[:space:]]*\}$/) sub(/[[:space:]]*\}$/, "", cmd)
                 while (cmd ~ /[[:space:]]*\)$/ && subdepth > 0) {
                     sub(/[[:space:]]*\)$/, "", cmd)
+                    subsaved = subsavedA[subdepth]; suboldS = suboldSA[subdepth]
                     subdepth--
-                    if (subdepth == 0) subclose = 1
+                    subclose = 1
                 }
-                # Which directories the shell can be in HERE, from the previous command
-                # and the separator that joined them:
-                #   &&  runs on success -- and the previous FAILURE is remembered, because
-                #       a later `||` catches it (`cd X && echo ok || git reset`)
-                #   ||  runs on failure -- and the previous SUCCESS is remembered, because
-                #       the command after the or-list runs if ANY branch succeeded
-                #   ; | run unconditionally, so everything outstanding arrives
-                if (sepc == "A")      { andfail = sunion(andfail, cfail); S = sunion(csucc, orsucc); orsucc = "" }
-                else if (sepc == "O") { orsucc  = sunion(orsucc,  csucc); S = sunion(cfail, andfail); andfail = "" }
-                else if (sepc != "")  { S = sunion(sunion(csucc, cfail), sunion(orsucc, andfail)); orsucc = ""; andfail = "" }
-                # `exit` ENDS the shell, so nothing after it is reachable by any path.
-                # `false` merely returns a status, which is why the two cannot be grouped.
                 # These return early, so the subshell restore below would be skipped --
                 # a group ending in `true` kept its cd and convicted a reset outside it
                 # (codex). Each early exit applies it first.

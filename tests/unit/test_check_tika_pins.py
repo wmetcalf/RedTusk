@@ -322,6 +322,12 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /src/tika\nRUN cd /opt && (cd /var); cd - && git reset --hard HEAD^\n',
         id="oldpwd-is-subshell-local"),
+    # After an INNER group closes, the OUTER group's cd is still in force. The group
+    # opener has to record the set in force at the group, not the previous command's:
+    # saving too early stored a stale directory and this reset went unseen.
+    pytest.param(
+        'WORKDIR /opt\nRUN (cd /src/tika && (cd /var); git reset --hard HEAD^)\n',
+        id="outer-group-cd-survives-an-inner-group"),
     # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
     # must not swallow the `-C` that follows.
     pytest.param(
@@ -549,6 +555,14 @@ BENIGN = [
     pytest.param(
         'WORKDIR /opt\nRUN (cd /src/tika && false); git reset --hard HEAD^\n',
         id="subshell-ending-in-false"),
+    # Subshell state is saved at EVERY depth: closing the inner group must restore
+    # the OUTER one, not leak its cd outwards.
+    pytest.param(
+        'WORKDIR /opt/repo\nRUN (cd /var/repo && (cd /src/tika); git reset --hard HEAD^)\n',
+        id="nested-subshell-restores-the-inner-depth"),
+    pytest.param(
+        'WORKDIR /opt\nRUN (cd /src/tika && (cd /var)); git reset --hard HEAD^\n',
+        id="nested-subshell-outer-confines-too"),
 ]
 
 
