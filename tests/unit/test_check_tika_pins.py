@@ -343,6 +343,14 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /src/tika\nRUN A=1 B=2 git reset --hard HEAD^\n',
         id="several-leading-env-assignments"),
+    # The prefix has to be stripped before the `cd` test too -- and a `HOME=`
+    # assignment decides where a bare `cd` lands, so it is captured, not skipped.
+    pytest.param(
+        'WORKDIR /opt\nRUN HOME=/src/tika cd && git reset --hard HEAD^\n',
+        id="home-prefix-before-a-bare-cd"),
+    pytest.param(
+        'WORKDIR /opt\nRUN FOO=1 cd /src/tika && git reset --hard HEAD^\n',
+        id="env-prefix-before-cd-with-an-operand"),
     # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
     # must not swallow the `-C` that follows.
     pytest.param(
@@ -582,6 +590,9 @@ BENIGN = [
     pytest.param(
         'WORKDIR /src/other\nRUN GIT_CONFIG_NOSYSTEM=1 git reset --hard HEAD^\n',
         id="env-prefix-in-another-worktree"),
+    pytest.param(
+        'WORKDIR /opt\nRUN HOME=/elsewhere cd && git reset --hard HEAD^\n',
+        id="home-prefix-pointing-elsewhere"),
 ]
 
 

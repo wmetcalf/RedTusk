@@ -586,6 +586,16 @@ for f in "${cloners[@]}"; do
                 }
                 # Any other command leaves the directory alone.
                 csucc = S; cfail = S
+                # A leading `VAR=value` is an environment prefix, not the command. It has
+                # to be stripped before BOTH tests: `GIT_CONFIG_NOSYSTEM=1 git reset` runs
+                # git, and `HOME=/src/tika cd` runs cd -- and that assignment also decides
+                # where a bare `cd` lands, so it is captured rather than only skipped.
+                cmdhome = ""
+                while (cmd ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]/) {
+                    asg = cmd; sub(/[[:space:]].*$/, "", asg)
+                    if (asg ~ /^HOME=/) { cmdhome = substr(asg, 6); cmdhome = expand(unquote(cmdhome), envval) }
+                    sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", cmd)
+                }
                 if (cmd ~ /^cd([[:space:]]|$)/) {
                     d = cmd; sub(/^cd[[:space:]]*/, "", d)
                     # `cd [-L|[-P [-e]] [-@]] [dir]` -- skip the options and `--`, or the
@@ -602,7 +612,8 @@ for f in "${cloners[@]}"; do
                     # empty operand as the current directory kept the shell in the
                     # worktree and convicted a reset that had left it (codex). Docker
                     # builds run as root unless told otherwise, hence the fallback.
-                    if (d == "") d = ("HOME" in envval) ? envval["HOME"] : "/root"
+                    if (d == "") d = (cmdhome != "") ? cmdhome : \
+                                     (("HOME" in envval) ? envval["HOME"] : "/root")
                     # On success the shell is in the target; on failure it has not moved.
                     if (d == "-") {
                         csucc = (oldS == "") ? S : oldS     # $OLDPWD
@@ -627,10 +638,6 @@ for f in "${cloners[@]}"; do
                     continue
                 }
                 if (subclose) { csucc = subsaved; cfail = subsaved; orsucc = ""; andfail = ""; oldS = suboldS }
-                # A leading `VAR=value` is an environment prefix, not the command --
-                # `GIT_CONFIG_NOSYSTEM=1 git reset` still runs git here (codex).
-                while (cmd ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]/)
-                    sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", cmd)
                 if (cmd !~ /^git[[:space:]]/) continue
                 # `!` INVERTS the exit status, so the shell takes the other branch: after
                 # `! cd /missing && git reset` the cd FAILED, the `!` makes that a success,
