@@ -273,6 +273,67 @@ _dispatcher_uid() {
     if [ -n "$from_image" ]; then echo "$from_image"; else echo 10001; fi
 }
 
+# EVERY symlink traversed while resolving the file -- at ANY path component, not
+# only the last -- must be RELATIVE and must stay inside the mounted directory.
+# A bind mount does not rewrite link text and mounts nothing but AWS_CREDS_DIR,
+# so a link that is absolute, or that leaves the directory even momentarily,
+# names a path the container does not have; every host-side check follows it
+# happily and reports valid.
+#
+# Four review rounds each found one instance of that single rule -- the final
+# component absolute, a later hop in the chain absolute, a hop escaping the
+# directory, and a symlinked DIRECTORY component (`credentials -> current/actual`
+# with `current -> <mount>/sub`). It is stated once here rather than patched a
+# fifth time (codex).
+#
+# Prints `<kind>TAB<link>TAB<target>` and returns 1 when the path is hazardous.
+_aws_link_hazard() {
+    local f="$1" mount="$2"
+    local rest prefix comp raw steps=0
+    case "$f" in
+        "$mount"/*) rest="${f#"$mount"/}" ;;
+        # Not under the mount at all -- a different failure, and the caller`s own
+        # containment check is what reports it.
+        *) return 0 ;;
+    esac
+    prefix="$mount"
+    # One component at a time, the way the kernel resolves a path. When a
+    # component turns out to be a link, its target is pushed back onto what is
+    # left to walk, so the target`s OWN components are examined too -- that is
+    # the whole difference between this and checking a chain of whole paths, and
+    # it is what `credentials -> current/actual` needs.
+    while [ -n "$rest" ]; do
+        steps=$((steps + 1))
+        if [ "$steps" -gt 80 ]; then
+            printf 'loop\t%s\t' "$prefix"; return 1
+        fi
+        comp="${rest%%/*}"
+        case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
+        case "$comp" in
+            ""|".") continue ;;
+            "..")
+                prefix="$(dirname "$prefix")"
+                # A hop out of the mounted directory dangles inside the container
+                # even if a later component comes back: only $mountdir is mounted.
+                case "$prefix" in
+                    "$mount"|"$mount"/*) ;;
+                    *) printf 'escape\t%s\t%s' "$f" "$prefix"; return 1 ;;
+                esac
+                continue ;;
+        esac
+        prefix="$prefix/$comp"
+        if [ -L "$prefix" ]; then
+            raw="$(readlink "$prefix" 2>/dev/null)" || return 0
+            case "$raw" in
+                /*) printf 'absolute\t%s\t%s' "$prefix" "$raw"; return 1 ;;
+            esac
+            prefix="$(dirname "$prefix")"
+            rest="${raw}${rest:+/$rest}"
+        fi
+    done
+    return 0
+}
+
 _aws_creds_status() {
     local home creds
     home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
@@ -324,41 +385,24 @@ _aws_creds_status() {
         _aws_readable_by_uid "$wuid" "$conf"
         case "$?" in 1) bad="$conf" ;; 2) unknown=1 ;; esac
     fi
-    # A symlink that ESCAPES the mounted directory dangles in the container: the
-    # overlay bind-mounts AWS_CREDS_DIR alone, so the target resolves in the
-    # container`s mount namespace where it is absent or different. The host-side
-    # checks all follow it happily and report valid. A dotfile-managed ~/.aws is
-    # the ordinary way to end up here (codex).
-    local f raw target hop hops
+    # Every link on the path to the file, at every component -- see
+    # _aws_link_hazard for why this is one rule and not four.
+    local f hz kind link tgt target
     for f in "$creds" "$conf"; do
-        [ -L "$f" ] || continue
-        # EVERY hop, not just the first: `credentials -> current` (relative, and
-        # inside) `-> /home/deploy/.aws/actual` (absolute) resolves inside
-        # $mountdir on the host, so checking only the first link`s text printed
-        # `valid` -- while inside the container the second hop still names an
-        # unmounted host path and authentication fails (codex).
-        hop="$f"; hops=0
-        while [ -L "$hop" ]; do
-            hops=$((hops + 1))
-            if [ "$hops" -gt 40 ]; then
-                echo "UNUSABLE — $f is a symlink chain over 40 hops deep, or a loop; point $mountdir at real files."
-                return
-            fi
-            raw="$(readlink "$hop" 2>/dev/null)" || break
-            # A bind mount does NOT rewrite symlink TEXT. An absolute link still points
-            # at the host path inside the container -- where only AWS_CREDS_DIR is
-            # mounted, so even a link into the very same directory dangles. Only a
-            # RELATIVE link that stays inside resolves the same on both sides (codex).
-            case "$raw" in
-                /*) if [ "$hop" = "$f" ]; then
-                        echo "UNUSABLE — $f is an ABSOLUTE symlink to $raw. A bind mount does not rewrite the link text, so inside the container it still points at $raw, which is not mounted. Replace it with a relative link inside $mountdir, or copy the file in."
-                    else
-                        echo "UNUSABLE — $f reaches $hop, an ABSOLUTE symlink to $raw. A bind mount does not rewrite the link text, so inside the container that hop still points at $raw, which is not mounted -- every hop of the chain has to stay relative and inside $mountdir. Copy the file in."
-                    fi
-                    return ;;
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        # `if` and not `&&`: under `set -e` the assignment carries the function`s
+        # status, and a hazardous path would exit the script instead of reporting.
+        if hz="$(_aws_link_hazard "$f" "$mountdir")"; then :; else
+            IFS="$(printf '\t')" read -r kind link tgt <<< "$hz"
+            case "$kind" in
+                absolute) echo "UNUSABLE — resolving $f traverses $link, an ABSOLUTE symlink to $tgt. A bind mount does not rewrite link text, so inside the container that link still names $tgt, which is not mounted. Every link on the path has to be relative and stay inside $mountdir, or copy the file in." ;;
+                escape)   echo "UNUSABLE — resolving $f leaves $mountdir (it reaches $tgt). The overlay mounts $mountdir alone, so that path does not exist inside the container, even if a later component comes back. Copy the file in, or point AWS_CREDS_DIR at the directory that holds the real one." ;;
+                *)        echo "UNUSABLE — resolving $f loops through symlinks, or passes through more than 80 path components; point $mountdir at real files." ;;
             esac
-            hop="$(dirname "$hop")/$raw"
-        done
+            return
+        fi
+        # The backstop, and the only check when realpath is unavailable: wherever
+        # the chain ends up, it has to be inside the mounted directory.
         target="$(readlink -f "$f" 2>/dev/null)" || continue
         case "$target" in
             "$mountdir"/*) ;;

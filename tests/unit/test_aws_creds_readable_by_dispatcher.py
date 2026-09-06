@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -109,6 +110,7 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         f'_aws_creds_dir() {{ printf "%s" {creds_dir!r}; }}',
         block("_aws_sts_ok"),
         block("_dispatcher_uid"),
+        block("_aws_link_hazard"),
         block("_aws_creds_status"),
         # The probe is REPLACED rather than driven through a flag, so the harness
         # sees which uid the real call site asks about. A production hook that
@@ -537,105 +539,133 @@ def test_home_interpolation_uses_the_deploy_users_home_not_the_callers(
         )
 
 
-def test_a_credentials_symlink_escaping_the_mount_is_reported(tmp_path: Path) -> None:
-    """The overlay bind-mounts AWS_CREDS_DIR alone, so a symlink whose target lies
-    OUTSIDE it dangles in the container's mount namespace -- while every host-side
-    check follows it happily and reports valid. A dotfile-managed ~/.aws is the
-    ordinary way to arrive here (codex).
+# ---------------------------------------------------------------------------
+# One rule, every shape it can take: EVERY link traversed while resolving the
+# file -- at every path component -- must be relative and stay inside the mount.
+#
+# Four review rounds each found one instance of it. The table is here so the
+# fifth shape is a row rather than another round, and the benign rows are what
+# keep the rule from collapsing into "no symlinks", which would break a
+# dotfile-managed ~/.aws for no reason.
+# ---------------------------------------------------------------------------
+
+
+def _links(tmp_path: Path, build: Callable[[Path, Path], None]) -> Run:
+    """`build(mount, outside)` lays out the directory; the check then runs
+    against it with everything else neutral."""
+    mount = tmp_path / ".aws"
+    outside = tmp_path / "outside"
+    mount.mkdir(parents=True, exist_ok=True)
+    outside.mkdir(parents=True, exist_ok=True)
+    build(mount, outside)
+    return _status("0", tmp_path, creds_dir=str(mount), make_creds=False)
+
+
+def _plain(m: Path, _o: Path) -> None:
+    (m / "credentials").write_text("[default]\n")
+
+
+def _relative_inside(m: Path, _o: Path) -> None:
+    (m / "actual").write_text("[default]\n")
+    (m / "credentials").symlink_to("actual")
+
+
+def _multi_hop_relative(m: Path, _o: Path) -> None:
+    (m / "actual").write_text("[default]\n")
+    (m / "cur").symlink_to("actual")
+    (m / "credentials").symlink_to("cur")
+
+
+def _relative_directory_component(m: Path, _o: Path) -> None:
+    (m / "sub").mkdir()
+    (m / "sub" / "actual").write_text("[default]\n")
+    (m / "cur").symlink_to("sub")
+    (m / "credentials").symlink_to("cur/actual")
+
+
+def _final_absolute(m: Path, _o: Path) -> None:
+    (m / "actual").write_text("[default]\n")
+    (m / "credentials").symlink_to(m / "actual")
+
+
+def _later_hop_absolute(m: Path, _o: Path) -> None:
+    (m / "actual").write_text("[default]\n")
+    (m / "cur").symlink_to(m / "actual")
+    (m / "credentials").symlink_to("cur")
+
+
+def _absolute_directory_component(m: Path, _o: Path) -> None:
+    (m / "sub").mkdir()
+    (m / "sub" / "actual").write_text("[default]\n")
+    (m / "cur").symlink_to(m / "sub")
+    (m / "credentials").symlink_to("cur/actual")
+
+
+def _escaping(m: Path, o: Path) -> None:
+    (o / "real").write_text("[default]\n")
+    (m / "credentials").symlink_to("../outside/real")
+
+
+def _escapes_and_returns(m: Path, _o: Path) -> None:
+    (m / "actual").write_text("[default]\n")
+    (m / "credentials").symlink_to(f"../{m.name}/actual")
+
+
+def _loop_through_config(m: Path, _o: Path) -> None:
+    (m / "credentials").write_text("[default]\n")
+    (m / "config").symlink_to("other")
+    (m / "other").symlink_to("config")
+
+
+@pytest.mark.parametrize("build,expected", [
+    # Accepted: nothing on the path is a link, or every link is relative and
+    # stays inside. These are the rows that fail if the rule over-reaches.
+    (_plain, "valid"),
+    (_relative_inside, "valid"),
+    (_multi_hop_relative, "valid"),
+    (_relative_directory_component, "valid"),
+    # Refused: each was a separate review finding.
+    (_final_absolute, "ABSOLUTE"),
+    (_later_hop_absolute, "ABSOLUTE"),
+    (_absolute_directory_component, "ABSOLUTE"),
+    (_escaping, "leaves"),
+    (_escapes_and_returns, "leaves"),
+    (_loop_through_config, "loops"),
+], ids=["plain-file", "relative-link", "multi-hop-relative",
+        "relative-directory-component", "final-component-absolute",
+        "later-hop-absolute", "absolute-directory-component",
+        "relative-escaping", "escapes-and-returns", "loop"])
+def test_every_link_on_the_path_must_be_relative_and_stay_inside(
+    tmp_path: Path, build: Callable[[Path, Path], None], expected: str,
+) -> None:
+    """A bind mount does not rewrite link TEXT and mounts nothing but
+    AWS_CREDS_DIR, so a link that is absolute -- or that leaves the directory
+    even momentarily -- names a path the container does not have, while every
+    host-side check follows it happily and reports valid.
+
+    `escapes-and-returns` and `absolute-directory-component` both resolve INSIDE
+    the mount on the host, so `readlink -f` containment cannot see either one.
     """
-    outside = tmp_path / "elsewhere"
-    outside.mkdir()
+    out = _links(tmp_path, build)
+    if expected == "valid":
+        assert out.out.startswith("valid"), out.out
+    else:
+        assert "UNUSABLE" in out.out, out.out
+        assert expected in out.out, out.out
+
+
+def test_a_symlink_out_of_the_mount_is_reported_without_realpath(
+    tmp_path: Path,
+) -> None:
+    """The backstop check, which is what catches a target outside the mount when
+    the walk itself is not what finds it. Kept as its own case because the
+    message names the destination, which is the actionable part."""
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True, exist_ok=True)
     real = outside / "real-credentials"
     real.write_text("[default]\n")
-    # RELATIVE and escaping, so it lands on the "outside the mount" branch rather
-    # than on the absolute-link one above.
-    out = _status("0", tmp_path, symlink_to="../elsewhere/real-credentials")
+    out = _status("0", tmp_path, symlink_to="../outside/real-credentials")
     assert "UNUSABLE" in out.out, out.out
-    assert "outside the directory" in out.out and str(real) in out.out
-
-
-def test_a_relative_symlink_inside_the_mount_is_accepted(tmp_path: Path) -> None:
-    """The counterweight, and it has to be RELATIVE.
-
-    My first version of this test used an absolute link into the same directory
-    and asserted it was fine. It is not: a bind mount does not rewrite symlink
-    TEXT, so an absolute link still points at the host path inside the container,
-    where only AWS_CREDS_DIR is mounted (codex). A relative link is the only form
-    that resolves the same on both sides -- and it must still be accepted, or the
-    rule is just "no symlinks".
-    """
-    inside = tmp_path / ".aws" / "actual"
-    inside.parent.mkdir(parents=True, exist_ok=True)
-    inside.write_text("[default]\n")
-    out = _status("0", tmp_path, symlink_to="actual")
-    assert out.out.startswith("valid"), out.out
-
-
-def test_an_absolute_symlink_is_reported_even_inside_the_mount(tmp_path: Path) -> None:
-    """Bind-mounting the directory does not rewrite the link text, so an absolute
-    link into that very directory dangles inside the container."""
-    inside = tmp_path / ".aws" / "actual"
-    inside.parent.mkdir(parents=True, exist_ok=True)
-    inside.write_text("[default]\n")
-    out = _status("0", tmp_path, symlink_to=str(inside))
-    assert "UNUSABLE" in out.out, out.out
-    assert "ABSOLUTE" in out.out
-
-
-
-# ---------------------------------------------------------------------------
-# A chain of symlinks: only the FIRST hop used to be inspected.
-# ---------------------------------------------------------------------------
-
-
-def test_a_later_hop_in_a_symlink_chain_may_not_be_absolute(tmp_path: Path) -> None:
-    """`credentials -> current -> /abs/path` resolves inside the mount on the
-    HOST, so checking only the first link's text printed `valid` -- while inside
-    the container the second hop still names an unmounted host path (codex).
-
-    Both hops land inside $mountdir here, so nothing but the per-hop text
-    distinguishes this from the accepted case below.
-    """
-    aws = tmp_path / ".aws"
-    aws.mkdir(parents=True, exist_ok=True)
-    actual = aws / "actual"
-    actual.write_text("[default]\n")
-    (aws / "current").symlink_to(actual)          # hop 2: ABSOLUTE
-    out = _status("0", tmp_path, symlink_to="current")   # hop 1: relative, inside
-    assert "UNUSABLE" in out.out, out.out
-    assert "ABSOLUTE" in out.out and "current" in out.out
-
-
-def test_a_multi_hop_relative_chain_inside_the_mount_is_accepted(tmp_path: Path) -> None:
-    """The counterweight. Without it, "reports the chain" is equally satisfied by
-    refusing every chain, and a dotfile manager's relative indirection is a
-    legitimate layout that resolves identically on both sides of the mount."""
-    aws = tmp_path / ".aws"
-    aws.mkdir(parents=True, exist_ok=True)
-    (aws / "actual").write_text("[default]\n")
-    (aws / "current").symlink_to("actual")        # hop 2: relative, inside
-    out = _status("0", tmp_path, symlink_to="current")
-    assert out.out.startswith("valid"), out.out
-
-
-def test_a_symlink_loop_is_reported_instead_of_hanging(tmp_path: Path) -> None:
-    """Walking every hop introduces a way to never stop, and `a -> b -> a` is the
-    ordinary accident that gets there. The 60s harness timeout is the backstop:
-    an unbounded walk fails this test by never returning rather than by asserting.
-
-    It is the CONFIG link that reaches the walk. A looping `credentials` link
-    resolves to no file, so `-f` sends it to the absent branch long before any
-    hop is followed -- and the kernel's own 40-link limit means a chain that
-    `-f` accepts cannot be over-long either. `config` has no such gate: it is
-    optional, so a dangling or looping one is walked as-is.
-    """
-    aws = tmp_path / ".aws"
-    aws.mkdir(parents=True, exist_ok=True)
-    (aws / "config").symlink_to("other")
-    (aws / "other").symlink_to("config")
-    out = _status("0", tmp_path, creds_dir=str(aws))
-    assert "UNUSABLE" in out.out, out.out
-    assert "loop" in out.out
 
 
 # ---------------------------------------------------------------------------
