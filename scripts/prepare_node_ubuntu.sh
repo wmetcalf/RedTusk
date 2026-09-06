@@ -419,9 +419,12 @@ AWS burst tier (this is the control-plane node):
   aws cli   : $(aws --version 2>/dev/null | head -1 || echo 'MISSING')
   aws creds : $(_aws_creds_status)
   1. Put your AWS credentials at ~/.aws/credentials (this script never touches them).
-  2. Deploy the burst dispatcher with the overlay:
+  2. Add this line to deploy/docker/.env -- the overlay mounts the directory and
+     REQUIRES the variable, so 'docker compose up' aborts without it:
+       AWS_CREDS_DIR=$(_aws_creds_home)/.aws
+  3. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
-  3. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:
+  4. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:
        BLASTBOX_AWS_TIER, BLASTBOX_AWS_REGION, and the EC2/Lambda ids for that tier).
   The AWS tiers fail CLOSED unless 'aws sts get-caller-identity' + a service probe pass,
   so a half-configured burst node stays on the local FC/gVisor tiers rather than erroring.
