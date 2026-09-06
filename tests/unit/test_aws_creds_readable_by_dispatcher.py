@@ -165,24 +165,98 @@ def test_the_uid_checked_is_the_uid_the_dispatcher_runs_as(tmp_path: Path) -> No
         "Dockerfile.host no longer runs the dispatcher as 10001"
 
 
-def test_the_worker_uid_override_cannot_mislead_the_credential_check(
+def _uid(*, docker_says: str | None, env: dict[str, str] | None = None,
+         repo_root: Path | None = None) -> str:
+    """Run the REAL `_dispatcher_uid` with `docker image inspect` stubbed.
+
+    `docker_says` is what the stub prints; None means the image cannot be
+    inspected (not present, or docker refuses). Stubbed rather than skipped
+    because the answer must not depend on which images this host happens to
+    have built -- a real `redtusk:dev` on the developer's machine makes every
+    row pass for the wrong reason, and CI, which has none, then disagrees.
+    """
+    bindir = Path(tempfile.mkdtemp())
+    if docker_says is None:
+        (bindir / "docker").write_text("#!/bin/sh\nexit 1\n")
+    else:
+        (bindir / "docker").write_text(f"#!/bin/sh\nprintf '%s\\n' {docker_says!r}\n")
+    (bindir / "docker").chmod(0o755)
+    text = SCRIPT.read_text()
+    m = re.search(r"^_dispatcher_uid\(\) \{.*?^\}", text, re.S | re.M)
+    assert m, "_dispatcher_uid not found"
+    harness = "\n".join([
+        "set -u",
+        f"export PATH={f'{bindir}:' + os.environ['PATH']!r}",
+        f"REPO_ROOT={str(repo_root or REPO_ROOT)!r}",
+        'have() { command -v "$1" >/dev/null; }',
+        m.group(0),
+        "_dispatcher_uid",
+    ])
+    base = {k: v for k, v in os.environ.items() if k != "REDTUSK_WORKER_UID"}
+    r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
+                       timeout=60, env={**base, **(env or {}),
+                                        "PATH": f"{bindir}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+OVERRIDE = {"REDTUSK_WORKER_UID": "2000"}
+
+
+@pytest.mark.parametrize("docker_says,env,expected,why", [
+    ("10001:10001", OVERRIDE, "10001",
+     "the image that will run is authoritative; a stale override cannot move it"),
+    ("12345:12345", OVERRIDE, "12345",
+     "and that stays true when the image is NOT the stock one"),
+    ("appuser", OVERRIDE, "2000",
+     "a NAME resolves against the image's passwd, not this host's, so it is "
+     "unusable here and the operator's answer is the next best source"),
+    ("appuser", None, "10001",
+     "with no override either, the repository's Dockerfile"),
+    ("", OVERRIDE, "2000", "an image with no USER at all"),
+    (None, OVERRIDE, "2000",
+     "provisioning normally runs BEFORE the image exists; the override is then "
+     "the only source there is"),
+    (None, None, "10001", "and without one, the repository's Dockerfile"),
+], ids=["image-stock", "image-custom", "image-name-with-override",
+        "image-name-no-override", "image-no-user", "no-image-with-override",
+        "no-image-no-override"])
+def test_the_dispatcher_uid_comes_from_the_most_authoritative_source(
+    docker_says: str | None, env: dict[str, str] | None, expected: str, why: str,
+) -> None:
+    """Two findings pulled in opposite directions and both were right (codex).
+
+    Probing an operator's `REDTUSK_WORKER_UID` reported credentials readable by
+    a uid the dispatcher never becomes; ignoring it chowns the node share to a
+    uid a custom dispatcher image cannot write, silently disabling node sizing.
+    `${REDTUSK_IMAGE}` selects the image in every compose file here, so the
+    resolution is: the image if it can be asked, else the operator, else the
+    repository's Dockerfile.
+    """
+    assert _uid(docker_says=docker_says, env=env) == expected, why
+
+
+def test_the_uid_falls_back_when_there_is_no_repository_either(
     tmp_path: Path,
 ) -> None:
-    """`REDTUSK_WORKER_UID` is an override this script honours elsewhere, but
-    `Dockerfile.host` sets `USER 10001:10001` unconditionally and the burst
-    service carries no `user:` override -- so probing the overridden value would
-    report credentials readable by a uid the dispatcher never becomes (codex).
+    """The last resort has to be a number, not empty: every caller interpolates
+    this into a chown or an install, and an empty one would widen or fail them."""
+    assert _uid(docker_says=None, repo_root=tmp_path) == "10001"
 
-    The uid is read from the image that defines it, so the override cannot move it.
+
+def test_the_node_share_is_owned_by_the_uid_the_dispatcher_runs_as() -> None:
+    """The share is mode 2770 and the dispatcher writes it; an uninhabitable
+    owner disables node sizing silently. This asserts the assignment feeding
+    that chown goes through the same resolution as everything else -- it was
+    briefly pinned to the repository's Dockerfile, which discards the override
+    a custom `${REDTUSK_IMAGE}` needs (codex).
     """
-    run = _status("0", tmp_path, extra_env={"REDTUSK_WORKER_UID": "2000"})
-    assert run.uid_asked == "10001", (
-        f"an exported REDTUSK_WORKER_UID moved the probe to uid {run.uid_asked!r}"
+    text = SCRIPT.read_text()
+    assert re.search(r"^REDTUSK_WORKER_UID=\$\(_dispatcher_uid\)$", text, re.M), (
+        "the node-share uid no longer comes from _dispatcher_uid"
     )
-    # And the compose service must still carry no user override, or the image's
-    # USER line stops being the answer.
-    assert not re.search(r"^\s+user:", COMPOSE.read_text(), re.M), \
-        "the burst service gained a user: override; the uid derivation must follow it"
+    chown = re.search(r'chown "\$REDTUSK_WORKER_UID:\$DGRP" "\$NODE_SHARE_DIR"', text)
+    assert chown, "the node share is no longer chowned to REDTUSK_WORKER_UID"
 
 
 def test_the_overlay_still_mounts_the_credentials_read_only() -> None:
@@ -487,7 +561,9 @@ def _real_creds_dir(env: dict[str, str], *, env_file: str = "",
         # with, and passing an empty value would defeat the .env file entirely.
         # `override_stub` replaces only the SOURCE of that value, for the case
         # that cannot be reached through this process's own environment.
-        (f'_aws_creds_env_override() {{ printf "%s" {override_stub!r}; }}'
+        # `return 0` because presence is the STATUS: an empty value is an
+        # override, and the stub has to be able to say so.
+        (f'_aws_creds_env_override() {{ printf "%s" {override_stub!r}; return 0; }}'
          if override_stub is not None else mo.group(0)),
         m.group(0),
         "_aws_creds_dir",
@@ -777,22 +853,37 @@ def test_a_lookup_only_override_is_carried_into_the_compose_resolution(
     assert got == "/etc/redtusk/aws", got
 
 
-def _override(env: dict[str, str], *, uid: str = "0", sudo_prints: str = "",
-              deploy_user: str = "deployuser",
-              missing: tuple[str, ...] = ()) -> str:
-    """Run the REAL `_aws_creds_env_override` with `id`/`sudo` stubbed.
+def _override(env: dict[str, str], *, uid: str = "0", exports: str | None = None,
+              banner: str = "", deploy_user: str = "deployuser",
+              missing: tuple[str, ...] = ()) -> tuple[bool, str]:
+    """Run the REAL `_aws_creds_env_override`, returning (present, value).
 
     Its whole job is to see a value this process cannot see, so the deploy
-    user's login shell is the thing that has to be stubbed -- there is no
-    second account here to export anything in.
+    user's login shell is what has to be stubbed -- there is no second account
+    here to export anything in. `exports` is what the login environment carries
+    (None = nothing exported, "" = exported empty) and `banner` is anything the
+    profile prints first. The stub EXECUTES the command the lookup hands it, so
+    the sentinel protocol under test is the real one.
     """
     text = SCRIPT.read_text()
     m = re.search(r"^_aws_creds_env_override\(\) \{.*?^\}", text, re.S | re.M)
     assert m, "_aws_creds_env_override not found"
     bindir = Path(tempfile.mkdtemp())
     (bindir / "id").write_text(f"#!/bin/sh\necho {uid}\n")
-    # Stands in for the deploy user's login shell: `sudo -u X -i sh -c ...`.
-    (bindir / "sudo").write_text(f"#!/bin/sh\nprintf '%s' {sudo_prints!r}\n")
+    # The stub RUNS the command it is handed, in a login environment this fixture
+    # controls -- it does not print a canned answer. A stub that ignored its
+    # arguments made the remote command a string nothing ever executed, so
+    # dropping `${AWS_CREDS_DIR+S}` from it (which erases the difference between
+    # unset and exported-empty) could not be observed by any test here.
+    setenv = (f"AWS_CREDS_DIR={exports!r}\nexport AWS_CREDS_DIR\n"
+              if exports is not None else "unset AWS_CREDS_DIR\n")
+    (bindir / "sudo").write_text(
+        "#!/bin/sh\n"
+        f"printf '%s' {banner!r}\n"
+        # Step over sudo's own flags to the `sh -c <command>` it was given.
+        'while [ $# -gt 0 ]; do case "$1" in sh) shift; break ;; *) shift ;; esac; done\n'
+        f"{setenv}"
+        'exec sh "$@"\n')
     (bindir / "timeout").write_text('#!/bin/sh\nshift\nexec "$@"\n')
     for n in ("id", "sudo", "timeout"):
         (bindir / n).chmod(0o755)
@@ -808,13 +899,15 @@ def _override(env: dict[str, str], *, uid: str = "0", sudo_prints: str = "",
         f'have() {{ for n in {absent}; do [ "$1" = "$n" ] && return 1; done;'
         ' command -v "$1" >/dev/null; }',
         m.group(0),
-        "_aws_creds_env_override",
+        'if v="$(_aws_creds_env_override)"; then printf "SET\\t%s" "$v";'
+        ' else printf "UNSET\\t"; fi',
     ])
     base = {k: v for k, v in os.environ.items() if k != "AWS_CREDS_DIR"}
     r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
                        timeout=60, env={**base, **env, "PATH": path})
     assert r.returncode == 0, r.stderr
-    return r.stdout.strip()
+    state, _, value = r.stdout.partition("\t")
+    return state == "SET", value
 
 
 def test_the_override_is_read_from_the_deploy_users_login_environment() -> None:
@@ -827,39 +920,90 @@ def test_the_override_is_read_from_the_deploy_users_login_environment() -> None:
     deploy user exports is invisible to the check, which then validated the
     .env path while the stack ran on another (codex).
     """
-    assert _override({}, sudo_prints="/etc/redtusk/aws") == "/etc/redtusk/aws"
+    assert _override({}, exports="/etc/redtusk/aws") == (True, "/etc/redtusk/aws")
+
+
+def test_an_exported_empty_override_is_not_flattened_into_no_override() -> None:
+    """Set-but-empty is a THIRD state and the overlay is sensitive to it: it
+    mounts `${AWS_CREDS_DIR:?...}`, so an empty value makes compose reject the
+    stack, while .env alone would have launched it. Reporting "no override"
+    here validates the .env directory on a node whose stack cannot start
+    (codex). Presence is the return status, so an empty value survives it.
+    """
+    assert _override({}, exports="") == (True, "")
 
 
 def test_this_processes_own_environment_wins_over_the_lookup() -> None:
     """`sudo -E`, or a root shell that exported it: an explicit value here is
     what compose would see, so it must not be overridden by the login lookup."""
-    got = _override({"AWS_CREDS_DIR": "/from/the/caller"},
-                    sudo_prints="/from/the/login/shell")
-    assert got == "/from/the/caller", got
+    assert _override({"AWS_CREDS_DIR": "/from/the/caller"},
+                     exports="/from/the/login/shell") == (True, "/from/the/caller")
 
 
-def test_no_override_anywhere_yields_nothing_rather_than_an_empty_forward() -> None:
-    """The counterweight for the set-but-empty trap: a deploy user who exports
-    nothing must produce NO value, not an empty one -- compose treats a
-    set-but-empty variable as an override of the .env file."""
-    assert _override({}, sudo_prints="") == ""
+def test_an_empty_value_in_this_process_is_also_a_value() -> None:
+    """The same third state, one level up: `AWS_CREDS_DIR=` in the caller's own
+    environment is what compose will see, so it is an override, not an absence."""
+    assert _override({"AWS_CREDS_DIR": ""}, exports="/from/the/login") == (True, "")
+
+
+def test_no_override_anywhere_is_reported_as_absent() -> None:
+    """The counterweight: a deploy user who exports nothing must produce NO
+    override, so the .env file is what compose is asked with."""
+    assert _override({}) == (False, "")
 
 
 def test_the_lookup_is_skipped_when_it_cannot_be_performed() -> None:
     """A non-root caller cannot become the deploy user, and a host without sudo
-    cannot either. Neither is an override of empty -- both are 'unknown', and
-    the .env file is then the best available answer."""
-    assert _override({}, uid="1000", sudo_prints="/etc/redtusk/aws") == ""
-    assert _override({}, sudo_prints="/etc/redtusk/aws", missing=("sudo",)) == ""
-    assert _override({}, sudo_prints="/etc/redtusk/aws", missing=("timeout",)) == ""
+    or timeout cannot either. Neither is an override of empty -- both are
+    'unknown', and the .env file is then the best available answer."""
+    assert _override({}, uid="1000", exports="/etc/redtusk/aws") == (False, "")
+    assert _override({}, exports="/etc/redtusk/aws", missing=("sudo",)) == (False, "")
+    assert _override({}, exports="/etc/redtusk/aws", missing=("timeout",)) == (False, "")
+
+
+
+
+def test_login_shell_chatter_is_not_read_as_part_of_the_value() -> None:
+    """A LOGIN shell is what carries a persistent export -- and what prints motd
+    banners and profile output, onto the same stdout. Reading the whole output
+    made an `echo` in .profile part of the credentials path, which then resolves
+    nowhere; the value is emitted after a sentinel and read from the LAST one.
+    """
+    got = _override({}, banner="Welcome to toolz2!\n* 3 updates available\n",
+                    exports="/etc/redtusk/aws")
+    assert got == (True, "/etc/redtusk/aws"), got
+
+
+def test_a_banner_alone_is_not_mistaken_for_an_override() -> None:
+    """The counterweight: chatter without an export is still NO override, or
+    every node with an motd would look like it had one."""
+    assert _override({}, banner="Welcome to toolz2!\n") == (False, "")
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+def test_an_exported_empty_override_is_forwarded_to_compose(tmp_path: Path) -> None:
+    """The forwarding half of the set-but-empty finding, end to end against the
+    real compose files: the overlay mounts `${AWS_CREDS_DIR:?...}`, so compose
+    REJECTS an empty value and the mount is correctly left unresolved.
+
+    Skipping the forward leaves .env resolving cleanly, and --check then
+    validates a directory on a node whose stack cannot start (codex).
+    """
+    got = _real_creds_dir({}, env_file="AWS_CREDS_DIR=/some/other/place\n",
+                          tmp_path=tmp_path, override_stub="")
+    assert got == "", f"an empty override did not reach compose: {got!r}"
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
 def test_no_override_does_not_blank_the_env_file_value(tmp_path: Path) -> None:
-    """The trap the override support creates, and the reason it is passed only
-    when non-empty: compose treats a SET-BUT-EMPTY variable as an override of the
-    file, so forwarding an empty lookup result would silently defeat every .env
-    on every node that exports nothing -- which is most of them."""
+    """RESTORED: a rewrite of this section to EOF dropped it, and the mutant it
+    was the only guard against ("forward the override unconditionally") went
+    from killed to surviving.
+
+    It is the counterweight for the whole override feature. Compose treats a
+    SET-BUT-EMPTY variable as an override of the file, so a node that exports
+    nothing -- which is most of them -- must still resolve its own .env.
+    """
     got = _real_creds_dir({}, env_file="AWS_CREDS_DIR=/etc/redtusk/aws\n",
                           tmp_path=tmp_path)
     assert got == "/etc/redtusk/aws", got

@@ -230,22 +230,40 @@ _aws_readable_by_uid() {
 # process, by anyone; that boundary is stated in the burst notes rather than
 # guessed at here.
 _aws_creds_env_override() {
-    if [ -n "${AWS_CREDS_DIR:-}" ]; then printf '%s' "$AWS_CREDS_DIR"; return; fi
-    [ "$(id -u)" = 0 ] || return 0
-    [ -n "${DEPLOY_USER:-}" ] && [ "$DEPLOY_USER" != root ] || return 0
-    have timeout && have sudo || return 0
-    timeout 10 sudo -n -u "$DEPLOY_USER" -i sh -c 'printf "%s" "${AWS_CREDS_DIR-}"' 2>/dev/null
+    local out=""
+    # SET-BUT-EMPTY is not the same as unset and must not be flattened into it:
+    # the overlay mounts `${AWS_CREDS_DIR:?...}`, so an empty value makes compose
+    # REJECT the stack, while .env would have launched it. Reporting "no
+    # override" there validates the .env directory on a node whose stack cannot
+    # start (codex). Presence is carried in the RETURN status; the value is the
+    # output, which may legitimately be empty.
+    if [ -n "${AWS_CREDS_DIR+set}" ]; then printf '%s' "$AWS_CREDS_DIR"; return 0; fi
+    [ "$(id -u)" = 0 ] || return 1
+    [ -n "${DEPLOY_USER:-}" ] && [ "$DEPLOY_USER" != root ] || return 1
+    have timeout && have sudo || return 1
+    # A LOGIN shell is what carries a persistent export, and a login shell is
+    # also what prints motd banners and profile chatter -- onto the same stdout.
+    # So the value is emitted after a sentinel and read back from the LAST one:
+    # taking the whole output turned a `echo "welcome"` in .profile into part of
+    # the credentials path. `S` marks presence, so an exported empty value stays
+    # distinguishable from an unexported one across the process boundary.
+    out="$(timeout 10 sudo -n -u "$DEPLOY_USER" -i sh -c \
+              'printf "\n__RT_ACD__%s%s" "${AWS_CREDS_DIR+S}" "${AWS_CREDS_DIR-}"' 2>/dev/null)" || return 1
+    case "$out" in
+        *__RT_ACD__S*) printf '%s' "${out##*__RT_ACD__S}"; return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 _aws_creds_dir() {
     local out="" override=""
-    override="$(_aws_creds_env_override)"
-    # Passed only when NON-EMPTY: compose treats a set-but-empty variable as an
-    # override of the .env value, so exporting AWS_CREDS_DIR="" would silently
-    # defeat the file it is meant to be read alongside.
     set -- HOME="$(_aws_creds_home)" \
            POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder
-    [ -n "$override" ] && set -- "$@" AWS_CREDS_DIR="$override"
+    # Forwarded whenever it is SET, empty included -- see _aws_creds_env_override.
+    # `if` and not `&&`: under `set -e` the assignment carries the lookup`s status.
+    if override="$(_aws_creds_env_override)"; then
+        set -- "$@" AWS_CREDS_DIR="$override"
+    fi
     if have docker && have python3; then
         out="$(cd "$REPO_ROOT/deploy/docker" 2>/dev/null &&
                env "$@" \
@@ -261,13 +279,37 @@ for m in c.get("services", {}).get("dispatcher-aws-burst", {}).get("volumes", []
     printf '%s' "$out"
 }
 
-# The uid the DISPATCHER IMAGE runs as, read from the image that defines it.
-# REDTUSK_WORKER_UID is an override this script honours elsewhere, but
-# Dockerfile.host sets `USER 10001:10001` unconditionally and the burst service
-# carries no `user:` override -- so probing the overridden value reported
-# credentials as readable by a uid the dispatcher never becomes (codex).
+# The uid the DISPATCHER actually runs as.
+#
+# Three sources, most authoritative first, because two review rounds pulled in
+# opposite directions and both were right (codex):
+#
+#   1. the IMAGE that will run. `REDTUSK_IMAGE` selects it in every compose file
+#      here, so the repository`s Dockerfile is not necessarily what runs; when
+#      the image is present locally, its own config is the answer and an
+#      operator`s stale REDTUSK_WORKER_UID cannot move the probe off it.
+#   2. REDTUSK_WORKER_UID -- the operator telling us what we cannot look up.
+#      This is the only source when provisioning runs before the image exists,
+#      which is the normal order on a fresh node.
+#   3. the repository`s Dockerfile.host, then 10001.
+#
+# Probing the wrong uid reports credentials as readable by a user the dispatcher
+# never becomes; ignoring the override chowns the node share to a uid a custom
+# dispatcher image cannot write, silently disabling node sizing.
 _dispatcher_uid() {
-    local from_image=""
+    local from_image="" user=""
+    if have docker; then
+        user="$(docker image inspect --format '{{.Config.User}}' \
+                    "${REDTUSK_IMAGE:-redtusk:dev}" 2>/dev/null | head -1)"
+        # `user` may be "10001:10001", a NAME, or empty. Only a numeric uid can be
+        # used here: a name resolves against the image`s passwd, not this host`s.
+        case "${user%%:*}" in
+            ""|*[!0-9]*) ;;
+            *) from_image="${user%%:*}" ;;
+        esac
+    fi
+    if [ -n "$from_image" ]; then echo "$from_image"; return; fi
+    if [ -n "${REDTUSK_WORKER_UID:-}" ]; then echo "$REDTUSK_WORKER_UID"; return; fi
     from_image="$(sed -n 's/^USER[[:space:]]\+\([0-9]\+\).*/\1/p' \
                      "$REPO_ROOT/deploy/docker/Dockerfile.host" 2>/dev/null | tail -1)"
     if [ -n "$from_image" ]; then echo "$from_image"; else echo 10001; fi
@@ -580,7 +622,11 @@ fi
 # ── 7. standard dirs (owned by the deploy user/group) ──────────────────────
 log "creating standard dirs"
 DGRP=$(id -gn "$DEPLOY_USER")
-# The uid the api/dispatcher/worker containers run as (see Dockerfile.host).
+# The uid the api/dispatcher/worker containers run as. REDTUSK_WORKER_UID stays
+# an operator override here: ${REDTUSK_IMAGE} can select a dispatcher image that
+# runs as another uid, and a share this uid cannot write silently disables node
+# sizing. _dispatcher_uid honours the override too, and prefers the image`s own
+# config when that image is present to be asked (codex).
 REDTUSK_WORKER_UID=$(_dispatcher_uid)
 # The FC dispatcher runs in a container with ${REDTUSK_FC_DIR} bind-mounted at
 # /var/lib/blastbox-fc, and reads BLASTBOX_FC_BIN=/var/lib/blastbox-fc/firecracker
