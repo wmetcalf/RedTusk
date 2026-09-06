@@ -265,9 +265,18 @@ _aws_creds_status() {
     # container`s mount namespace where it is absent or different. The host-side
     # checks all follow it happily and report valid. A dotfile-managed ~/.aws is
     # the ordinary way to end up here (codex).
-    local f target
+    local f raw target
     for f in "$creds" "$conf"; do
         [ -L "$f" ] || continue
+        raw="$(readlink "$f" 2>/dev/null)"
+        # A bind mount does NOT rewrite symlink TEXT. An absolute link still points
+        # at the host path inside the container -- where only AWS_CREDS_DIR is
+        # mounted, so even a link into the very same directory dangles. Only a
+        # RELATIVE link that stays inside resolves the same on both sides (codex).
+        case "$raw" in
+            /*) echo "UNUSABLE — $f is an ABSOLUTE symlink to $raw. A bind mount does not rewrite the link text, so inside the container it still points at $raw, which is not mounted. Replace it with a relative link inside $mountdir, or copy the file in."
+                return ;;
+        esac
         target="$(readlink -f "$f" 2>/dev/null)" || continue
         case "$target" in
             "$mountdir"/*) ;;

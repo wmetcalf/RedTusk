@@ -510,18 +510,37 @@ def test_a_credentials_symlink_escaping_the_mount_is_reported(tmp_path: Path) ->
     outside.mkdir()
     real = outside / "real-credentials"
     real.write_text("[default]\n")
-    out = _status("0", tmp_path, symlink_to=str(real))
+    # RELATIVE and escaping, so it lands on the "outside the mount" branch rather
+    # than on the absolute-link one above.
+    out = _status("0", tmp_path, symlink_to="../elsewhere/real-credentials")
     assert "UNUSABLE" in out.out, out.out
-    assert "symlink" in out.out and str(real) in out.out
+    assert "outside the directory" in out.out and str(real) in out.out
 
 
-def test_a_symlink_that_stays_inside_the_mount_is_accepted(tmp_path: Path) -> None:
-    """The counterweight: the mount carries the whole directory, so a link WITHIN
-    it resolves in the container exactly as it does on the host. Rejecting every
-    symlink would be a false alarm on a perfectly good layout."""
+def test_a_relative_symlink_inside_the_mount_is_accepted(tmp_path: Path) -> None:
+    """The counterweight, and it has to be RELATIVE.
+
+    My first version of this test used an absolute link into the same directory
+    and asserted it was fine. It is not: a bind mount does not rewrite symlink
+    TEXT, so an absolute link still points at the host path inside the container,
+    where only AWS_CREDS_DIR is mounted (codex). A relative link is the only form
+    that resolves the same on both sides -- and it must still be accepted, or the
+    rule is just "no symlinks".
+    """
+    inside = tmp_path / ".aws" / "actual"
+    inside.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_text("[default]\n")
+    out = _status("0", tmp_path, symlink_to="actual")
+    assert out.out.startswith("valid"), out.out
+
+
+def test_an_absolute_symlink_is_reported_even_inside_the_mount(tmp_path: Path) -> None:
+    """Bind-mounting the directory does not rewrite the link text, so an absolute
+    link into that very directory dangles inside the container."""
     inside = tmp_path / ".aws" / "actual"
     inside.parent.mkdir(parents=True, exist_ok=True)
     inside.write_text("[default]\n")
     out = _status("0", tmp_path, symlink_to=str(inside))
-    assert out.out.startswith("valid"), out.out
+    assert "UNUSABLE" in out.out, out.out
+    assert "ABSOLUTE" in out.out
 
