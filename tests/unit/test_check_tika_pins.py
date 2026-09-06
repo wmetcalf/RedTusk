@@ -172,6 +172,15 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /src/tika\nRUN cd /missing ; git reset --hard HEAD^\n',
         id="cd-may-have-failed-before-semicolon"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /missing \\\n    || git reset --hard HEAD^\n',
+        id="cd-may-have-failed-across-a-continuation"),
+    # Docker expands every value in one ENV against the environment as it was BEFORE
+    # the instruction, so DEST here is the OLD /src, not the /opt assigned beside it.
+    pytest.param(
+        'ENV ROOT=/src\nENV ROOT=/opt DEST=$ROOT\n'
+        'WORKDIR $DEST/tika\nRUN git reset --hard HEAD^\n',
+        id="env-expands-from-the-pre-instruction-environment"),
 ]
 
 
@@ -243,6 +252,11 @@ BENIGN = [
     pytest.param(
         'WORKDIR /src/tika\nRUN cd /opt/elsewhere && git reset --hard HEAD^\n',
         id="cd-that-definitely-succeeded-leaves-the-worktree"),
+    # The same, with the `&&` opening the continuation line. Judging physical lines
+    # could not see it while processing the cd, and reported ordinary formatting.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /opt/elsewhere \\\n    && git reset --hard HEAD^\n',
+        id="guaranteed-cd-with-the-and-on-the-next-line"),
 ]
 
 

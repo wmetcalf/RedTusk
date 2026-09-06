@@ -203,9 +203,14 @@ for f in "${cloners[@]}"; do
             e = line
             sub(/^[[:space:]]*(ENV|ARG)[[:space:]]+/, "", e)
             ne = split(e, ev, /[[:space:]]+/)
+            # Docker expands EVERY value in one ENV against the environment that existed
+            # BEFORE the instruction. Updating as we went made `ENV ROOT=/opt DEST=$ROOT`
+            # record DEST=/opt where Docker gives the previous /src.
+            delete pre
+            for (pk in envval) pre[pk] = envval[pk]
             for (i = 1; i <= ne; i++) {
                 if (split(ev[i], kv, "=") == 2 && kv[1] != "") {
-                    envval[kv[1]] = expand(unquote(kv[2]), envval)
+                    envval[kv[1]] = expand(unquote(kv[2]), pre)
                     # ARGs BEFORE the first FROM are global and, per Docker, usable in
                     # FROM itself. The per-stage reset below must not erase them.
                     if (!seen_from) globalarg[kv[1]] = envval[kv[1]]
@@ -247,10 +252,22 @@ for f in "${cloners[@]}"; do
         line ~ /^[[:space:]]*RUN[[:space:]]/ || cont {
             # Each RUN starts a fresh shell at the current WORKDIR, so a `cd` in one
             # instruction does not carry into the next.
-            if (!cont) { cwd = workdir; cwdalt = "" }
-            cont = (line ~ /\\[[:space:]]*$/)
-            sub(/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", line)
-            sub(/\\[[:space:]]*$/, "", line)
+            #
+            # A continued RUN is JOINED first and judged as one command. Judging physical
+            # lines meant a `&&` opening a continuation line was invisible while the `cd`
+            # before it was processed, so `RUN cd /opt/elsewhere \` + `&& git reset` kept
+            # a stale alternative scope and was reported -- a false alarm on ordinary
+            # formatting, which is worse than a miss because it gets the gate switched off.
+            piece = line
+            if (!cont) {
+                cwd = workdir; cwdalt = ""; buf = ""
+                sub(/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
+            }
+            cont = (piece ~ /\\[[:space:]]*$/)
+            sub(/\\[[:space:]]*$/, "", piece)
+            buf = (buf == "") ? piece : buf " " piece
+            if (cont) next
+            line = buf
             # A single `|` is a command boundary as much as `&&`. The sed this awk
             # replaced split on it; dropping it left `cat x.patch | git -C /src/tika
             # apply` as ONE segment starting with `cat`, so the git test skipped it.
