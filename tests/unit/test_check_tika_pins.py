@@ -235,6 +235,15 @@ BYPASSES = [
     pytest.param(
         "WORKDIR /src/tika\nRUN echo 'x\\'; git reset --hard HEAD^\n",
         id="backslash-is-literal-inside-single-quotes"),
+    # A heredoc delimiter is a WORD, not an identifier.
+    pytest.param(
+        'RUN <<BUILD-SCRIPT\ngit -C /src/tika reset --hard HEAD^\nBUILD-SCRIPT\n',
+        id="heredoc-delimiter-with-punctuation"),
+    # `(cd A || cd B || cd C) && reset` runs the reset if ANY branch succeeded, so
+    # every branch target is reachable -- not just the last one parsed.
+    pytest.param(
+        'WORKDIR /\nRUN cd /src/tika || cd /opt || cd /var && git reset --hard HEAD^\n',
+        id="three-branch-fallback-chain"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -384,6 +393,11 @@ BENIGN = [
     pytest.param(
         'WORKDIR /src/tika\nRUN cd /opt/elsewhere && git reset --hard HEAD^ || echo failed\n',
         id="reset-only-reachable-after-a-successful-cd"),
+    # The counterweight for the fallback chain: when the shell cds AWAY in every
+    # branch, the directory it started in is no longer reachable.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /opt || cd /var && git reset --hard HEAD^\n',
+        id="fallback-chain-that-leaves-the-worktree-in-every-branch"),
 ]
 
 
@@ -610,4 +624,36 @@ def test_a_lowercase_arg_name_does_not_satisfy_the_pin(tmp_path: Path) -> None:
     res = _run(_repo(tmp_path, default=text))
     assert res.returncode == 1
     assert "declares no full 40-char" in res.stderr
+
+
+def test_a_defaultless_stage_arg_imports_the_global_value(tmp_path: Path) -> None:
+    """`ARG ROOT=/opt` before the first FROM, then a bare `ARG ROOT` inside a stage:
+    Docker imports the global value. Ignoring the defaultless form left the name
+    unresolved, the directory unknown, and the unknown rule then convicted an
+    ordinary reset in /opt/app (codex)."""
+    text = (
+        "ARG ROOT=/opt\n"
+        + _cloning_stage("pinned")
+        + "FROM pinned AS later\n"
+        "ARG ROOT\n"
+        "WORKDIR $ROOT/app\n"
+        "RUN git reset --hard HEAD^\n"
+    )
+    res = _run(_repo(tmp_path, default=text))
+    assert res.returncode == 0, f"a reset in the inherited /opt/app was rejected: {res.stderr}"
+
+
+def test_a_lowercase_run_with_a_direct_checkout_is_accepted(tmp_path: Path) -> None:
+    """The checkout scan strips the RUN prefix, and it only stripped an uppercase
+    one. The earlier lowercase control passed only because its checkout followed
+    `&&` on a continuation, which yields a segment already starting with `git`
+    (codex). This is the direct form."""
+    text = (
+        "from eclipse-temurin:25-jdk-jammy as pinned\n"
+        f"arg TIKA_FORK_SHA={PIN}\n"
+        f"run git clone {CLONE_URL} /src/tika\n"
+        'run git -C /src/tika checkout "$TIKA_FORK_SHA"\n'
+    )
+    res = _run(_repo(tmp_path, default=text))
+    assert res.returncode == 0, f"a lowercase direct checkout was not seen: {res.stderr}"
 

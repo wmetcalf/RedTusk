@@ -108,7 +108,7 @@ for f in "${cloners[@]}"; do
     # opening its own instruction reads as `RUN git ... checkout`, whose first token is
     # RUN, not git. That is ordinary Dockerfile authoring, not evasion, so missing it
     # would leave the gate blind to the most natural way to add an overriding checkout.
-    commands="$(sed -E 's/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/ /' <<<"$stripped" \
+    commands="$(sed -E 's/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]+/ /' <<<"$stripped" \
                 | sed -E 's/(\&\&|\|\||;|\|)/\n/g')"
     checkouts="$(grep -E '^[[:space:]]*git[[:space:]][^|&;]*checkout' <<<"$commands" || true)"
     # Commands that move HEAD without a checkout, scoped to the tika worktree so an
@@ -211,6 +211,29 @@ for f in "${cloners[@]}"; do
             if (dir ~ /\$/) return 1
             return dir == TIKA || index(dir, TIKA "/") == 1
         }
+        # The shell may be in more than ONE directory at a given command, so the model is
+        # a SET rather than a cwd plus a single alternative. Two heuristics on one
+        # alternative were each wrong in a different direction; this is the exact
+        # dataflow instead. Sets are " a b c " strings -- awk has no set type and the
+        # membership test wants delimiters on both sides.
+        function sadd(set, d) { if (d == "" || index(set, " " d " ")) return set; return set d " " }
+        function sunion(a, b,   n, parts, i, out) {
+            out = a; n = split(b, parts, " ")
+            for (i = 1; i <= n; i++) out = sadd(out, parts[i])
+            return out
+        }
+        function resolve_all(set, d,   n, parts, i, out) {
+            if (d ~ /\$/) return " " d " "
+            if (d ~ /^\//) return " " normpath(d) " "
+            out = ""; n = split(set, parts, " ")
+            for (i = 1; i <= n; i++) out = sadd(out, normpath(parts[i] "/" d))
+            return out
+        }
+        function sscoped(set,   n, parts, i) {
+            n = split(set, parts, " ")
+            for (i = 1; i <= n; i++) if (scoped(parts[i])) return 1
+            return 0
+        }
         # ENV/ARG are per-STAGE in Docker. One global map let a later unrelated stage
         # overwrite a value that a derived stage should still see, so a WORKDIR built
         # from it resolved outside the worktree and a real reset was accepted.
@@ -232,7 +255,7 @@ for f in "${cloners[@]}"; do
         # Dockerfile instruction names are CASE-INSENSITIVE; `workdir /src/tika` is
         # valid and was being ignored entirely.
         BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = ""; seen_from = 0
-                SEPCH = sprintf("%c", 1); cwdalt = "" }
+                SEPCH = sprintf("%c", 1) }
         { line = $0 }
         # ENV/ARG continue across `\` exactly as RUN does, and assignments on the
         # continuation belong to the SAME instruction.
@@ -256,6 +279,14 @@ for f in "${cloners[@]}"; do
             # Docker still accepts the legacy `ENV <key> <value>` form -- one pair, no
             # `=`. Ignoring it left the PREVIOUS value of that name in force, so a
             # WORKDIR built from it modelled the wrong directory.
+            # `ARG NAME` with no default inside a stage IMPORTS the global value.
+            # Ignoring it left the name unresolved, the directory unknown, and a
+            # perfectly ordinary reset elsewhere convicted (codex).
+            if (isarg && ne == 1 && ev[1] !~ /=/) {
+                if ((ev[1] in globalarg) && !(ev[1] in isenv)) envval[ev[1]] = globalarg[ev[1]]
+                if (stage != "") stage_env[stage] = envsave()
+                next
+            }
             if (!isarg && ne == 2 && ev[1] !~ /=/) {
                 envval[ev[1]] = expand(unquote(ev[2]), pre)
                 isenv[ev[1]] = 1
@@ -326,26 +357,28 @@ for f in "${cloners[@]}"; do
             # the body to a command as DATA, and scanning it reported generated text --
             # a script or documentation being written out -- as an executed command
             # (codex). What precedes `<<` decides.
-            if (!cont && !heredoc && piece ~ /<<-?[\"\x27]?[A-Za-z_][A-Za-z0-9_]*/) {
+            if (!cont && !heredoc && piece ~ /<<-?[\"\x27]?[^[:space:]<>&|;]+/) {
                 lead = piece
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]*/, "", lead)
-                if (lead ~ /^<<-?[\"\x27]?[A-Za-z_]/) {
+                if (lead ~ /^<<-?[\"\x27]?[^[:space:]<>&|;]/) {
                     hd = lead
-                    sub(/^<<-?[\"\x27]?/, "", hd)
-                    sub(/[^A-Za-z0-9_].*$/, "", hd)
-                    if (hd != "") { heredoc = hd; hdbuf = ""; cwd = workdir; cwdalt = ""; altpend = ""; altlive = 0; next }
+                    sub(/^<<-?/, "", hd)
+                    sub(/[[:space:]<>&|;].*$/, "", hd)
+                    gsub(/[\"\x27]/, "", hd)
+                    if (hd != "") { heredoc = hd; hdbuf = ""; S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; next }
                 }
                 # A DATA heredoc: skip its body rather than reading it as commands.
                 hd = piece
-                sub(/^.*<<-?[\"\x27]?/, "", hd)
-                sub(/[^A-Za-z0-9_].*$/, "", hd)
+                sub(/^.*<<-?/, "", hd)
+                sub(/[[:space:]<>&|;].*$/, "", hd)
+                gsub(/[\"\x27]/, "", hd)
                 if (hd != "") {
                     heredoc = hd; hdbuf = ""; hdskip = 1
-                    if (!cont) { cwd = workdir; cwdalt = ""; altpend = ""; altlive = 0 }
+                    if (!cont) { S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = "" }
                     # The OPENER still carries real commands -- `cat <<EOF >/tmp/x && git
                     # -C /src/tika reset` runs the reset once cat succeeds. Skipping the
                     # whole line lost it. Judge the opener with the heredoc token removed.
-                    sub(/<<-?[\"\x27]?[A-Za-z_][A-Za-z0-9_]*[\"\x27]?/, "", piece)
+                    sub(/<<-?[\"\x27]?[^[:space:]<>&|;]+/, "", piece)
                     line = piece; buf = ""; justopened = 1
                 }
             }
@@ -360,7 +393,7 @@ for f in "${cloners[@]}"; do
                 } else { hdbuf = hdbuf " ; " line; next }
             } else if (!justopened) {
             if (!cont) {
-                cwd = workdir; cwdalt = ""; altpend = ""; altlive = 0; buf = ""
+                S = " " workdir " "; csucc = S; cfail = S; orsucc = ""; andfail = ""; buf = ""
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
             }
             cont = (piece ~ /\\[[:space:]]*$/)
@@ -385,19 +418,21 @@ for f in "${cloners[@]}"; do
                 sepc = (i > 1) ? substr(cmd, 1, 1) : ""
                 if (i > 1) cmd = substr(cmd, 2)      # drop the separator code
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
-                if (altpend != "") {
-                    # Which separator reaches the failure branch:
-                    #   &&  only the SUCCESS path continues -- the old directory is not
-                    #       reachable at what follows
-                    #   ||  only the failure path, so it is -- unless the handler is
-                    #       `exit`, which ends the shell. `false` merely returns a status,
-                    #       and grouping the two discarded a reachable directory (codex).
-                    #   ; | test nothing, so BOTH paths arrive and it is reachable
-                    if (sepc == "O") {
-                        if (cmd ~ /^exit([[:space:]]|$)/) { altpend = ""; altlive = 0 }
-                        else altlive = 1
-                    } else if (sepc == "S" || sepc == "P") altlive = 1
-                }
+                # Which directories the shell can be in HERE, from the previous command
+                # and the separator that joined them:
+                #   &&  runs on success -- and the previous FAILURE is remembered, because
+                #       a later `||` catches it (`cd X && echo ok || git reset`)
+                #   ||  runs on failure -- and the previous SUCCESS is remembered, because
+                #       the command after the or-list runs if ANY branch succeeded
+                #   ; | run unconditionally, so everything outstanding arrives
+                if (sepc == "A")      { andfail = sunion(andfail, cfail); S = sunion(csucc, orsucc); orsucc = "" }
+                else if (sepc == "O") { orsucc  = sunion(orsucc,  csucc); S = sunion(cfail, andfail); andfail = "" }
+                else if (sepc != "")  { S = sunion(sunion(csucc, cfail), sunion(orsucc, andfail)); orsucc = ""; andfail = "" }
+                # `exit` ENDS the shell, so nothing after it is reachable by any path.
+                # `false` merely returns a status, which is why the two cannot be grouped.
+                if (cmd ~ /^exit([[:space:]]|$)/) { csucc = ""; cfail = ""; continue }
+                # Any other command leaves the directory alone.
+                csucc = S; cfail = S
                 if (cmd ~ /^cd([[:space:]]|$)/) {
                     d = cmd; sub(/^cd[[:space:]]*/, "", d)
                     # `cd [-L|[-P [-e]] [-@]] [dir]` -- skip the options and `--`, or the
@@ -407,32 +442,12 @@ for f in "${cloners[@]}"; do
                         sub(/^-[^[:space:]]*[[:space:]]*/, "", d)
                     }
                     d = expand(unquote(d), envval); sub(/[[:space:]].*$/, "", d)
-                    prev = cwd
-                    cwd = (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : cwd "/" d)
-                    # Only `&&` on the FOLLOWING boundary proves the cd succeeded. Under
-                    # any other separator the old directory is still reachable, so it is
-                    # kept as an alternative scope rather than discarded.
-                    nxtsep = (i < n) ? substr(seg[i+1], 1, 1) : ""
-                    nxtcmd = (i < n) ? substr(seg[i+1], 2) : ""
-                    gsub(/^[[:space:]]+/, "", nxtcmd)
-                    # `&&` proves the cd succeeded. So does `|| exit` -- the guarded-cd
-                    # idiom, where a failed cd terminates the shell rather than carrying
-                    # on in the old directory. Keeping the old scope there rejected
-                    # `cd /src/other || exit 1; git reset`, which is ordinary (codex).
-                    # The directory a failed cd leaves us in stays REACHABLE until a
-                    # failure branch actually consumes it. Deciding that from the one
-                    # separator next to the cd was wrong in both directions:
-                    #   cd /missing && echo ok || git reset   -- the `&&` skips, the `||`
-                    #       catches the failure, and the reset runs in the ORIGINAL dir
-                    #   cd /opt && git reset || echo failed    -- here the reset only ever
-                    #       runs after a SUCCESSFUL cd, so the old dir is not reachable
-                    # So the pre-cd directory is recorded as a PENDING alternative and only
-                    # becomes live when an `||` is actually reached (below), which is the
-                    # point the shell would take the failure branch.
-                    # A cd reached through `||` was only taken because the previous
-                    # branch failed -- so that branch`s directory is where we would be
-                    # otherwise, and it is reachable, not merely pending.
-                    altpend = prev; altlive = (sepc == "O") ? 1 : 0
+                    # On success the shell is in the target; on failure it has not moved.
+                    csucc = ""
+                    nS = split(S, sp, " ")
+                    for (si = 1; si <= nS; si++)
+                        csucc = sadd(csucc, (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : sp[si] "/" d))
+                    cfail = S
                     continue
                 }
                 if (cmd !~ /^git[[:space:]]/) continue
@@ -457,15 +472,14 @@ for f in "${cloners[@]}"; do
                 gsub(/""|\x27\x27/, ".", bare)
                 bare = expand(unquote(bare), envval)
                 nt = split(bare, tok, /[[:space:]]+/)
-                tgt = cwd; seen_c = 0; wt = ""; gd = ""; subcmd = ""
+                tgt = ""; seen_c = 0; wt = ""; gd = ""; subcmd = ""
                 for (t = 2; t <= nt; t++) {
                     o = tok[t]
                     if (o == "-C" && t < nt) {
-                        arg = tok[++t]; seen_c = 1
-                        tgt = (arg ~ /\$/) ? arg : normpath((arg ~ /^\//) ? arg : tgt "/" arg)
+                        arg = tok[++t]; tgt = resolve_all(seen_c ? tgt : S, arg); seen_c = 1
                     } else if (o ~ /^-C./) {
-                        arg = substr(o, 3); seen_c = 1      # attached form: -C<path>
-                        tgt = (arg ~ /\$/) ? arg : normpath((arg ~ /^\//) ? arg : tgt "/" arg)
+                        arg = substr(o, 3)                  # attached form: -C<path>
+                        tgt = resolve_all(seen_c ? tgt : S, arg); seen_c = 1
                     } else if (o ~ /^--work-tree=/) {
                         wt = substr(o, 13)
                     } else if (o == "--work-tree" && t < nt) {
@@ -498,7 +512,7 @@ for f in "${cloners[@]}"; do
                 # read-only. Only an otherwise-unparseable command fails closed.
                 if (subcmd == "" && bare ~ /[[:space:]](-v|--version|-h|--help)([[:space:]]|$)/) continue
                 if (subcmd == "") {
-                    if (scoped(cwd) || (altlive && scoped(altpend))) print cmd
+                    if (sscoped(S)) print cmd
                     continue
                 }
                 if (subcmd !~ /^(reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)$/) continue
@@ -517,12 +531,11 @@ for f in "${cloners[@]}"; do
                 # elsewhere. The two effects have different targets and both matter.
                 if (gd != "") {
                     gdp = gd
-                    if (gdp !~ /\$/) { sub(/\/\.git\/?$/, "", gdp)
-                                        gdp = normpath((gdp ~ /^\//) ? gdp : tgt "/" gdp) }
-                    if (scoped(gdp)) { print cmd; continue }
+                    if (gdp !~ /\$/) sub(/\/\.git\/?$/, "", gdp)
+                    if (sscoped(resolve_all(seen_c ? tgt : S, gdp))) { print cmd; continue }
                 }
                 if (wt != "") {
-                    tgt = (wt ~ /\$/) ? wt : normpath((wt ~ /^\//) ? wt : tgt "/" wt)
+                    tgt = resolve_all(seen_c ? tgt : S, wt)
                     seen_c = 1
                 }
                 # DEFENCE IN DEPTH, and the reason it is here: this parser replaced a
@@ -537,8 +550,8 @@ for f in "${cloners[@]}"; do
                 # is still reported. That makes this strictly at least as strong as what
                 # it replaced, structurally rather than by my remembering to check.
                 if (index(bare, TIKA) > 0) { print cmd; continue }
-                if (seen_c) { if (scoped(tgt)) print cmd; continue }
-                if (scoped(cwd) || (altlive && scoped(altpend))) print cmd
+                if (seen_c) { if (sscoped(tgt)) print cmd; continue }
+                if (sscoped(S)) print cmd
             }
         }
     ' <<<"$stripped" || true)"
