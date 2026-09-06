@@ -196,7 +196,8 @@ for f in "${cloners[@]}"; do
                 envval[kv[1]] = kv[2]
             }
         }
-        BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = ""; seen_from = 0 }
+        BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = ""; seen_from = 0
+                SEPCH = sprintf("%c", 1); cwdalt = "" }
         { line = $0 }
         line ~ /^[[:space:]]*(ENV|ARG)[[:space:]]/ {
             e = line
@@ -246,21 +247,38 @@ for f in "${cloners[@]}"; do
         line ~ /^[[:space:]]*RUN[[:space:]]/ || cont {
             # Each RUN starts a fresh shell at the current WORKDIR, so a `cd` in one
             # instruction does not carry into the next.
-            if (!cont) cwd = workdir
+            if (!cont) { cwd = workdir; cwdalt = "" }
             cont = (line ~ /\\[[:space:]]*$/)
             sub(/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", line)
             sub(/\\[[:space:]]*$/, "", line)
             # A single `|` is a command boundary as much as `&&`. The sed this awk
             # replaced split on it; dropping it left `cat x.patch | git -C /src/tika
             # apply` as ONE segment starting with `cat`, so the git test skipped it.
-            n = split(line, seg, /&&|\|\||;|\|/)
+            #
+            # The SEPARATOR is kept, not just the boundary, because only `&&` proves the
+            # command before it succeeded. After `cd /missing || git reset`, the shell is
+            # still where it started and the reset runs THERE -- modelling the cd as
+            # having happened moved the scope to /missing and let it through.
+            tmp = line
+            gsub(/\|\|/, SEPCH "O", tmp)      # OR first: leaves no stray | behind
+            gsub(/&&/,   SEPCH "A", tmp)
+            gsub(/;/,    SEPCH "S", tmp)
+            gsub(/\|/,   SEPCH "P", tmp)
+            n = split(tmp, seg, SEPCH)
             for (i = 1; i <= n; i++) {
                 cmd = seg[i]
+                if (i > 1) cmd = substr(cmd, 2)      # drop the separator code
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
                 if (cmd ~ /^cd[[:space:]]/) {
                     d = cmd; sub(/^cd[[:space:]]+/, "", d)
                     d = expand(unquote(d), envval); sub(/[[:space:]].*$/, "", d)
+                    prev = cwd
                     cwd = (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : cwd "/" d)
+                    # Only `&&` on the FOLLOWING boundary proves the cd succeeded. Under
+                    # any other separator the old directory is still reachable, so it is
+                    # kept as an alternative scope rather than discarded.
+                    if (i < n && substr(seg[i+1], 1, 1) == "A") cwdalt = ""
+                    else if (cwdalt == "") cwdalt = prev
                     continue
                 }
                 if (cmd !~ /^git[[:space:]]/) continue
@@ -332,7 +350,7 @@ for f in "${cloners[@]}"; do
                 # it replaced, structurally rather than by my remembering to check.
                 if (index(bare, TIKA) > 0) { print cmd; continue }
                 if (seen_c) { if (scoped(tgt)) print cmd; continue }
-                if (scoped(cwd)) print cmd
+                if (scoped(cwd) || (cwdalt != "" && scoped(cwdalt))) print cmd
             }
         }
     ' <<<"$stripped" || true)"

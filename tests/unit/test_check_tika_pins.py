@@ -164,6 +164,14 @@ BYPASSES = [
     # two approaches are now unioned rather than swapped.
     pytest.param(
         'RUN git -C/src/tika reset --hard HEAD^\n', id="attached-dash-C-path"),
+    # Only `&&` proves the preceding command succeeded. After a cd that may have
+    # failed, the shell is still where it started and the reset runs THERE.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /missing || git reset --hard HEAD^\n',
+        id="cd-may-have-failed-before-or"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /missing ; git reset --hard HEAD^\n',
+        id="cd-may-have-failed-before-semicolon"),
 ]
 
 
@@ -230,6 +238,11 @@ BENIGN = [
         id="explicit-work-tree-elsewhere"),
     pytest.param(
         'RUN cat /tmp/p.patch | git -C /src/other apply\n', id="pipe-into-another-worktree"),
+    # The counterweight for the rule above: `&&` DOES prove the cd succeeded, so the
+    # old directory is no longer reachable and must not be carried along.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /opt/elsewhere && git reset --hard HEAD^\n',
+        id="cd-that-definitely-succeeded-leaves-the-worktree"),
 ]
 
 
