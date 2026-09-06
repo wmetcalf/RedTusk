@@ -140,7 +140,7 @@ for f in "${cloners[@]}"; do
         # Docker expands build variables in WORKDIR, so `ENV ROOT=/src` + `WORKDIR
         # $ROOT/tika` really is the Tika worktree. Recorded literally, it read as
         # `/$ROOT/tika` -- outside Tika -- and the gate passed.
-        function expand(v,   out, i, c, rest, name, j, ch) {
+        function expand(v, tbl,   out, i, c, rest, name, j, ch) {
             # Written as an explicit scan rather than gsub: a gsub replacement cannot
             # express "the value, and then whatever character terminated the name"
             # without `&`, which re-inserts the WHOLE match -- that produced
@@ -155,7 +155,7 @@ for f in "${cloners[@]}"; do
                         j = index(rest, "}")
                         if (j > 0) {
                             name = substr(rest, 2, j - 2)
-                            if (name in envval) { out = out envval[name]; i += 1 + j; continue }
+                            if (name in tbl) { out = out tbl[name]; i += 1 + j; continue }
                         }
                     } else {
                         name = ""; j = 1
@@ -163,8 +163,8 @@ for f in "${cloners[@]}"; do
                             ch = substr(rest, j, 1)
                             if (ch ~ /[A-Za-z0-9_]/) { name = name ch; j++ } else break
                         }
-                        if (name != "" && (name in envval)) {
-                            out = out envval[name]; i += 1 + length(name); continue
+                        if (name != "" && (name in tbl)) {
+                            out = out tbl[name]; i += 1 + length(name); continue
                         }
                     }
                 }
@@ -179,16 +179,38 @@ for f in "${cloners[@]}"; do
             if (dir ~ /\$/) return 1
             return dir == TIKA || index(dir, TIKA "/") == 1
         }
-        BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = "" }
+        # ENV/ARG are per-STAGE in Docker. One global map let a later unrelated stage
+        # overwrite a value that a derived stage should still see, so a WORKDIR built
+        # from it resolved outside the worktree and a real reset was accepted.
+        function envsave(   k, out) {
+            out = ""
+            for (k in envval) out = out k SUBSEP envval[k] RS
+            return out
+        }
+        function envload(blob,   n, rows, i, kv) {
+            delete envval
+            n = split(blob, rows, RS)
+            for (i = 1; i <= n; i++) {
+                if (rows[i] == "") continue
+                split(rows[i], kv, SUBSEP)
+                envval[kv[1]] = kv[2]
+            }
+        }
+        BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = ""; seen_from = 0 }
         { line = $0 }
         line ~ /^[[:space:]]*(ENV|ARG)[[:space:]]/ {
             e = line
             sub(/^[[:space:]]*(ENV|ARG)[[:space:]]+/, "", e)
             ne = split(e, ev, /[[:space:]]+/)
             for (i = 1; i <= ne; i++) {
-                if (split(ev[i], kv, "=") == 2 && kv[1] != "")
-                    envval[kv[1]] = expand(unquote(kv[2]))
+                if (split(ev[i], kv, "=") == 2 && kv[1] != "") {
+                    envval[kv[1]] = expand(unquote(kv[2]), envval)
+                    # ARGs BEFORE the first FROM are global and, per Docker, usable in
+                    # FROM itself. The per-stage reset below must not erase them.
+                    if (!seen_from) globalarg[kv[1]] = envval[kv[1]]
+                }
             }
+            if (stage != "") stage_env[stage] = envsave()
             next
         }
         # A new stage starts at its BASE stage`s working directory when that base is one
@@ -202,18 +224,23 @@ for f in "${cloners[@]}"; do
             # base, found it in no stage, and silently reset the inherited directory to /.
             b = 1
             while (b <= nf && ft[b] ~ /^--/) b++
-            base = unquote(ft[b]); stage = ""
+            # EXPANDED: `ARG B=tika` + `FROM $B AS later` is how a build parameterises
+            # its base, and the literal `$B` matches no stage, silently resetting the
+            # inherited directory to /.
+            seen_from = 1
+            base = expand(unquote(ft[b]), globalarg); stage = ""
             for (i = b + 1; i <= nf; i++) if (tolower(ft[i]) == "as" && i < nf) stage = unquote(ft[i+1])
             workdir = (base in stage_wd) ? stage_wd[base] : "/"
-            if (stage != "") stage_wd[stage] = workdir
+            envload((base in stage_env) ? stage_env[base] : "")
+            if (stage != "") { stage_wd[stage] = workdir; stage_env[stage] = envsave() }
             next
         }
         line ~ /^[[:space:]]*WORKDIR[[:space:]]/ {
             sub(/^[[:space:]]*WORKDIR[[:space:]]+/, "", line)
-            line = expand(unquote(line)); sub(/[[:space:]]+$/, "", line)
+            line = expand(unquote(line), envval); sub(/[[:space:]]+$/, "", line)
             # RELATIVE WORKDIR resolves against the one in force, not against /.
             workdir = (line ~ /\$/) ? line : normpath((line ~ /^\//) ? line : workdir "/" line)
-            if (stage != "") stage_wd[stage] = workdir
+            if (stage != "") { stage_wd[stage] = workdir; stage_env[stage] = envsave() }
             next
         }
         line ~ /^[[:space:]]*RUN[[:space:]]/ || cont {
@@ -229,7 +256,7 @@ for f in "${cloners[@]}"; do
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
                 if (cmd ~ /^cd[[:space:]]/) {
                     d = cmd; sub(/^cd[[:space:]]+/, "", d)
-                    d = expand(unquote(d)); sub(/[[:space:]].*$/, "", d)
+                    d = expand(unquote(d), envval); sub(/[[:space:]].*$/, "", d)
                     cwd = (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : cwd "/" d)
                     continue
                 }
@@ -242,14 +269,25 @@ for f in "${cloners[@]}"; do
                 # working directory". So when it is present it DECIDES -- falling through
                 # to the shell cwd flagged `cd /src/tika && git -C /src/other reset`, a
                 # legitimate operation on a different repository (codex).
-                bare = expand(unquote(cmd))
-                if (match(bare, /-C[[:space:]]+[^[:space:]]+/)) {
-                    arg = substr(bare, RSTART, RLENGTH)
-                    sub(/^-C[[:space:]]+/, "", arg)
-                    tgt = (arg ~ /\$/) ? arg : normpath((arg ~ /^\//) ? arg : cwd "/" arg)
-                    if (scoped(tgt)) print cmd
-                    continue
+                # EVERY -C, in order. git(1): with multiple -C options, each subsequent
+                # relative path is interpreted against the preceding one, so reading only
+                # the first put `git -C /src -C tika reset` in /src rather than /src/tika.
+                # Scanned only up to the SUBCOMMAND, because -C is a main-command option
+                # and later arguments can carry an unrelated -C.
+                bare = expand(unquote(cmd), envval)
+                nt = split(bare, tok, /[[:space:]]+/)
+                tgt = cwd; seen_c = 0
+                for (t = 2; t <= nt; t++) {
+                    if (tok[t] == "-C" && t < nt) {
+                        arg = tok[++t]; seen_c = 1
+                        tgt = (arg ~ /\$/) ? arg : normpath((arg ~ /^\//) ? arg : tgt "/" arg)
+                    } else if (tok[t] ~ /^-/) {
+                        continue
+                    } else {
+                        break   # the subcommand: stop reading main-command options
+                    }
                 }
+                if (seen_c) { if (scoped(tgt)) print cmd; continue }
                 if (scoped(cwd)) print cmd
             }
         }

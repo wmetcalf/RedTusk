@@ -138,6 +138,10 @@ BYPASSES = [
     pytest.param(
         'WORKDIR $UNSET_VAR/x\nRUN git reset --hard HEAD^\n',
         id="unresolvable-workdir-fails-closed"),
+    # git(1): with multiple -C options, each subsequent relative path is interpreted
+    # against the preceding one. Reading only the first put this in /src.
+    pytest.param(
+        'RUN git -C /src -C tika reset --hard HEAD^\n', id="multiple-dash-C-accumulate"),
 ]
 
 
@@ -196,6 +200,9 @@ BENIGN = [
     pytest.param(
         'ENV APPDIR=/opt/app\nRUN cd $APPDIR && git reset --hard HEAD^\n',
         id="resolved-env-cd-outside-the-worktree"),
+    pytest.param(
+        'RUN git -C /src/other -C sub reset --hard HEAD^\n',
+        id="multiple-dash-C-accumulating-elsewhere"),
 ]
 
 
@@ -248,3 +255,73 @@ def test_no_cloning_dockerfile_at_all_is_an_error_not_a_pass(tmp_path: Path) -> 
     res = _run(_repo(tmp_path, default="FROM scratch\n"))
     assert res.returncode == 1
     assert "has the fork URL changed" in res.stderr
+
+
+# These two need a whole Dockerfile rather than a fragment appended to a correct
+# one: a global ARG is only global BEFORE the first FROM, and per-stage ENV needs
+# several stages in a specific order. Appending them would produce files Docker
+# would not interpret the way the test claims -- checked, and my first probe for
+# the ARG case did exactly that and "failed" for the wrong reason.
+
+def _cloning_stage(name: str) -> str:
+    return (
+        f"FROM eclipse-temurin:25-jdk-jammy AS {name}\n"
+        f"ARG TIKA_FORK_SHA={PIN}\n"
+        f"RUN git clone {CLONE_URL} /src/tika \\\n"
+        '    && git -C /src/tika checkout "$TIKA_FORK_SHA"\n'
+    )
+
+
+def test_a_stage_selected_by_a_global_arg_still_inherits_its_workdir(tmp_path: Path) -> None:
+    """`ARG B=pinned` + `FROM $B AS later` is how a build parameterises its base.
+    The literal `$B` matches no stage, so the inherited directory silently reset
+    to `/` and a bare reset in a stage that really is inside the worktree passed."""
+    text = (
+        "ARG B=pinned\n"
+        + _cloning_stage("pinned")
+        + "WORKDIR /src/tika\n"
+        "FROM $B AS later\n"
+        "RUN git reset --hard HEAD^\n"
+    )
+    res = _run(_repo(tmp_path, default=text))
+    assert res.returncode == 1, f"accepted a reset in the inherited worktree: {res.stdout}"
+
+
+def test_env_values_do_not_leak_between_unrelated_stages(tmp_path: Path) -> None:
+    """ENV is per-stage. With one global map, a later unrelated stage's `ROOT=/opt`
+    overwrote the `/src` that a stage derived from `tk` should still see, so
+    `WORKDIR $ROOT/tika` resolved outside the worktree and the reset was accepted."""
+    text = (
+        _cloning_stage("tk")
+        + "ENV ROOT=/src\n"
+        "WORKDIR /src/tika\n"
+        "FROM scratch AS other\n"
+        "ENV ROOT=/opt\n"
+        "FROM tk AS later\n"
+        "WORKDIR $ROOT/tika\n"
+        "RUN git reset --hard HEAD^\n"
+    )
+    res = _run(_repo(tmp_path, default=text))
+    assert res.returncode == 1, f"a leaked ENV value hid a real reset: {res.stdout}"
+
+
+def test_a_derived_stage_inherits_its_base_stages_env(tmp_path: Path) -> None:
+    """The counterweight that makes inheritance observable.
+
+    Not inheriting can only ever cause a FALSE POSITIVE here: the variable stays
+    unresolved, the unknown-directory rule fails closed, and the command is
+    flagged. So no bypass case can distinguish "inherited" from "gave up safely"
+    -- only a stage whose inherited value resolves OUTSIDE the worktree can.
+    """
+    text = (
+        _cloning_stage("tk")
+        + "ENV ROOT=/opt\n"
+        "FROM tk AS later\n"
+        "WORKDIR $ROOT/app\n"
+        "RUN git reset --hard HEAD^\n"
+    )
+    res = _run(_repo(tmp_path, default=text))
+    assert res.returncode == 0, (
+        f"a reset in the inherited /opt/app was reported as touching Tika: {res.stderr}"
+    )
+
