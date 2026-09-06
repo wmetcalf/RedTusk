@@ -714,6 +714,14 @@ AWS burst tier (this is the control-plane node):
        sudo setfacl -m u:$(_dispatcher_uid):x $(_aws_creds_home)/.aws
        sudo setfacl -m u:$(_dispatcher_uid):r $(_aws_creds_home)/.aws/credentials
        [ -f $(_aws_creds_home)/.aws/config ] && sudo setfacl -m u:$(_dispatcher_uid):r $(_aws_creds_home)/.aws/config
+     Whichever you choose, put AWS_CREDS_DIR in deploy/docker/.env. Compose gives an
+     EXPORTED value precedence over the file, and --check honours the same order --
+     this shell's value first, then the deploy user's login environment. A value
+     exported in a one-off interactive shell is visible to no other process, so
+     --check cannot see it and neither can a stack launched from another terminal.
+     Symlinks: whatever AWS_CREDS_DIR names is bind-mounted ALONE and a bind mount
+     does not rewrite link text, so every link on the path to the credentials must
+     be relative and stay inside that directory. --check says UNUSABLE otherwise.
   3. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
   4. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:

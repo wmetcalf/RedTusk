@@ -278,6 +278,26 @@ def test_the_remediations_cover_the_config_file_too() -> None:
     assert ".aws/config" in acl_block[:600], "the ACL remediation skips config"
 
 
+def test_the_notes_state_the_boundaries_the_code_defers_to_them_for() -> None:
+    """`_aws_creds_env_override` tells the reader that the one-off-shell boundary
+    is "stated in the burst notes", and the symlink refusal is only actionable if
+    the operator was told the rule up front. A comment that points at
+    documentation which does not say it is the same defect one level up, so the
+    cross-reference is asserted rather than assumed.
+    """
+    text = SCRIPT.read_text()
+    notes = text[text.index("The dispatcher runs as UID"):]
+    assert "one-off interactive shell" in notes[:2000], (
+        "the code defers the export boundary to the burst notes; the notes do not state it"
+    )
+    assert "EXPORTED value precedence" in notes[:2000], (
+        "the notes do not say an exported AWS_CREDS_DIR beats the .env file"
+    )
+    assert "relative and stay inside" in notes[:2000], (
+        "the notes do not state the symlink rule the check refuses on"
+    )
+
+
 def test_the_prefix_matches_the_privilege_of_the_caller(tmp_path: Path) -> None:
     """The prefix has to COMPOSE with the tool, not replace it.
 
