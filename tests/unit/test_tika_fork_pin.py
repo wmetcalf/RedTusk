@@ -29,7 +29,7 @@ def _declared_pins() -> dict[str, str]:
     return pins
 
 
-def test_every_dockerfile_pins_the_same_tika_commit():
+def test_every_dockerfile_pins_the_same_tika_commit() -> None:
     pins = _declared_pins()
     assert pins, f"no Dockerfile under {DOCKER_DIR} declares TIKA_FORK_SHA"
     distinct = set(pins.values())
@@ -39,7 +39,7 @@ def test_every_dockerfile_pins_the_same_tika_commit():
     )
 
 
-def test_the_pin_is_a_full_length_commit_sha():
+def test_the_pin_is_a_full_length_commit_sha() -> None:
     """An abbreviated sha is ambiguous, and `git checkout` accepts a branch name
     just as happily -- either would turn a pin into a moving target."""
     for name, sha in sorted(_declared_pins().items()):
