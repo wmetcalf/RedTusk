@@ -267,6 +267,22 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /src/tika\nRUN echo "#"; git reset --hard HEAD^\n',
         id="quoted-hash-is-not-a-comment"),
+    # FROM continues across `\` too. An intervening stage sets a DIFFERENT workdir
+    # on purpose: without it, dropping the continuation merely leaves the previous
+    # stage's /src/tika in force and the case passes for the wrong reason -- checked.
+    pytest.param(
+        'FROM scratch AS p9\nWORKDIR /src/tika\n'
+        'FROM scratch AS other9\nWORKDIR /opt\n'
+        'FROM --platform=linux/amd64 \\\np9 AS l9\nRUN git reset --hard HEAD^\n',
+        id="continued-from"),
+    # Trailing whitespace is significant: `EOF ` is body, not the terminator.
+    pytest.param(
+        'RUN <<EOF\nEOF \ngit -C /src/tika reset --hard HEAD^\nEOF\n',
+        id="trailing-space-is-not-the-terminator"),
+    # `true` never fails, so the cd after `&&` always happens.
+    pytest.param(
+        'WORKDIR /opt\nRUN true && cd /src/tika; git reset --hard HEAD^\n',
+        id="true-always-runs-what-follows"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -435,6 +451,25 @@ BENIGN = [
     pytest.param(
         'WORKDIR /src/other\nRUN (cd /src/tika && echo ok); git reset --hard HEAD^\n',
         id="subshell-confines-its-cd"),
+    # `false` NEVER succeeds, so the cd after `&&` can never run. Giving every
+    # command both outcomes invented a branch the shell cannot take.
+    pytest.param(
+        'WORKDIR /opt\nRUN false && cd /src/tika; git reset --hard HEAD^\n',
+        id="false-never-succeeds"),
+    # `true` never FAILS, so the `||` here is only reached when the cd failed --
+    # meaning the shell is still in /opt. Modelling true as able to fail carried
+    # /src/tika into that branch and convicted an ordinary command.
+    #
+    # Finding a case where this is observable took several attempts: for a command
+    # that does not move, succ == fail == S, so the directory usually arrives by the
+    # other path anyway. It discriminates only when the cd's own failure set is the
+    # one the `||` sees, which is why the WORKDIR here is /opt and not the worktree.
+    pytest.param(
+        'WORKDIR /opt\nRUN cd /src/tika && true || git reset --hard HEAD^\n',
+        id="true-never-fails"),
+    pytest.param(
+        'WORKDIR /opt\nRUN cd /src/tika && : || git reset --hard HEAD^\n',
+        id="colon-never-fails"),
 ]
 
 

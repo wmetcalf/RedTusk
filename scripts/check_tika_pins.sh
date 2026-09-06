@@ -106,7 +106,9 @@ for f in "${cloners[@]}"; do
             if (c == "#") break
             out = out c
         }
-        sub(/[[:space:]]+$/, "", out)
+        # NOT trimmed: trailing whitespace is significant to a heredoc terminator --
+        # `EOF ` is body, not the delimiter -- and trimming it here closed the heredoc
+        # early, upstream of the scanner that was supposed to decide (codex).
         print out
     }''' "$f")"
     # Every revision-setting checkout must use the pin, not merely one of them: a later
@@ -328,6 +330,17 @@ for f in "${cloners[@]}"; do
         }
         # A new stage starts at its BASE stage`s working directory when that base is one
         # of this file`s own stages -- Docker inherits it -- and at / otherwise.
+        # FROM continues across `\` too: `FROM --platform=... \` + `base AS name`
+        # was read as a stage with no base, resetting the inherited WORKDIR to /.
+        toupper(line) ~ /^[[:space:]]*FROM[[:space:]]/ || fcont {
+            if (line ~ /\\[[:space:]]*$/) {
+                fbuf = (fcont ? fbuf " " : "") line
+                sub(/\\[[:space:]]*$/, "", fbuf)
+                fcont = 1
+                next
+            }
+            if (fcont) { line = fbuf " " line; fcont = 0; fbuf = "" }
+        }
         toupper(line) ~ /^[[:space:]]*FROM[[:space:]]/ {
             hdr = line
             sub(/^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]+/, "", hdr)
@@ -427,8 +440,11 @@ for f in "${cloners[@]}"; do
                 # Only `<<-` strips leading TABS from the terminator. For a plain `<<`,
                 # an indented line that looks like the delimiter is BODY -- trimming it
                 # closed the heredoc early and hid everything after it.
+                # Only the leading TABS that `<<-` permits are normalised. Trailing
+                # whitespace is significant -- `EOF ` is body, not the terminator, and
+                # trimming it closed the heredoc early (codex).
                 if (hddash) sub(/^\t+/, "", probe)
-                sub(/[[:space:]]+$/, "", probe)
+                sub(/\r$/, "", probe)
                 gsub(/[\"\x27]/, "", probe)
                 if (probe == heredoc) {
                     heredoc = ""
@@ -503,6 +519,12 @@ for f in "${cloners[@]}"; do
                 # `exit` ENDS the shell, so nothing after it is reachable by any path.
                 # `false` merely returns a status, which is why the two cannot be grouped.
                 if (cmd ~ /^exit([[:space:]]|$)/) { csucc = ""; cfail = ""; continue }
+                # `false` NEVER succeeds and `true`/`:` never fail. Giving every command
+                # both outcomes invented branches the shell cannot take -- `false && cd
+                # /src/tika; git reset` reached the worktree that way and convicted a
+                # reset that really ran elsewhere (codex).
+                if (cmd ~ /^false([[:space:]]|$)/)     { csucc = ""; cfail = S; continue }
+                if (cmd ~ /^(true|:)([[:space:]]|$)/)  { csucc = S; cfail = ""; continue }
                 # Any other command leaves the directory alone.
                 csucc = S; cfail = S
                 if (cmd ~ /^cd([[:space:]]|$)/) {
