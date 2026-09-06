@@ -257,6 +257,25 @@ BENIGN = [
     pytest.param(
         'WORKDIR /src/tika\nRUN cd /opt/elsewhere \\\n    && git reset --hard HEAD^\n',
         id="guaranteed-cd-with-the-and-on-the-next-line"),
+    # The verb must be the SUBCOMMAND. Matching it anywhere rejected read-only
+    # inspection whose PATHSPEC happens to be called `reset`.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git diff HEAD -- reset\n', id="pathspec-named-reset"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git log --oneline -- reset\n',
+        id="log-with-a-pathspec-named-reset"),
+    # Read-only commands inside the worktree must pass, including through the
+    # text-scan union -- naming the worktree is not moving its HEAD.
+    pytest.param(
+        'RUN git -C /src/tika log --oneline -1\n', id="read-only-log-in-the-worktree"),
+    pytest.param(
+        'RUN git -C /src/tika status --porcelain\n', id="read-only-status-in-the-worktree"),
+    pytest.param(
+        'RUN git diff HEAD -- /src/tika\n', id="read-only-diff-naming-the-worktree"),
+    # The guarded-cd idiom: a failed cd exits, so the old directory is unreachable.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /src/other || exit 1; git reset --hard HEAD^\n',
+        id="guarded-cd-that-aborts-on-failure"),
 ]
 
 

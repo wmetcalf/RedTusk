@@ -294,12 +294,19 @@ for f in "${cloners[@]}"; do
                     # Only `&&` on the FOLLOWING boundary proves the cd succeeded. Under
                     # any other separator the old directory is still reachable, so it is
                     # kept as an alternative scope rather than discarded.
-                    if (i < n && substr(seg[i+1], 1, 1) == "A") cwdalt = ""
+                    nxtsep = (i < n) ? substr(seg[i+1], 1, 1) : ""
+                    nxtcmd = (i < n) ? substr(seg[i+1], 2) : ""
+                    gsub(/^[[:space:]]+/, "", nxtcmd)
+                    # `&&` proves the cd succeeded. So does `|| exit` -- the guarded-cd
+                    # idiom, where a failed cd terminates the shell rather than carrying
+                    # on in the old directory. Keeping the old scope there rejected
+                    # `cd /src/other || exit 1; git reset`, which is ordinary (codex).
+                    if (nxtsep == "A") cwdalt = ""
+                    else if (nxtsep == "O" && nxtcmd ~ /^(exit|false)([[:space:]]|$)/) cwdalt = ""
                     else if (cwdalt == "") cwdalt = prev
                     continue
                 }
                 if (cmd !~ /^git[[:space:]]/) continue
-                if (cmd !~ /[[:space:]](reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)([[:space:]]|$)/) continue
                 # `-C` names the worktree explicitly; otherwise the shell cwd decides.
                 # Compared UNQUOTED: `git -C "/src/tika"` is the ordinary written form,
                 # and requiring a bare path there silently un-scoped it.
@@ -314,7 +321,7 @@ for f in "${cloners[@]}"; do
                 # and later arguments can carry an unrelated -C.
                 bare = expand(unquote(cmd), envval)
                 nt = split(bare, tok, /[[:space:]]+/)
-                tgt = cwd; seen_c = 0; wt = ""; gd = ""
+                tgt = cwd; seen_c = 0; wt = ""; gd = ""; subcmd = ""
                 for (t = 2; t <= nt; t++) {
                     o = tok[t]
                     if (o == "-C" && t < nt) {
@@ -339,9 +346,14 @@ for f in "${cloners[@]}"; do
                     } else if (o ~ /^-/) {
                         continue
                     } else {
-                        break   # the subcommand: stop reading main-command options
+                        subcmd = o   # the subcommand: stop reading main-command options
+                        break
                     }
                 }
+                # The verb must be the SUBCOMMAND. Matching it anywhere in the command
+                # rejected `git diff HEAD -- reset`, where `reset` is a pathspec and
+                # nothing moves -- a read-only inspection failing the gate (codex).
+                if (subcmd !~ /^(reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)$/) continue
                 # git(1) documents --work-tree/--git-dir as top-level options, and
                 # `git --git-dir=/src/tika/.git --work-tree=/src/tika reset` really does
                 # reset that checkout from anywhere. --work-tree names the tree being
