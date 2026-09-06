@@ -127,7 +127,7 @@ _aws_sts_ok() {
     # validating the home copy: a stale mounted copy read as valid because the home
     # one passed, and a good mounted copy read as invalid because the home one did
     # not (codex). Same divergence as the probes, one layer along.
-    local dir; dir="$(_aws_creds_dir)"
+    local dir; dir="$(_aws_creds_dir)"; [ -n "$dir" ] || dir="$(_aws_creds_home)/.aws"
     AWS_SHARED_CREDENTIALS_FILE="$dir/credentials" \
     AWS_CONFIG_FILE="$dir/config" \
     aws sts get-caller-identity >/dev/null 2>&1
@@ -190,51 +190,44 @@ _aws_readable_by_uid() {
 # reports on files the dispatcher never sees -- valid while the mounted copy is
 # missing or unreadable, or UNUSABLE despite a correctly secured one (codex).
 # The check has to follow the configuration, not the convention.
-# Expand ${VAR} / $VAR from the environment WITHOUT eval. Compose treats
-# command-substitution syntax in .env as DATA, and an eval here executed it as
-# root during the documented `sudo ... --check` -- a root command-execution path
-# from a file the deploy user can write, which the deployment itself does not
-# have (codex). `$(...)` does not match the reference pattern and is left literal.
-_expand_env_refs() {
-    local v="$1" out="" name
-    while [[ "$v" =~ ^([^$]*)\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(.*)$ ]]; do
-        name="${BASH_REMATCH[2]}"
-        out="$out${BASH_REMATCH[1]}${!name-}"
-        v="${BASH_REMATCH[3]}"
-    done
-    printf '%s' "$out$v"
-}
-
+# The directory the overlay will actually MOUNT at /aws, ASKED OF COMPOSE.
+#
+# Compose owns three rules here -- environment precedence over .env, ${VAR}
+# interpolation, and relative sources resolved against the project directory --
+# and my hand-rolled version of them grew a bug per round, ending with an `eval`
+# that executed command substitution from .env as root. Reimplementing a
+# resolver is how that happens; asking the tool that owns it is not.
+#
+# Placeholders are supplied for the OTHER required variables so a half-configured
+# node still resolves. They cannot affect this value, and this check exists
+# precisely for nodes whose .env is not finished.
+#
+# If compose cannot be asked, the answer is UNKNOWN -- the same discipline the
+# readability probe uses. Guessing is what produced the bugs.
 _aws_creds_dir() {
-    local env_file="$REPO_ROOT/deploy/docker/.env" configured=""
-    # Compose PRECEDENCE: a value in the environment of the shell that launches
-    # compose overrides the .env file. Checking the file first reported on a
-    # directory the dispatcher would never be given (codex).
-    if [ -n "${AWS_CREDS_DIR:-}" ]; then
-        configured="$AWS_CREDS_DIR"
-    elif [ -f "$env_file" ]; then
-        configured="$(sed -n 's/^[[:space:]]*AWS_CREDS_DIR=//p' "$env_file" | tail -1)"
-        configured="${configured%\"}"; configured="${configured#\"}"
+    local out=""
+    if have docker && have python3; then
+        out="$(cd "$REPO_ROOT/deploy/docker" 2>/dev/null &&
+               POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder \
+               docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml \
+                              config --format json 2>/dev/null |
+               python3 -c 'import json,sys
+try: c = json.load(sys.stdin)
+except Exception: raise SystemExit
+for m in c.get("services", {}).get("dispatcher-aws-burst", {}).get("volumes", []):
+    if m.get("target") == "/aws":
+        print(m.get("source", "")); break' 2>/dev/null)"
     fi
-    if [ -z "$configured" ]; then echo "$(_aws_creds_home)/.aws"; return; fi
-    # Compose INTERPOLATION: `${HOME}/.aws` is a supported value and the literal is
-    # not a path. `docker compose config` would be the authority, but resolving it
-    # needs every other required variable in the merged stack -- so it fails on
-    # exactly the half-configured node this check exists for.
-    configured="$(_expand_env_refs "$configured")"
-    # A RELATIVE bind source is resolved by compose against the project directory,
-    # which is deploy/docker -- not against wherever this script was invoked from.
-    case "$configured" in
-        /*) ;;
-        *)  configured="$REPO_ROOT/deploy/docker/$configured" ;;
-    esac
-    echo "$configured"
+    printf '%s' "$out"
 }
 
 _aws_creds_status() {
     local home creds
     home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
-    creds="$(_aws_creds_dir)/credentials"
+    local mountdir unresolved=""
+    mountdir="$(_aws_creds_dir)"
+    if [ -z "$mountdir" ]; then mountdir="$home/.aws"; unresolved=1; fi
+    creds="$mountdir/credentials"
     have aws || { echo "n/a (no aws cli)"; return; }
     [ -f "$creds" ] || { echo "absent — place $creds"; return; }
     if ! _aws_sts_ok; then
@@ -253,17 +246,18 @@ _aws_creds_status() {
     # not resolve without it -- so an unreadable config fails the tier just as an
     # unreadable credentials file does. Absent is fine (a plain key profile needs
     # no config); present-but-unreadable is not.
-    local wuid="${REDTUSK_WORKER_UID:-10001}" conf="$(_aws_creds_dir)/config" bad="" unknown=""
+    local wuid="${REDTUSK_WORKER_UID:-10001}" conf="$mountdir/config" bad="" unknown=""
     _aws_readable_by_uid "$wuid" "$creds"
     case "$?" in 1) bad="$creds" ;; 2) unknown=1 ;; esac
     if [ -z "$bad" ] && [ -f "$conf" ]; then
         _aws_readable_by_uid "$wuid" "$conf"
         case "$?" in 1) bad="$conf" ;; 2) unknown=1 ;; esac
     fi
+    [ -n "$unresolved" ] && unknown=1
     if [ -n "$bad" ]; then
         echo "UNUSABLE — $creds passes sts as $(id -un) but uid $wuid (the dispatcher) cannot read $bad; the burst tier will fail closed. See the burst notes below."
     elif [ -n "$unknown" ]; then
-        echo "valid (sts ok, $creds; NOT CHECKED for uid $wuid — no setpriv/su)"
+        echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, or uid $wuid could not be tested)"
     else
         echo "valid (sts ok, $creds; readable by uid $wuid)"
     fi
