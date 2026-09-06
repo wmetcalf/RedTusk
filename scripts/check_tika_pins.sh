@@ -197,13 +197,15 @@ for f in "${cloners[@]}"; do
                 if (kv[2] == "1") isenv[kv[1]] = 1
             }
         }
+        # Dockerfile instruction names are CASE-INSENSITIVE; `workdir /src/tika` is
+        # valid and was being ignored entirely.
         BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = ""; seen_from = 0
                 SEPCH = sprintf("%c", 1); cwdalt = "" }
         { line = $0 }
-        line ~ /^[[:space:]]*(ENV|ARG)[[:space:]]/ {
+        toupper(line) ~ /^[[:space:]]*(ENV|ARG)[[:space:]]/ {
             e = line
-            isarg = (line ~ /^[[:space:]]*ARG[[:space:]]/)
-            sub(/^[[:space:]]*(ENV|ARG)[[:space:]]+/, "", e)
+            isarg = (toupper(line) ~ /^[[:space:]]*ARG[[:space:]]/)
+            sub(/^[[:space:]]*([Ee][Nn][Vv]|[Aa][Rr][Gg])[[:space:]]+/, "", e)
             ne = split(e, ev, /[[:space:]]+/)
             # Docker expands EVERY value in one ENV against the environment that existed
             # BEFORE the instruction. Updating as we went made `ENV ROOT=/opt DEST=$ROOT`
@@ -229,9 +231,9 @@ for f in "${cloners[@]}"; do
         }
         # A new stage starts at its BASE stage`s working directory when that base is one
         # of this file`s own stages -- Docker inherits it -- and at / otherwise.
-        line ~ /^[[:space:]]*FROM[[:space:]]/ {
+        toupper(line) ~ /^[[:space:]]*FROM[[:space:]]/ {
             hdr = line
-            sub(/^[[:space:]]*FROM[[:space:]]+/, "", hdr)
+            sub(/^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]+/, "", hdr)
             nf = split(hdr, ft, /[[:space:]]+/)
             # `FROM --platform=$BUILDPLATFORM base AS name` is the standard form, so the
             # base is the first NON-FLAG token. Taking ft[1] blindly read the flag as the
@@ -249,15 +251,15 @@ for f in "${cloners[@]}"; do
             if (stage != "") { stage_wd[stage] = workdir; stage_env[stage] = envsave() }
             next
         }
-        line ~ /^[[:space:]]*WORKDIR[[:space:]]/ {
-            sub(/^[[:space:]]*WORKDIR[[:space:]]+/, "", line)
+        toupper(line) ~ /^[[:space:]]*WORKDIR[[:space:]]/ {
+            sub(/^[[:space:]]*[Ww][Oo][Rr][Kk][Dd][Ii][Rr][[:space:]]+/, "", line)
             line = expand(unquote(line), envval); sub(/[[:space:]]+$/, "", line)
             # RELATIVE WORKDIR resolves against the one in force, not against /.
             workdir = (line ~ /\$/) ? line : normpath((line ~ /^\//) ? line : workdir "/" line)
             if (stage != "") { stage_wd[stage] = workdir; stage_env[stage] = envsave() }
             next
         }
-        line ~ /^[[:space:]]*RUN[[:space:]]/ || cont {
+        toupper(line) ~ /^[[:space:]]*RUN[[:space:]]/ || cont {
             # Each RUN starts a fresh shell at the current WORKDIR, so a `cd` in one
             # instruction does not carry into the next.
             #
@@ -269,7 +271,7 @@ for f in "${cloners[@]}"; do
             piece = line
             if (!cont) {
                 cwd = workdir; cwdalt = ""; buf = ""
-                sub(/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
+                sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
             }
             cont = (piece ~ /\\[[:space:]]*$/)
             sub(/\\[[:space:]]*$/, "", piece)
@@ -294,8 +296,14 @@ for f in "${cloners[@]}"; do
                 cmd = seg[i]
                 if (i > 1) cmd = substr(cmd, 2)      # drop the separator code
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
-                if (cmd ~ /^cd[[:space:]]/) {
-                    d = cmd; sub(/^cd[[:space:]]+/, "", d)
+                if (cmd ~ /^cd([[:space:]]|$)/) {
+                    d = cmd; sub(/^cd[[:space:]]*/, "", d)
+                    # `cd [-L|[-P [-e]] [-@]] [dir]` -- skip the options and `--`, or the
+                    # first one is read as the directory and the real target is lost.
+                    while (d ~ /^-/) {
+                        if (d ~ /^--([[:space:]]|$)/) { sub(/^--[[:space:]]*/, "", d); break }
+                        sub(/^-[^[:space:]]*[[:space:]]*/, "", d)
+                    }
                     d = expand(unquote(d), envval); sub(/[[:space:]].*$/, "", d)
                     prev = cwd
                     cwd = (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : cwd "/" d)
@@ -309,7 +317,18 @@ for f in "${cloners[@]}"; do
                     # idiom, where a failed cd terminates the shell rather than carrying
                     # on in the old directory. Keeping the old scope there rejected
                     # `cd /src/other || exit 1; git reset`, which is ordinary (codex).
-                    if (nxtsep == "A") cwdalt = ""
+                    # A cd that is ITSELF a fallback (`cd A || cd B && ...`) may never
+                    # run: the shell groups that as `(cd A || cd B) && ...`, so when A
+                    # succeeds the second cd is skipped and the command runs in A. Its
+                    # trailing `&&` therefore proves nothing about THIS cd, and clearing
+                    # the alternative on it discarded the directory actually in force.
+                    cursep = (i > 1) ? substr(seg[i], 1, 1) : ""
+                    # The branch it falls back FROM is the live alternative, not whatever
+                    # directory preceded the pair: after `cd A || cd B`, the shell is in A
+                    # or in B and nowhere else, so prev (which is A here) replaces the
+                    # older candidate rather than deferring to it.
+                    if (cursep == "O") cwdalt = prev
+                    else if (nxtsep == "A") cwdalt = ""
                     else if (nxtsep == "O" && nxtcmd ~ /^(exit|false)([[:space:]]|$)/) cwdalt = ""
                     else if (cwdalt == "") cwdalt = prev
                     continue

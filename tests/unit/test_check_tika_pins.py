@@ -174,6 +174,20 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /src/tika\nRUN git --git-dir=/tmp/other/.git reset --hard HEAD\n',
         id="bare-git-dir-keeps-the-cwd-as-the-worktree"),
+    # `cd [-L|[-P [-e]] [-@]] [dir]` -- the option was being read as the directory.
+    pytest.param(
+        'RUN cd -P /src/tika && git reset --hard HEAD^\n', id="cd-with-options"),
+    # The shell groups this as `(cd A || cd B) && git reset`, so when A succeeds the
+    # second cd never runs and the reset happens in A. Both branches stay reachable.
+    pytest.param(
+        'WORKDIR /\nRUN cd /src/tika || cd /opt && git reset --hard HEAD^\n',
+        id="chained-fallback-cd-first-branch"),
+    pytest.param(
+        'WORKDIR /\nRUN cd /opt || cd /src/tika && git reset --hard HEAD^\n',
+        id="chained-fallback-cd-second-branch"),
+    # Dockerfile instruction names are case-insensitive.
+    pytest.param(
+        'workdir /src/tika\nRUN git reset --hard HEAD^\n', id="lowercase-workdir"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -286,6 +300,11 @@ BENIGN = [
     pytest.param(
         'WORKDIR /src/tika\nRUN cd /src/other || exit 1; git reset --hard HEAD^\n',
         id="guarded-cd-that-aborts-on-failure"),
+    # The counterweight for the fallback rule: when NEITHER branch is the worktree,
+    # neither is reachable, and the directory that preceded the pair is not either.
+    pytest.param(
+        'WORKDIR /\nRUN cd /opt || cd /var && git reset --hard HEAD^\n',
+        id="chained-fallback-cd-neither-branch-is-the-worktree"),
 ]
 
 
@@ -448,4 +467,21 @@ def test_the_awk_program_contains_no_apostrophes() -> None:
         "an apostrophe inside the single-quoted awk program will break the script: "
         + "; ".join(offenders[:3])
     )
+
+
+def test_lowercase_instructions_are_understood_throughout(tmp_path: Path) -> None:
+    """Docker instruction names are case-insensitive. Recognising only uppercase
+    made the parser skip a whole file silently -- it saw no FROM, no WORKDIR and
+    no RUN, which is indistinguishable from a file that does nothing wrong."""
+    text = (
+        f"from eclipse-temurin:25-jdk-jammy as pinned\n"
+        f"arg TIKA_FORK_SHA={PIN}\n"
+        f"run git clone {CLONE_URL} /src/tika \\\n"
+        '    && git -C /src/tika checkout "$TIKA_FORK_SHA"\n'
+        "workdir /src/tika\n"
+        "from pinned as later\n"
+        "run git reset --hard HEAD^\n"
+    )
+    res = _run(_repo(tmp_path, default=text))
+    assert res.returncode == 1, f"an all-lowercase Dockerfile was not parsed: {res.stdout}"
 
