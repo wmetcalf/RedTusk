@@ -105,11 +105,57 @@ for f in "${cloners[@]}"; do
     commands="$(sed -E 's/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/ /' <<<"$stripped" \
                 | sed -E 's/(\&\&|\|\||;|\|)/\n/g')"
     checkouts="$(grep -E '^[[:space:]]*git[[:space:]][^|&;]*checkout' <<<"$commands" || true)"
-    # Commands that move HEAD without a checkout. Scoped to the tika worktree so an
-    # unrelated `git reset` elsewhere in the file is not swept up. See the threat-model
-    # note at the top: this is defence in depth against accident, not a closed set.
-    moved="$(grep -E '^[[:space:]]*git[[:space:]].*/src/tika' <<<"$commands" \
-             | grep -E '[[:space:]](reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)([[:space:]]|$)' || true)"
+    # Commands that move HEAD without a checkout, scoped to the tika worktree so an
+    # unrelated `git reset` elsewhere in the file is not swept up.
+    #
+    # "Scoped" cannot mean "the command text mentions /src/tika". A git command reaches
+    # that worktree two ways, and only one of them names it:
+    #
+    #     RUN git -C /src/tika reset --hard HEAD^     <- names it
+    #     RUN cd /src/tika && git reset --hard HEAD^  <- does NOT, after splitting on &&
+    #
+    # The second is not evasion, it is how all four of these Dockerfiles already invoke
+    # maven (`RUN cd /src/tika && mvn install`), so appending a reset to that existing
+    # block is precisely the careless edit this gate is for -- and it exited 0. WORKDIR
+    # has the same effect across whole instructions. So track the effective directory:
+    # WORKDIR sets it for the rest of the file, a `cd` sets it for the rest of ITS RUN
+    # (each RUN starts a fresh shell, so the cd does not carry to the next instruction).
+    moved="$(awk '
+        function scoped(dir) { return dir == TIKA || index(dir, TIKA "/") == 1 }
+        BEGIN { TIKA = "/src/tika"; workdir = "/"; }
+        # Physical-line bookkeeping happens on the ORIGINAL text, before splitting.
+        { line = $0 }
+        # WORKDIR persists across instructions until the next WORKDIR (or a new FROM,
+        # which resets the build stage entirely).
+        line ~ /^[[:space:]]*FROM[[:space:]]/  { workdir = "/"; next }
+        line ~ /^[[:space:]]*WORKDIR[[:space:]]/ {
+            sub(/^[[:space:]]*WORKDIR[[:space:]]+/, "", line)
+            gsub(/["\x27]/, "", line); sub(/[[:space:]]+$/, "", line)
+            workdir = line; next
+        }
+        line ~ /^[[:space:]]*RUN[[:space:]]/ || cont {
+            # A RUN starts a fresh shell at the current WORKDIR.
+            if (!cont) cwd = workdir
+            cont = (line ~ /\\[[:space:]]*$/)
+            sub(/^[[:space:]]*RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", line)
+            sub(/\\[[:space:]]*$/, "", line)
+            n = split(line, seg, /&&|\|\||;/)
+            for (i = 1; i <= n; i++) {
+                cmd = seg[i]
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
+                if (cmd ~ /^cd[[:space:]]/) {
+                    d = cmd; sub(/^cd[[:space:]]+/, "", d)
+                    gsub(/["\x27]/, "", d); sub(/[[:space:]].*$/, "", d)
+                    if (d ~ /^\//) cwd = d; else cwd = cwd "/" d
+                    continue
+                }
+                if (cmd !~ /^git[[:space:]]/) continue
+                if (cmd !~ /[[:space:]](reset|rebase|merge|cherry-pick|revert|am|apply|pull|switch|restore|sparse-checkout)([[:space:]]|$)/) continue
+                # -C names the worktree explicitly; otherwise the shell cwd decides.
+                if (cmd ~ /-C[[:space:]]+\/src\/tika([[:space:]]|$)/ || scoped(cwd)) print cmd
+            }
+        }
+    ' <<<"$stripped" || true)"
     if [ -n "$moved" ]; then
         echo "$f: moves the Tika worktree's HEAD outside the pinned checkout:" >&2
         while IFS= read -r line; do
