@@ -181,10 +181,24 @@ _aws_readable_by_uid() {
     esac
 }
 
+# The directory the overlay will actually MOUNT at /aws. Once an operator follows
+# the copy remediation and sets AWS_CREDS_DIR=/etc/redtusk/aws, checking ~/.aws
+# reports on files the dispatcher never sees -- valid while the mounted copy is
+# missing or unreadable, or UNUSABLE despite a correctly secured one (codex).
+# The check has to follow the configuration, not the convention.
+_aws_creds_dir() {
+    local env_file="$REPO_ROOT/deploy/docker/.env" configured=""
+    if [ -f "$env_file" ]; then
+        configured="$(sed -n 's/^[[:space:]]*AWS_CREDS_DIR=//p' "$env_file" | tail -1)"
+        configured="${configured%\"}"; configured="${configured#\"}"
+    fi
+    if [ -n "$configured" ]; then echo "$configured"; else echo "$(_aws_creds_home)/.aws"; fi
+}
+
 _aws_creds_status() {
     local home creds
     home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
-    creds="$home/.aws/credentials"
+    creds="$(_aws_creds_dir)/credentials"
     have aws || { echo "n/a (no aws cli)"; return; }
     [ -f "$creds" ] || { echo "absent — place $creds"; return; }
     if ! _aws_sts_ok; then
@@ -203,7 +217,7 @@ _aws_creds_status() {
     # not resolve without it -- so an unreadable config fails the tier just as an
     # unreadable credentials file does. Absent is fine (a plain key profile needs
     # no config); present-but-unreadable is not.
-    local wuid="${REDTUSK_WORKER_UID:-10001}" conf="$home/.aws/config" bad="" unknown=""
+    local wuid="${REDTUSK_WORKER_UID:-10001}" conf="$(_aws_creds_dir)/config" bad="" unknown=""
     _aws_readable_by_uid "$wuid" "$creds"
     case "$?" in 1) bad="$creds" ;; 2) unknown=1 ;; esac
     if [ -z "$bad" ] && [ -f "$conf" ]; then

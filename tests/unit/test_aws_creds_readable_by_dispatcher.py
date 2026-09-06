@@ -30,7 +30,8 @@ COMPOSE = REPO_ROOT / "deploy" / "docker" / "docker-compose.aws-burst.yml"
 DOCKERFILE = REPO_ROOT / "deploy" / "docker" / "Dockerfile.host"
 
 
-def _status(readable: str, tmp_path: Path) -> tuple[str, str]:
+def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
+            make_config: bool = False, creds_dir: str = "") -> tuple[str, str]:
     """Run the real `_aws_creds_status` with the probe forced either way.
 
     Only the function definitions are taken from the script -- running the
@@ -44,9 +45,16 @@ def _status(readable: str, tmp_path: Path) -> tuple[str, str]:
         return m.group(0)
 
     uid_log = tmp_path / "uid-asked"
+    # A synthetic repo so the .env the status function consults is this test's.
+    repo_root = tmp_path / "repo"
+    (repo_root / "deploy" / "docker").mkdir(parents=True)
+    if creds_dir:
+        (repo_root / "deploy" / "docker" / ".env").write_text(f"AWS_CREDS_DIR={creds_dir}\n")
     creds = tmp_path / ".aws" / "credentials"
     creds.parent.mkdir(parents=True)
     creds.write_text("[default]\n")
+    if make_config:
+        (tmp_path / ".aws" / "config").write_text("[profile x]\n")
     harness = "\n".join([
         "set -u",
         f'DEPLOY_USER={Path.home().name!r}',
@@ -59,13 +67,18 @@ def _status(readable: str, tmp_path: Path) -> tuple[str, str]:
         'SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo',
         'have() { command -v "$1" >/dev/null; }',
         "aws() { return 0; }",           # the sts probe passes
+        f'REPO_ROOT={str(repo_root)!r}',
         block("_aws_creds_home"),
+        block("_aws_creds_dir"),
         block("_aws_sts_ok"),
         block("_aws_creds_status"),
         # The probe is REPLACED rather than driven through a flag, so the harness
         # sees which uid the real call site asks about. A production hook that
         # exists only for tests is one more thing that can drift from the caller.
-        f'_aws_readable_by_uid() {{ echo "$1" > {str(uid_log)!r}; return {readable}; }}',
+        # Per-FILE, so one unreadable file among several is expressible -- the
+        # config case cannot be stated with a single global answer.
+        f'_aws_readable_by_uid() {{ echo "$1" > {str(uid_log)!r}; '
+        f'case "$2" in *{unreadable or "__nomatch__"}) return 1 ;; esac; return {readable}; }}',
         "_aws_creds_status",
     ])
     res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
@@ -167,14 +180,28 @@ def test_the_probe_reports_readable_on_yes(tmp_path: Path) -> None:
     assert _probe("#!/bin/sh\necho YES\n", tmp_path) == 0
 
 
-def test_the_config_file_is_checked_when_it_exists(tmp_path: Path) -> None:
+def test_an_unreadable_config_file_is_reported(tmp_path: Path) -> None:
     """The overlay sets `AWS_CONFIG_FILE=/aws/config`, and a role profile does not
     resolve without it -- so an unreadable config fails the tier exactly as an
-    unreadable credentials file does. Absent is fine; present-but-unreadable is not.
+    unreadable credentials file does.
+
+    Driven through the status function rather than asserted from the source: an
+    earlier version of this test pinned the literal `conf="$home/.aws/config"` and
+    broke the moment that path was correctly derived from AWS_CREDS_DIR instead.
     """
-    text = SCRIPT.read_text()
-    assert 'conf="$home/.aws/config"' in text
-    assert "[ -f \"$conf\" ]" in text, "an absent config must not be treated as broken"
+    out, _ = _status("0", tmp_path, unreadable="config", make_config=True)
+    assert "UNUSABLE" in out, out
+    assert "config" in out
+
+
+def test_an_absent_config_file_is_not_treated_as_broken(tmp_path: Path) -> None:
+    """A plain access-key profile needs no config, and convicting that setup would
+    be a new false alarm on the common case."""
+    # The stub answers "unreadable" for anything named config, so WITHOUT the
+    # existence guard the absent file would be probed and reported UNUSABLE.
+    # With `make_config=False` and a permissive stub the test could not tell.
+    out, _ = _status("0", tmp_path, unreadable="config", make_config=False)
+    assert out.startswith("valid"), out
 
 
 def test_the_remediations_cover_the_config_file_too() -> None:
@@ -291,4 +318,75 @@ def test_the_acl_remediation_does_not_widen_the_home_directory() -> None:
         assert "$(_aws_creds_home) " not in ln, (
             f"the ACL remediation grants access to the HOME directory: {ln.strip()!r}"
         )
+
+
+def test_the_check_follows_aws_creds_dir_not_the_convention(tmp_path: Path) -> None:
+    """Once an operator follows the copy remediation and sets
+    `AWS_CREDS_DIR=/etc/redtusk/aws`, the overlay mounts THAT at /aws. Checking
+    `~/.aws` then reports on files the dispatcher never sees -- valid while the
+    mounted copy is missing or unreadable, or UNUSABLE despite a correct one
+    (codex). The check has to follow the configuration.
+    """
+    text = SCRIPT.read_text()
+    m = re.search(r"^_aws_creds_dir\(\) \{.*?^\}", text, re.S | re.M)
+    assert m, "_aws_creds_dir not found"
+
+    repo = tmp_path / "repo"
+    (repo / "deploy" / "docker").mkdir(parents=True)
+    home = tmp_path / "home"
+    (home / ".aws").mkdir(parents=True)
+
+    def resolve(env_body: str | None) -> str:
+        env_file = repo / "deploy" / "docker" / ".env"
+        if env_body is None:
+            env_file.unlink(missing_ok=True)
+        else:
+            env_file.write_text(env_body)
+        harness = "\n".join([
+            "set -u",
+            f'REPO_ROOT={str(repo)!r}',
+            f'_aws_creds_home() {{ echo {str(home)!r}; }}',
+            m.group(0),
+            "_aws_creds_dir",
+        ])
+        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
+
+    assert resolve(None) == f"{home}/.aws", "no .env should fall back to the convention"
+    assert resolve("AWS_CREDS_DIR=/etc/redtusk/aws\n") == "/etc/redtusk/aws"
+    # A later assignment wins, the way compose reads the file.
+    assert resolve("AWS_CREDS_DIR=/first\nAWS_CREDS_DIR=/second\n") == "/second"
+    # An unrelated file must not hijack it.
+    assert resolve("POSTGRES_PASSWORD=x\n") == f"{home}/.aws"
+
+
+def test_the_status_probes_the_configured_directory_not_the_home(tmp_path: Path) -> None:
+    """`_aws_creds_dir` resolving correctly is not the same claim as the status
+    function USING it -- checked, and a version that read `$home/.aws` directly
+    passed every other test in this file.
+    """
+    elsewhere = tmp_path / "etc-redtusk-aws"
+    elsewhere.mkdir()
+    (elsewhere / "credentials").write_text("[default]\n")
+    out, _ = _status("0", tmp_path, creds_dir=str(elsewhere))
+    assert str(elsewhere / "credentials") in out, (
+        f"the status reported on the home convention, not the configured mount: {out!r}"
+    )
+
+
+def test_the_config_probed_is_the_one_in_the_configured_directory(tmp_path: Path) -> None:
+    """The credentials path following AWS_CREDS_DIR does not imply the config path
+    does -- they are two derivations, and only one of them was covered until a
+    mutant reverting the config half survived.
+    """
+    elsewhere = tmp_path / "etc-redtusk-aws"
+    elsewhere.mkdir()
+    (elsewhere / "credentials").write_text("[default]\n")
+    (elsewhere / "config").write_text("[profile x]\n")
+    out, _ = _status("0", tmp_path, unreadable="config", creds_dir=str(elsewhere))
+    assert "UNUSABLE" in out, out
+    assert str(elsewhere / "config") in out, (
+        f"the status probed a config outside the configured mount: {out!r}"
+    )
 
