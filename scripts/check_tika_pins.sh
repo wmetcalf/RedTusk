@@ -92,7 +92,23 @@ for f in "${cloners[@]}"; do
     # Materialised, NOT piped into grep: under `set -o pipefail`, `grep -q` exits at the
     # first match and SIGPIPEs the still-writing sed, so the pipeline reports failure and
     # the check claims the pin is unused on a tree where it plainly is.
-    stripped="$(sed 's/[[:space:]]*#.*$//' "$f")"
+    # Quote-AWARE: a bare sed truncated `RUN echo "#"; git reset ...` at the quoted
+    # hash, so the real command never reached the scanner at all (codex). Only a `#`
+    # outside quotes starts a comment.
+    stripped="$(awk '''{
+        out = ""; q = ""
+        for (i = 1; i <= length($0); i++) {
+            c = substr($0, i, 1)
+            if (q == "\x27") { out = out c; if (c == q) q = ""; continue }
+            if (c == "\\" && q != "" && i < length($0)) { out = out c substr($0, i+1, 1); i++; continue }
+            if (q != "") { out = out c; if (c == q) q = ""; continue }
+            if (c == "\"" || c == "\x27") { q = c; out = out c; continue }
+            if (c == "#") break
+            out = out c
+        }
+        sub(/[[:space:]]+$/, "", out)
+        print out
+    }''' "$f")"
     # Every revision-setting checkout must use the pin, not merely one of them: a later
     # hardcoded `git checkout <other>` overrides an earlier pinned one, and the compiled
     # revision is the LAST one to win.
@@ -361,6 +377,17 @@ for f in "${cloners[@]}"; do
             # a stale alternative scope and was reported -- a false alarm on ordinary
             # formatting, which is worse than a miss because it gets the gate switched off.
             piece = line
+            # EXEC form: `RUN ["git", "reset", "--hard", "HEAD^"]` runs git directly.
+            # The parsed segment began with `["git"` and matched no test, so the reset
+            # went unseen (codex). Rewritten to the shell form before anything else.
+            if (piece ~ /^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]*\[/) {
+                json = piece
+                sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]*\[/, "", json)
+                sub(/\][[:space:]]*$/, "", json)
+                gsub(/[\"\x27]/, "", json)
+                gsub(/[[:space:]]*,[[:space:]]*/, " ", json)
+                piece = "RUN " json
+            }
             # `RUN <<EOF` opens a heredoc whose BODY is the script. There is no trailing
             # backslash, so continuation tracking never saw it and every command inside
             # was ignored -- the text scan this parser replaced did catch them.
@@ -446,14 +473,20 @@ for f in "${cloners[@]}"; do
                 # without restoring afterwards, so `(cd /src/tika && echo ok); git reset`
                 # carried the worktree past the group and convicted a reset elsewhere
                 # (codex). Enter and leave it properly.
-                while (cmd ~ /^[({][[:space:]]*/) {
+                # ONLY parentheses make a subshell. `{ cd X; }` is a brace group and runs
+                # in the CURRENT shell, so its cd persists -- restoring there accepted a
+                # reset that really had moved (codex). Braces are stepped over without
+                # any save or restore.
+                while (cmd ~ /^\{[[:space:]]*/) sub(/^\{[[:space:]]*/, "", cmd)
+                while (cmd ~ /^\([[:space:]]*/) {
                     if (subdepth == 0) subsaved = S
                     subdepth++
-                    sub(/^[({][[:space:]]*/, "", cmd)
+                    sub(/^\([[:space:]]*/, "", cmd)
                 }
                 subclose = 0
-                while (cmd ~ /[[:space:]]*[)}]$/ && subdepth > 0) {
-                    sub(/[[:space:]]*[)}]$/, "", cmd)
+                while (cmd ~ /[[:space:]]*\}$/) sub(/[[:space:]]*\}$/, "", cmd)
+                while (cmd ~ /[[:space:]]*\)$/ && subdepth > 0) {
+                    sub(/[[:space:]]*\)$/, "", cmd)
                     subdepth--
                     if (subdepth == 0) subclose = 1
                 }

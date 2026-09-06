@@ -255,6 +255,18 @@ BYPASSES = [
     # WORKDIR continues across `\` like every other instruction.
     pytest.param(
         'WORKDIR /src/\\\ntika\nRUN git reset --hard HEAD^\n', id="continued-workdir"),
+    # The exec form runs git directly; the segment began with `["git"`.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN ["git", "reset", "--hard", "HEAD^"]\n', id="exec-form-run"),
+    # `{ ...; }` is a brace group and runs in the CURRENT shell, so its cd PERSISTS.
+    # Only `( ... )` makes a subshell.
+    pytest.param(
+        'WORKDIR /src/other\nRUN { cd /src/tika && echo ok; }; git reset --hard HEAD^\n',
+        id="brace-group-cd-persists"),
+    # A `#` inside quotes is not a comment; truncating there dropped the real command.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN echo "#"; git reset --hard HEAD^\n',
+        id="quoted-hash-is-not-a-comment"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
