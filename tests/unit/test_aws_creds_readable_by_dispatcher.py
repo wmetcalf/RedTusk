@@ -89,6 +89,7 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         f' > {str(sts_log)!r}; return 0; }}',
         f'REPO_ROOT={str(repo_root)!r}',
         block("_aws_creds_home"),
+        block("_expand_env_refs"),
         block("_aws_creds_dir"),
         block("_aws_sts_ok"),
         block("_aws_creds_status"),
@@ -353,6 +354,9 @@ def test_the_check_follows_aws_creds_dir_not_the_convention(tmp_path: Path) -> N
     text = SCRIPT.read_text()
     m = re.search(r"^_aws_creds_dir\(\) \{.*?^\}", text, re.S | re.M)
     assert m, "_aws_creds_dir not found"
+    me = re.search(r"^_expand_env_refs\(\) \{.*?^\}", text, re.S | re.M)
+    assert me, "_expand_env_refs not found"
+    expand_block = me.group(0)
 
     repo = tmp_path / "repo"
     (repo / "deploy" / "docker").mkdir(parents=True)
@@ -369,11 +373,16 @@ def test_the_check_follows_aws_creds_dir_not_the_convention(tmp_path: Path) -> N
             "set -u",
             f'REPO_ROOT={str(repo)!r}',
             f'_aws_creds_home() {{ echo {str(home)!r}; }}',
+            expand_block,
             m.group(0),
             "_aws_creds_dir",
         ])
+        # AWS_CREDS_DIR pinned empty: it takes precedence over the file by design,
+        # so an ambient one in the developer's shell would silently decide every
+        # case here -- the environment-dependence trap, in the test this time.
         r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
-                           timeout=60, env={**os.environ, **(env or {})})
+                           timeout=60,
+                           env={**os.environ, "AWS_CREDS_DIR": "", **(env or {})})
         assert r.returncode == 0, r.stderr
         return r.stdout.strip()
 
@@ -449,6 +458,9 @@ def test_the_configured_directory_follows_compose_precedence_and_interpolation(
     text = SCRIPT.read_text()
     m = re.search(r"^_aws_creds_dir\(\) \{.*?^\}", text, re.S | re.M)
     assert m
+    me = re.search(r"^_expand_env_refs\(\) \{.*?^\}", text, re.S | re.M)
+    assert me, "_expand_env_refs not found"
+    expand_block = me.group(0)
 
     repo = tmp_path / "repo"
     (repo / "deploy" / "docker").mkdir(parents=True)
@@ -459,6 +471,7 @@ def test_the_configured_directory_follows_compose_precedence_and_interpolation(
             "set -u",
             f'REPO_ROOT={str(repo)!r}',
             '_aws_creds_home() { echo /home/deploy; }',
+            expand_block,
             m.group(0),
             "_aws_creds_dir",
         ])
@@ -475,4 +488,54 @@ def test_the_configured_directory_follows_compose_precedence_and_interpolation(
     assert resolve(
         "AWS_CREDS_DIR=/from/dotenv\n", {**plain, "AWS_CREDS_DIR": "/from/env"}
     ) == "/from/env"
+
+
+def _resolve_creds_dir(env_body: str, repo: Path, env: dict[str, str]) -> str:
+    text = SCRIPT.read_text()
+    parts = []
+    for name in ("_expand_env_refs", "_aws_creds_dir"):
+        m = re.search(rf"^{name}\(\) \{{.*?^\}}", text, re.S | re.M)
+        assert m, f"{name} not found"
+        parts.append(m.group(0))
+    (repo / "deploy" / "docker").mkdir(parents=True, exist_ok=True)
+    (repo / "deploy" / "docker" / ".env").write_text(env_body)
+    harness = "\n".join([
+        "set -u",
+        f'REPO_ROOT={str(repo)!r}',
+        '_aws_creds_home() { echo /home/deploy; }',
+        *parts,
+        "_aws_creds_dir",
+    ])
+    r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
+                       timeout=60, env={**os.environ, **env})
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_a_value_in_the_env_file_is_never_executed(tmp_path: Path) -> None:
+    """Compose treats command-substitution syntax in `.env` as DATA.
+
+    An earlier version of this resolver used `eval`, which executed it -- as ROOT,
+    during the documented `sudo ... --check` invocation, from a file the deploy
+    user can write. That is a privilege path the deployment itself does not have,
+    and I introduced it while fixing interpolation (codex).
+    """
+    marker = tmp_path / "EXECUTED"
+    out = _resolve_creds_dir(
+        f"AWS_CREDS_DIR=$(touch {marker}; echo /pwned)\n",
+        tmp_path / "repo",
+        {"AWS_CREDS_DIR": ""},
+    )
+    assert not marker.exists(), "the resolver EXECUTED a value from the env file"
+    assert "/pwned" not in out.rsplit("/", 1)[-1] or "$(" in out, out
+
+
+def test_a_relative_directory_resolves_against_the_compose_project(tmp_path: Path) -> None:
+    """Compose resolves a relative bind source against the project directory --
+    `deploy/docker` -- not against wherever this script happened to be invoked
+    from, so the documented run from the repo root checked a different directory
+    than the one mounted (codex)."""
+    repo = tmp_path / "repo"
+    out = _resolve_creds_dir("AWS_CREDS_DIR=./aws\n", repo, {"AWS_CREDS_DIR": ""})
+    assert out.startswith(str(repo / "deploy" / "docker")), out
 

@@ -190,6 +190,21 @@ _aws_readable_by_uid() {
 # reports on files the dispatcher never sees -- valid while the mounted copy is
 # missing or unreadable, or UNUSABLE despite a correctly secured one (codex).
 # The check has to follow the configuration, not the convention.
+# Expand ${VAR} / $VAR from the environment WITHOUT eval. Compose treats
+# command-substitution syntax in .env as DATA, and an eval here executed it as
+# root during the documented `sudo ... --check` -- a root command-execution path
+# from a file the deploy user can write, which the deployment itself does not
+# have (codex). `$(...)` does not match the reference pattern and is left literal.
+_expand_env_refs() {
+    local v="$1" out="" name
+    while [[ "$v" =~ ^([^$]*)\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(.*)$ ]]; do
+        name="${BASH_REMATCH[2]}"
+        out="$out${BASH_REMATCH[1]}${!name-}"
+        v="${BASH_REMATCH[3]}"
+    done
+    printf '%s' "$out$v"
+}
+
 _aws_creds_dir() {
     local env_file="$REPO_ROOT/deploy/docker/.env" configured=""
     # Compose PRECEDENCE: a value in the environment of the shell that launches
@@ -201,15 +216,19 @@ _aws_creds_dir() {
         configured="$(sed -n 's/^[[:space:]]*AWS_CREDS_DIR=//p' "$env_file" | tail -1)"
         configured="${configured%\"}"; configured="${configured#\"}"
     fi
-    # Compose INTERPOLATION: `AWS_CREDS_DIR=${HOME}/.aws` is a supported value, and
-    # the literal is not a path. Expanded against the environment, as compose does.
-    # `docker compose config` would be the authority, but resolving it needs every
-    # other required variable in the merged stack (POSTGRES_PASSWORD, the region,
-    # ...), so it fails on precisely the half-configured node this check is for.
-    if [ -n "$configured" ]; then
-        configured="$(eval "printf '%s' \"$(printf '%s' "$configured" | sed 's/[\\`"]/\\&/g; s/\$\([A-Za-z_][A-Za-z0-9_]*\)/${\1}/g')\"" 2>/dev/null)"
-    fi
-    if [ -n "$configured" ]; then echo "$configured"; else echo "$(_aws_creds_home)/.aws"; fi
+    if [ -z "$configured" ]; then echo "$(_aws_creds_home)/.aws"; return; fi
+    # Compose INTERPOLATION: `${HOME}/.aws` is a supported value and the literal is
+    # not a path. `docker compose config` would be the authority, but resolving it
+    # needs every other required variable in the merged stack -- so it fails on
+    # exactly the half-configured node this check exists for.
+    configured="$(_expand_env_refs "$configured")"
+    # A RELATIVE bind source is resolved by compose against the project directory,
+    # which is deploy/docker -- not against wherever this script was invoked from.
+    case "$configured" in
+        /*) ;;
+        *)  configured="$REPO_ROOT/deploy/docker/$configured" ;;
+    esac
+    echo "$configured"
 }
 
 _aws_creds_status() {
