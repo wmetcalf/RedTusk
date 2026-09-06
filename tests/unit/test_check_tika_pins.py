@@ -164,6 +164,16 @@ BYPASSES = [
     # two approaches are now unioned rather than swapped.
     pytest.param(
         'RUN git -C/src/tika reset --hard HEAD^\n', id="attached-dash-C-path"),
+    # Docker keeps an ENV value when a later ARG declares the same name.
+    pytest.param(
+        'ENV ROOT=/src\nARG ROOT=/opt\nWORKDIR $ROOT/tika\nRUN git reset --hard HEAD^\n',
+        id="env-wins-over-a-later-arg"),
+    # A bare --git-dir does NOT relocate the worktree -- git uses the CURRENT
+    # directory. Verified against git 2.43: run from checkout A with B/.git,
+    # `reset --hard HEAD~1` rewrote the files in A and left B untouched.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git --git-dir=/tmp/other/.git reset --hard HEAD\n',
+        id="bare-git-dir-keeps-the-cwd-as-the-worktree"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -420,5 +430,22 @@ def test_naming_the_worktree_is_always_reported_whatever_the_option_grammar(
     res = _run(_repo(tmp_path, default=text, crac=CLONES_AND_PINS))
     assert res.returncode == 1, (
         f"a HEAD-moving command naming the worktree was accepted: {verb}"
+    )
+
+
+def test_the_awk_program_contains_no_apostrophes() -> None:
+    """The whole detector lives inside a single-quoted shell string, so one
+    apostrophe in a COMMENT terminates it and the script dies with a bash syntax
+    error. That has now happened twice while editing this file, both times from
+    ordinary English possessives, and both times every case reported rc=2 at once
+    -- which reads like the gate rejecting everything rather than not parsing.
+    """
+    text = SCRIPT.read_text()
+    start = text.index("moved=\"$(awk '") + len("moved=\"$(awk '")
+    end = text.index("' <<<\"$stripped\"", start)
+    offenders = [ln.strip() for ln in text[start:end].splitlines() if "'" in ln]
+    assert not offenders, (
+        "an apostrophe inside the single-quoted awk program will break the script: "
+        + "; ".join(offenders[:3])
     )
 

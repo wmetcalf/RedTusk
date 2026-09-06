@@ -184,16 +184,17 @@ for f in "${cloners[@]}"; do
         # from it resolved outside the worktree and a real reset was accepted.
         function envsave(   k, out) {
             out = ""
-            for (k in envval) out = out k SUBSEP envval[k] RS
+            for (k in envval) out = out k SUBSEP (k in isenv ? 1 : 0) SUBSEP envval[k] RS
             return out
         }
         function envload(blob,   n, rows, i, kv) {
-            delete envval
+            delete envval; delete isenv
             n = split(blob, rows, RS)
             for (i = 1; i <= n; i++) {
                 if (rows[i] == "") continue
                 split(rows[i], kv, SUBSEP)
-                envval[kv[1]] = kv[2]
+                envval[kv[1]] = kv[3]
+                if (kv[2] == "1") isenv[kv[1]] = 1
             }
         }
         BEGIN { TIKA = "/src/tika"; workdir = "/"; stage = ""; seen_from = 0
@@ -201,6 +202,7 @@ for f in "${cloners[@]}"; do
         { line = $0 }
         line ~ /^[[:space:]]*(ENV|ARG)[[:space:]]/ {
             e = line
+            isarg = (line ~ /^[[:space:]]*ARG[[:space:]]/)
             sub(/^[[:space:]]*(ENV|ARG)[[:space:]]+/, "", e)
             ne = split(e, ev, /[[:space:]]+/)
             # Docker expands EVERY value in one ENV against the environment that existed
@@ -210,6 +212,12 @@ for f in "${cloners[@]}"; do
             for (pk in envval) pre[pk] = envval[pk]
             for (i = 1; i <= ne; i++) {
                 if (split(ev[i], kv, "=") == 2 && kv[1] != "") {
+                    # Docker keeps an ENV value even when a later ARG declares the same
+                    # name -- ENV wins for variable replacement. One flat map let the ARG
+                    # overwrite it, so a WORKDIR built from the name resolved to the ARG
+                    # default and the real directory went unseen.
+                    if (isarg && (kv[1] in isenv)) continue
+                    if (!isarg) isenv[kv[1]] = 1
                     envval[kv[1]] = expand(unquote(kv[2]), pre)
                     # ARGs BEFORE the first FROM are global and, per Docker, usable in
                     # FROM itself. The per-stage reset below must not erase them.
@@ -358,12 +366,23 @@ for f in "${cloners[@]}"; do
                 # `git --git-dir=/src/tika/.git --work-tree=/src/tika reset` really does
                 # reset that checkout from anywhere. --work-tree names the tree being
                 # changed, so it wins; a bare --git-dir implies the tree beside it.
+                # A --git-dir on its own does NOT relocate the worktree: git uses the
+                # CURRENT directory. Verified against git 2.43 -- run from checkout A with
+                # B/.git, `reset --hard HEAD~1` rewrote the files in A and left B untouched. So
+                # scoping such a command to the git-dir accepted a reset that really ran in
+                # the worktree the shell was standing in (codex).
+                #
+                # It is still reported when the GIT-DIR names the pinned repository,
+                # because that is whose HEAD the reset moves even while it clobbers files
+                # elsewhere. The two effects have different targets and both matter.
+                if (gd != "") {
+                    gdp = gd
+                    if (gdp !~ /\$/) { sub(/\/\.git\/?$/, "", gdp)
+                                        gdp = normpath((gdp ~ /^\//) ? gdp : tgt "/" gdp) }
+                    if (scoped(gdp)) { print cmd; continue }
+                }
                 if (wt != "") {
                     tgt = (wt ~ /\$/) ? wt : normpath((wt ~ /^\//) ? wt : tgt "/" wt)
-                    seen_c = 1
-                } else if (gd != "") {
-                    if (gd !~ /\$/) { sub(/\/\.git\/?$/, "", gd) }
-                    tgt = (gd ~ /\$/) ? gd : normpath((gd ~ /^\//) ? gd : tgt "/" gd)
                     seen_c = 1
                 }
                 # DEFENCE IN DEPTH, and the reason it is here: this parser replaced a
