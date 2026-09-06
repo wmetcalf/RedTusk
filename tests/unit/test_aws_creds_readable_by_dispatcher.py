@@ -398,7 +398,8 @@ def test_sts_validates_the_configured_credentials(tmp_path: Path) -> None:
 
 
 def _real_creds_dir(env: dict[str, str], *, env_file: str = "",
-                   tmp_path: Path | None = None) -> str:
+                   tmp_path: Path | None = None,
+                   deploy_home: str = "/home/deployuser") -> str:
     """Run the REAL `_aws_creds_dir` against the REAL compose files.
 
     When `env_file` is given the compose files are copied into a scratch project
@@ -424,6 +425,7 @@ def _real_creds_dir(env: dict[str, str], *, env_file: str = "",
         "set -u",
         f'REPO_ROOT={str(root)!r}',
         'have() { command -v "$1" >/dev/null; }',
+        f'_aws_creds_home() {{ echo {deploy_home!r}; }}',
         m.group(0),
         "_aws_creds_dir",
     ])
@@ -455,7 +457,8 @@ def test_the_mount_source_is_resolved_by_compose_itself(tmp_path: Path) -> None:
 
     interpolated = _real_creds_dir(
         {"HOME": "/home/tester"},
-        env_file="AWS_CREDS_DIR=${HOME}/.aws\n", tmp_path=tmp_path)
+        env_file="AWS_CREDS_DIR=${HOME}/.aws\n", tmp_path=tmp_path,
+        deploy_home="/home/tester")
     assert interpolated == "/home/tester/.aws", interpolated
 
     # A RELATIVE source resolves against the project directory, not the caller's.
@@ -468,4 +471,27 @@ def test_the_mount_source_is_resolved_by_compose_itself(tmp_path: Path) -> None:
         {}, env_file=f"AWS_CREDS_DIR=$(touch {marker}; echo /pwned)\n",
         tmp_path=tmp_path)
     assert not marker.exists(), f"resolving executed a value from the environment: {out!r}"
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+def test_home_interpolation_uses_the_deploy_users_home_not_the_callers(
+    tmp_path: Path,
+) -> None:
+    """`AWS_CREDS_DIR=${HOME}/.aws` must resolve to the DEPLOY user's home.
+
+    The documented invocation is `sudo scripts/prepare_node_ubuntu.sh`, where HOME
+    is /root, while the deployment itself is run by the deploy user. Interpolating
+    the caller's HOME resolved a different directory than the one that gets
+    mounted (codex) -- which is the same reason `_aws_creds_home` exists at all.
+    """
+    for caller_home in ("/root", "/somewhere/else"):
+        got = _real_creds_dir(
+            {"HOME": caller_home},
+            env_file="AWS_CREDS_DIR=${HOME}/.aws\n",
+            tmp_path=tmp_path,
+            deploy_home="/home/deployuser",
+        )
+        assert got == "/home/deployuser/.aws", (
+            f"caller HOME={caller_home} leaked into the resolution: {got!r}"
+        )
 

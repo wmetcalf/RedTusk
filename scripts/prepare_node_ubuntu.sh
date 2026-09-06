@@ -202,12 +202,19 @@ _aws_readable_by_uid() {
 # node still resolves. They cannot affect this value, and this check exists
 # precisely for nodes whose .env is not finished.
 #
+# HOME is the DEPLOY USER`s, not the caller`s: `AWS_CREDS_DIR=${HOME}/.aws` is a
+# supported .env value, the documented invocation is `sudo ...` where HOME is
+# /root, and the deployment itself is run by the deploy user. Interpolating the
+# caller`s HOME resolved a different directory than the one that gets mounted --
+# the same reason _aws_creds_home exists at all (codex).
+#
 # If compose cannot be asked, the answer is UNKNOWN -- the same discipline the
 # readability probe uses. Guessing is what produced the bugs.
 _aws_creds_dir() {
     local out=""
     if have docker && have python3; then
         out="$(cd "$REPO_ROOT/deploy/docker" 2>/dev/null &&
+               HOME="$(_aws_creds_home)" \
                POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder \
                docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml \
                               config --format json 2>/dev/null |
