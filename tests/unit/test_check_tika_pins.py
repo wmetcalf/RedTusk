@@ -244,6 +244,14 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /\nRUN cd /src/tika || cd /opt || cd /var && git reset --hard HEAD^\n',
         id="three-branch-fallback-chain"),
+    # Only `<<-` ignores leading whitespace on the terminator. For a plain `<<`, an
+    # indented delimiter-looking line is BODY, and closing there hid the rest.
+    pytest.param(
+        'RUN <<EOF\n  EOF\ngit -C /src/tika reset --hard HEAD^\nEOF\n',
+        id="indented-delimiter-does-not-close-a-plain-heredoc"),
+    # `RUN (cd X && ...)` is ordinary grouping; the opener hid the cd.
+    pytest.param(
+        'RUN (cd /src/tika && git reset --hard HEAD^)\n', id="subshell-opener-before-cd"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -398,6 +406,15 @@ BENIGN = [
     pytest.param(
         'WORKDIR /src/tika\nRUN cd /opt || cd /var && git reset --hard HEAD^\n',
         id="fallback-chain-that-leaves-the-worktree-in-every-branch"),
+    # A bare `cd` goes to $HOME, not to where we already are. Written WITHOUT a
+    # `-C`, deliberately: with one, the -C decides the scope and the test cannot
+    # observe where the shell thinks it is -- checked, and it could not.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd && git reset --hard HEAD^\n',
+        id="operandless-cd-goes-to-home"),
+    # `git --help reset` DISPLAYS documentation; the word after it is a help target.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN git --help reset\n', id="help-target-is-not-a-subcommand"),
 ]
 
 

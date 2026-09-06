@@ -362,6 +362,7 @@ for f in "${cloners[@]}"; do
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]*/, "", lead)
                 if (lead ~ /^<<-?[\"\x27]?[^[:space:]<>&|;]/) {
                     hd = lead
+                    hddash = (hd ~ /^<<-/)
                     sub(/^<<-?/, "", hd)
                     sub(/[[:space:]<>&|;].*$/, "", hd)
                     gsub(/[\"\x27]/, "", hd)
@@ -369,6 +370,7 @@ for f in "${cloners[@]}"; do
                 }
                 # A DATA heredoc: skip its body rather than reading it as commands.
                 hd = piece
+                hddash = (hd ~ /<<-/)
                 sub(/^.*<<-?/, "", hd)
                 sub(/[[:space:]<>&|;].*$/, "", hd)
                 gsub(/[\"\x27]/, "", hd)
@@ -384,7 +386,11 @@ for f in "${cloners[@]}"; do
             }
             if (heredoc && !justopened) {
                 probe = line
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", probe)
+                # Only `<<-` strips leading TABS from the terminator. For a plain `<<`,
+                # an indented line that looks like the delimiter is BODY -- trimming it
+                # closed the heredoc early and hid everything after it.
+                if (hddash) sub(/^\t+/, "", probe)
+                sub(/[[:space:]]+$/, "", probe)
                 gsub(/[\"\x27]/, "", probe)
                 if (probe == heredoc) {
                     heredoc = ""
@@ -418,6 +424,12 @@ for f in "${cloners[@]}"; do
                 sepc = (i > 1) ? substr(cmd, 1, 1) : ""
                 if (i > 1) cmd = substr(cmd, 2)      # drop the separator code
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd)
+                # `RUN (cd /src/tika && git reset)` is ordinary grouping. The opener made
+                # the first segment start with `(cd`, which matched neither test, so the
+                # cd was invisible and the git ran against the outer WORKDIR (codex).
+                # A subshell does not survive the group, but nothing here reads the cwd
+                # after it, so tracking the entry is enough.
+                gsub(/^[({][[:space:]]*/, "", cmd)
                 # Which directories the shell can be in HERE, from the previous command
                 # and the separator that joined them:
                 #   &&  runs on success -- and the previous FAILURE is remembered, because
@@ -442,6 +454,11 @@ for f in "${cloners[@]}"; do
                         sub(/^-[^[:space:]]*[[:space:]]*/, "", d)
                     }
                     d = expand(unquote(d), envval); sub(/[[:space:]].*$/, "", d)
+                    # A bare `cd` goes to $HOME, not to where we already are. Treating the
+                    # empty operand as the current directory kept the shell in the
+                    # worktree and convicted a reset that had left it (codex). Docker
+                    # builds run as root unless told otherwise, hence the fallback.
+                    if (d == "") d = ("HOME" in envval) ? envval["HOME"] : "/root"
                     # On success the shell is in the target; on failure it has not moved.
                     csucc = ""
                     nS = split(S, sp, " ")
@@ -472,7 +489,7 @@ for f in "${cloners[@]}"; do
                 gsub(/""|\x27\x27/, ".", bare)
                 bare = expand(unquote(bare), envval)
                 nt = split(bare, tok, /[[:space:]]+/)
-                tgt = ""; seen_c = 0; wt = ""; gd = ""; subcmd = ""
+                tgt = ""; seen_c = 0; wt = ""; gd = ""; subcmd = ""; info = 0
                 for (t = 2; t <= nt; t++) {
                     o = tok[t]
                     if (o == "-C" && t < nt) {
@@ -493,6 +510,10 @@ for f in "${cloners[@]}"; do
                         # reset` is ordinary, and reading the operand as the subcommand
                         # stopped the scan before the -C ever came into view.
                         t++
+                    } else if (o ~ /^(-h|--help|-v|--version)$/) {
+                        # `git --help reset` DISPLAYS the documentation for reset; the
+                        # word after it is a help target, not a subcommand to run.
+                        info = 1
                     } else if (o ~ /^-/) {
                         continue
                     } else {
@@ -510,7 +531,7 @@ for f in "${cloners[@]}"; do
                 # This is the same rule already applied to unresolved directories.
                 # `git --version` / `git --help` legitimately have NO subcommand and are
                 # read-only. Only an otherwise-unparseable command fails closed.
-                if (subcmd == "" && bare ~ /[[:space:]](-v|--version|-h|--help)([[:space:]]|$)/) continue
+                if (info) continue
                 if (subcmd == "") {
                     if (sscoped(S)) print cmd
                     continue
