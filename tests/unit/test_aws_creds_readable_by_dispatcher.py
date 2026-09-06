@@ -53,7 +53,8 @@ DOCKERFILE = REPO_ROOT / "deploy" / "docker" / "Dockerfile.host"
 def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
             make_config: bool = False, creds_dir: str = "",
             symlink_to: str = "", extra_env: dict[str, str] | None = None,
-            make_creds: bool = True, sts: str = "0") -> Run:
+            make_creds: bool = True, sts: str = "0",
+            image_user: str | None = None) -> Run:
     """Run the real `_aws_creds_status` with the probe forced either way.
 
     Only the function definitions are taken from the script -- running the
@@ -84,8 +85,17 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         if creds.exists() or creds.is_symlink():
             creds.unlink()
         creds.symlink_to(symlink_to)
+    # `docker` is stubbed so the dispatcher ids are this test's to choose and do
+    # not depend on which images the host has built.
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir(exist_ok=True)
+    (stub_bin / "docker").write_text(
+        "#!/bin/sh\nexit 1\n" if image_user is None
+        else f"#!/bin/sh\nprintf '%s\\n' {image_user!r}\n")
+    (stub_bin / "docker").chmod(0o755)
     harness = "\n".join([
         "set -u",
+        f'export PATH={str(stub_bin)!r}:$PATH',
         f'DEPLOY_USER={Path.home().name!r}',
         f'AWS_CREDS_HOME={str(tmp_path)!r}',
         # Derived the way the script derives it, NOT hardcoded: `sudo
@@ -109,6 +119,7 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         # synthetic repo and resolve to nothing.
         f'_aws_creds_dir() {{ printf "%s" {creds_dir!r}; }}',
         block("_aws_sts_ok"),
+        block("_dispatcher_user"),
         block("_dispatcher_uid"),
         block("_aws_link_hazard"),
         block("_aws_creds_status"),
@@ -117,8 +128,10 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         # exists only for tests is one more thing that can drift from the caller.
         # Per-FILE, so one unreadable file among several is expressible -- the
         # config case cannot be stated with a single global answer.
-        f'_aws_readable_by_uid() {{ echo "$1" > {str(uid_log)!r}; '
-        f'case "$2" in *{unreadable or "__nomatch__"}) return 1 ;; esac; return {readable}; }}',
+        # $1 uid, $2 gid, $3 file -- the gid is recorded too, because a probe
+        # that drops privilege to the wrong GROUP answers the wrong question.
+        f'_aws_readable_by_uid() {{ echo "$1 $2" > {str(uid_log)!r}; '
+        f'case "$3" in *{unreadable or "__nomatch__"}) return 1 ;; esac; return {readable}; }}',
         "_aws_creds_status",
     ])
     res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
@@ -157,7 +170,7 @@ def test_the_uid_checked_is_the_uid_the_dispatcher_runs_as(tmp_path: Path) -> No
     """A probe against the wrong uid would satisfy every test above and prove
     nothing, so the harness records the uid the REAL call site asks about."""
     run = _status("0", tmp_path)
-    assert run.uid_asked == "10001", (
+    assert run.uid_asked.split()[0] == "10001", (
         f"the readability probe asked about uid {run.uid_asked!r}, "
         "not the uid Dockerfile.host runs the dispatcher as"
     )
@@ -166,7 +179,7 @@ def test_the_uid_checked_is_the_uid_the_dispatcher_runs_as(tmp_path: Path) -> No
 
 
 def _uid(*, docker_says: str | None, env: dict[str, str] | None = None,
-         repo_root: Path | None = None) -> str:
+         repo_root: Path | None = None, part: str = "uid") -> str:
     """Run the REAL `_dispatcher_uid` with `docker image inspect` stubbed.
 
     `docker_says` is what the stub prints; None means the image cannot be
@@ -182,17 +195,20 @@ def _uid(*, docker_says: str | None, env: dict[str, str] | None = None,
         (bindir / "docker").write_text(f"#!/bin/sh\nprintf '%s\\n' {docker_says!r}\n")
     (bindir / "docker").chmod(0o755)
     text = SCRIPT.read_text()
-    m = re.search(r"^_dispatcher_uid\(\) \{.*?^\}", text, re.S | re.M)
-    assert m, "_dispatcher_uid not found"
+    m = re.search(r"^_dispatcher_user\(\) \{.*?^\}", text, re.S | re.M)
+    assert m, "_dispatcher_user not found"
     harness = "\n".join([
         "set -u",
         f"export PATH={f'{bindir}:' + os.environ['PATH']!r}",
         f"REPO_ROOT={str(repo_root or REPO_ROOT)!r}",
         'have() { command -v "$1" >/dev/null; }',
         m.group(0),
-        "_dispatcher_uid",
+        '_dispatcher_uid() { _dispatcher_user | cut -d" " -f1; }',
+        '_dispatcher_gid() { _dispatcher_user | cut -d" " -f2; }',
+        f"_dispatcher_{part}",
     ])
-    base = {k: v for k, v in os.environ.items() if k != "REDTUSK_WORKER_UID"}
+    base = {k: v for k, v in os.environ.items()
+            if k not in ("REDTUSK_WORKER_UID", "REDTUSK_WORKER_GID")}
     r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
                        timeout=60, env={**base, **(env or {}),
                                         "PATH": f"{bindir}:{os.environ['PATH']}"})
@@ -311,6 +327,72 @@ def test_the_dispatcher_uid_comes_from_the_most_authoritative_source(
     assert _uid(docker_says=docker_says, env=env) == expected, why
 
 
+@pytest.mark.parametrize("docker_says,env,expected", [
+    ("10001:20000", None, "20000"),
+    ("10001:10001", None, "10001"),
+    # No group in the image at all -- the uid is the only defensible answer.
+    ("10001", None, "10001"),
+    # A NAMED group is as unusable as a named user: it resolves against the
+    # image's /etc/group, not this host's.
+    ("10001:appgroup", None, "10001"),
+    (None, {"REDTUSK_WORKER_UID": "2000"}, "2000"),
+    (None, {"REDTUSK_WORKER_UID": "2000", "REDTUSK_WORKER_GID": "3000"}, "3000"),
+    (None, None, "10001"),
+], ids=["image-split-ids", "image-same-ids", "image-uid-only", "image-named-group",
+        "override-uid-only", "override-both", "dockerfile"])
+def test_the_gid_comes_from_the_same_source_as_the_uid(
+    docker_says: str | None, env: dict[str, str] | None, expected: str,
+) -> None:
+    """`setpriv --regid` sets the real and effective GID, so a probe run under
+    the wrong group answers the wrong question in BOTH directions: it can reject
+    group-readable credentials the dispatcher can read, and accept ones it
+    cannot. An image declaring `10001:20000` did exactly that, because only the
+    uid was parsed and the gid was set to it (codex).
+
+    They come from one call now, so uid and gid cannot be read from different
+    sources -- which is the failure this would otherwise drift back into.
+    """
+    assert _uid(docker_says=docker_says, env=env, part="gid") == expected
+
+
+def test_the_probe_is_given_the_dispatchers_gid_not_its_uid(tmp_path: Path) -> None:
+    """End to end: the recorded probe arguments must carry the image's GROUP.
+
+    The ids differ deliberately. Asserting this against an image whose uid and
+    gid are both 10001 -- which the stock one is -- cannot fail, because passing
+    the uid twice produces the identical call.
+    """
+    run = _status("0", tmp_path, image_user="10001:20000")
+    assert run.uid_asked == "10001 20000", run.uid_asked
+
+
+def test_the_stock_image_still_probes_its_own_ids(tmp_path: Path) -> None:
+    """The counterweight for the row above: the ordinary case must be unchanged."""
+    run = _status("0", tmp_path, image_user="10001:10001")
+    assert run.uid_asked == "10001 10001", run.uid_asked
+
+
+def test_a_symlinked_creds_dir_is_resolved_before_it_is_compared(
+    tmp_path: Path,
+) -> None:
+    """Docker resolves the bind SOURCE, so `AWS_CREDS_DIR=/home/deploy/.aws` with
+    `.aws -> /etc/redtusk/aws` exposes the RESOLVED directory at /aws. Comparing
+    against the lexical path reported an ordinary REGULAR file as a symlink
+    escaping the mount (codex) -- a false UNUSABLE on a working node, which is
+    the worse direction to be wrong in.
+    """
+    real = tmp_path / "etc-redtusk-aws"
+    real.mkdir()
+    (real / "credentials").write_text("[default]\n")
+    link = tmp_path / "dot-aws"
+    link.symlink_to(real)
+    out = _status("0", tmp_path, make_creds=False, creds_dir=str(link))
+    assert out.out.startswith("valid"), out.out
+    assert str(real) in out.out, (
+        f"the message names the lexical path, not the mounted one: {out.out!r}"
+    )
+
+
 def test_the_uid_falls_back_when_there_is_no_repository_either(
     tmp_path: Path,
 ) -> None:
@@ -366,7 +448,7 @@ def _probe(sudo_behaviour: str, tmp_path: Path) -> int:
         # A REAL path: the probe cds into the directory before dropping privilege,
         # modelling the bind mount, so a fixture pointing at a nonexistent
         # directory would measure the failed cd rather than the readability.
-        f'_aws_readable_by_uid 10001 {str(target)!r}; echo "rc=$?"',
+        f'_aws_readable_by_uid 10001 10001 {str(target)!r}; echo "rc=$?"',
     ])
     res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     m2 = re.search(r"rc=(\d+)", res.stdout)
@@ -478,10 +560,15 @@ def test_the_prefix_matches_the_privilege_of_the_caller(tmp_path: Path) -> None:
         "set -u",
         f'export PATH={str(bindir)!r}:$PATH',
         m.group(0),
-        f"_aws_readable_by_uid 10001 {str(target)!r} || true",
+        # DIFFERENT ids: with 10001 twice, a probe that passed the uid as the
+        # group would record exactly the same argv as a correct one.
+        f"_aws_readable_by_uid 10001 20000 {str(target)!r} || true",
     ])
     subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     seen = argv_log.read_text() if argv_log.exists() else ""
+    assert "--regid=20000" in seen, (
+        f"the probe did not drop to the dispatcher's GROUP; saw: {seen!r}"
+    )
     # Assert the branch this RUNNER actually takes. A root-run suite (a container,
     # some CI images) legitimately takes the direct branch, and demanding the sudo
     # form there fails on the runner rather than on the code (codex).
@@ -526,7 +613,7 @@ def test_the_probe_tests_a_relative_name_from_inside_the_directory(tmp_path: Pat
         "set -u",
         f'export PATH={str(bindir)!r}:$PATH',
         m.group(0),
-        f"_aws_readable_by_uid 10001 {str(creds_dir / 'credentials')!r} || true",
+        f"_aws_readable_by_uid 10001 10001 {str(creds_dir / 'credentials')!r} || true",
     ])
     subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     seen = argv_log.read_text() if argv_log.exists() else ""

@@ -150,7 +150,7 @@ _aws_sts_ok() {
 #
 # setpriv takes raw uids and needs no passwd entry, which is exactly this case.
 _aws_readable_by_uid() {
-    local uid="$1" file="$2" out=""
+    local uid="$1" gid="$2" file="$3" out=""
     # `$SUDO -n ...` is WRONG when already root: the documented invocation is
     # `sudo scripts/prepare_node_ubuntu.sh`, so SUDO is "" and the command began
     # with `-n`, which is not a program. Every probe then returned unknown and the
@@ -172,7 +172,7 @@ _aws_readable_by_uid() {
     local dir base
     dir="$(dirname "$file")"; base="$(basename "$file")"
     if command -v setpriv >/dev/null; then
-        out="$(cd "$dir" 2>/dev/null && $pre setpriv --reuid="$uid" --regid="$uid" --clear-groups \
+        out="$(cd "$dir" 2>/dev/null && $pre setpriv --reuid="$uid" --regid="$gid" --clear-groups \
                  sh -c 'test -r "$1" && echo YES || echo NO' _ "$base" 2>/dev/null)"
     fi
     if [ -z "$out" ]; then
@@ -279,23 +279,6 @@ for m in c.get("services", {}).get("dispatcher-aws-burst", {}).get("volumes", []
     printf '%s' "$out"
 }
 
-# The uid the DISPATCHER actually runs as.
-#
-# Three sources, most authoritative first, because two review rounds pulled in
-# opposite directions and both were right (codex):
-#
-#   1. the IMAGE that will run. `REDTUSK_IMAGE` selects it in every compose file
-#      here, so the repository`s Dockerfile is not necessarily what runs; when
-#      the image is present locally, its own config is the answer and an
-#      operator`s stale REDTUSK_WORKER_UID cannot move the probe off it.
-#   2. REDTUSK_WORKER_UID -- the operator telling us what we cannot look up.
-#      This is the only source when provisioning runs before the image exists,
-#      which is the normal order on a fresh node.
-#   3. the repository`s Dockerfile.host, then 10001.
-#
-# Probing the wrong uid reports credentials as readable by a user the dispatcher
-# never becomes; ignoring the override chowns the node share to a uid a custom
-# dispatcher image cannot write, silently disabling node sizing.
 # WHICH image the burst dispatcher will run. `REDTUSK_IMAGE` is documented as a
 # per-host `deploy/docker/.env` value, and .env is compose`s to read -- it is not
 # exported into this script, so reading the environment alone inspects
@@ -324,27 +307,59 @@ print(c.get("services", {}).get("dispatcher-aws-burst", {}).get("image", ""))' 2
     if [ -n "$out" ]; then printf '%s' "$out"; else printf '%s' "${REDTUSK_IMAGE:-redtusk:dev}"; fi
 }
 
-_dispatcher_uid() {
-    local from_image="" user="" image=""
+# The uid AND GID the DISPATCHER actually runs as, from ONE source so they
+# cannot come from different ones: an image declaring `10001:20000` gives a
+# probe run under gid 10001 the wrong answer about group-readable credentials,
+# in both directions (codex).
+#
+# Sources, most authoritative first, because two review rounds pulled in
+# opposite directions and both were right:
+#
+#   1. the IMAGE that will run -- `${REDTUSK_IMAGE}` selects it and compose
+#      knows which, so the repository`s Dockerfile is not necessarily it. When
+#      the image is present, its own config is the answer and an operator`s
+#      stale REDTUSK_WORKER_UID cannot move the probe off it.
+#   2. REDTUSK_WORKER_UID/GID -- the operator telling us what we cannot look up.
+#      This is the only source when provisioning runs before the image exists,
+#      which is the normal order on a fresh node.
+#   3. the repository`s Dockerfile.host, then 10001:10001.
+#
+# Probing the wrong uid reports credentials as readable by a user the dispatcher
+# never becomes; ignoring the override chowns the node share to a uid a custom
+# dispatcher image cannot write, silently disabling node sizing.
+#
+# Prints `uid gid`.
+_dispatcher_user() {
+    local image="" user="" u="" g=""
     # Resolved ONCE per run into REDTUSK_IMAGE_RESOLVED (asking compose costs a
-    # second, and the notes below interpolate this function eight times).
+    # measurable fraction of a second, and the notes below interpolate this
+    # eight times).
     image="${REDTUSK_IMAGE_RESOLVED:-${REDTUSK_IMAGE:-redtusk:dev}}"
     if have docker; then
-        user="$(docker image inspect --format '{{.Config.User}}' \
-                    "$image" 2>/dev/null | head -1)"
-        # `user` may be "10001:10001", a NAME, or empty. Only a numeric uid can be
-        # used here: a name resolves against the image`s passwd, not this host`s.
-        case "${user%%:*}" in
-            ""|*[!0-9]*) ;;
-            *) from_image="${user%%:*}" ;;
-        esac
+        user="$(docker image inspect --format '{{.Config.User}}' "$image" 2>/dev/null | head -1)"
+        u="${user%%:*}"
+        case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
+        # A NAME resolves against the image`s passwd, not this host`s, so only a
+        # numeric id is usable here.
+        case "$u" in ""|*[!0-9]*) u="" ;; esac
+        case "$g" in ""|*[!0-9]*) g="" ;; esac
+        if [ -n "$u" ]; then echo "$u ${g:-$u}"; return; fi
     fi
-    if [ -n "$from_image" ]; then echo "$from_image"; return; fi
-    if [ -n "${REDTUSK_WORKER_UID:-}" ]; then echo "$REDTUSK_WORKER_UID"; return; fi
-    from_image="$(sed -n 's/^USER[[:space:]]\+\([0-9]\+\).*/\1/p' \
-                     "$REPO_ROOT/deploy/docker/Dockerfile.host" 2>/dev/null | tail -1)"
-    if [ -n "$from_image" ]; then echo "$from_image"; else echo 10001; fi
+    if [ -n "${REDTUSK_WORKER_UID:-}" ]; then
+        echo "$REDTUSK_WORKER_UID ${REDTUSK_WORKER_GID:-$REDTUSK_WORKER_UID}"; return
+    fi
+    user="$(sed -n 's/^USER[[:space:]]\+\([0-9:]\+\).*/\1/p' \
+                "$REPO_ROOT/deploy/docker/Dockerfile.host" 2>/dev/null | tail -1)"
+    u="${user%%:*}"
+    case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
+    case "$u" in ""|*[!0-9]*) u="" ;; esac
+    case "$g" in ""|*[!0-9]*) g="" ;; esac
+    if [ -n "$u" ]; then echo "$u ${g:-$u}"; return; fi
+    echo "10001 10001"
 }
+
+_dispatcher_uid() { _dispatcher_user | cut -d" " -f1; }
+_dispatcher_gid() { _dispatcher_user | cut -d" " -f2; }
 
 # EVERY symlink traversed while resolving the file -- at ANY path component, not
 # only the last -- must be RELATIVE and must stay inside the mounted directory.
@@ -413,6 +428,15 @@ _aws_creds_status() {
     local mountdir unresolved=""
     mountdir="$(_aws_creds_dir)"
     if [ -z "$mountdir" ]; then mountdir="$home/.aws"; unresolved=1; fi
+    # Docker resolves the bind SOURCE, so a symlinked AWS_CREDS_DIR
+    # (/home/deploy/.aws -> /etc/redtusk/aws, a common layout) exposes the
+    # RESOLVED directory at /aws. Comparing paths against the lexical one then
+    # reported an ordinary regular file as a symlink escaping the mount -- a
+    # false UNUSABLE on a working node, which is the worse direction (codex).
+    local canon=""
+    if canon="$(readlink -f "$mountdir" 2>/dev/null)" && [ -n "$canon" ]; then
+        mountdir="$canon"
+    fi
     creds="$mountdir/credentials"
     have aws || { echo "n/a (no aws cli)"; return; }
     # When compose could not be asked, $mountdir is a GUESS at the home copy --
@@ -449,13 +473,14 @@ _aws_creds_status() {
     # not resolve without it -- so an unreadable config fails the tier just as an
     # unreadable credentials file does. Absent is fine (a plain key profile needs
     # no config); present-but-unreadable is not.
-    local wuid conf bad="" unknown=""
-    wuid="$(_dispatcher_uid)"
+    local wuid wgid conf bad="" unknown=""
+    # ONE call: uid and gid must describe the same dispatcher.
+    wuid="$(_dispatcher_user)"; wgid="${wuid#* }"; wuid="${wuid%% *}"
     conf="$mountdir/config"
-    _aws_readable_by_uid "$wuid" "$creds"
+    _aws_readable_by_uid "$wuid" "$wgid" "$creds"
     case "$?" in 1) bad="$creds" ;; 2) unknown=1 ;; esac
     if [ -z "$bad" ] && [ -f "$conf" ]; then
-        _aws_readable_by_uid "$wuid" "$conf"
+        _aws_readable_by_uid "$wuid" "$wgid" "$conf"
         case "$?" in 1) bad="$conf" ;; 2) unknown=1 ;; esac
     fi
     # Every link on the path to the file, at every component -- see
