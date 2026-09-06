@@ -305,6 +305,23 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /opt\nRUN while cd /src/tika; do git reset --hard HEAD^; done\n',
         id="while-do-guarded-reset"),
+    # `!` INVERTS the exit status, so the shell takes the OTHER branch: the cd
+    # failed, the bang makes that a success, and the reset runs where it already was.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN ! cd /definitely-missing && git reset --hard HEAD^\n',
+        id="negated-cd-inverts-the-branch"),
+    # OLDPWD is subshell-local: the inner cd must not become the parent's `cd -`,
+    # so this reset really does run in /src/tika.
+    #
+    # This case locks the VERDICT, not the OLDPWD save/restore itself -- checked, and
+    # the gate reports it either way. The directory `cd -` returns to is one the
+    # shell was already in, so it is carried by that cd's own failure branch (or by
+    # the `&&`'s andfail) regardless. I could not construct a configuration where
+    # restoring OLDPWD across a subshell changes an outcome; the code is kept because
+    # it models the shell correctly, not because a test forces it.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN cd /opt && (cd /var); cd - && git reset --hard HEAD^\n',
+        id="oldpwd-is-subshell-local"),
     # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
     # must not swallow the `-C` that follows.
     pytest.param(

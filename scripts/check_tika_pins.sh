@@ -518,12 +518,15 @@ for f in "${cloners[@]}"; do
                 # Shell CONTROL KEYWORDS precede the command they guard, so `if cd X`
                 # and `then git reset` matched neither test and the whole construct was
                 # invisible (codex). `!` negates, and is stepped over the same way.
-                while (cmd ~ /^(if|then|elif|else|do|while|until|for|!)[[:space:]]/)
+                negated = 0
+                while (cmd ~ /^(if|then|elif|else|do|while|until|for|!)[[:space:]]/) {
+                    if (cmd ~ /^![[:space:]]/) negated = !negated
                     sub(/^(if|then|elif|else|do|while|until|for|!)[[:space:]]+/, "", cmd)
+                }
                 sub(/^(fi|done|esac)[[:space:]]*$/, "", cmd)
                 while (cmd ~ /^\{[[:space:]]*/) sub(/^\{[[:space:]]*/, "", cmd)
                 while (cmd ~ /^\([[:space:]]*/) {
-                    if (subdepth == 0) subsaved = S
+                    if (subdepth == 0) { subsaved = S; suboldS = oldS }
                     subdepth++
                     sub(/^\([[:space:]]*/, "", cmd)
                 }
@@ -551,7 +554,7 @@ for f in "${cloners[@]}"; do
                 # (codex). Each early exit applies it first.
                 if (cmd ~ /^exit([[:space:]]|$)/) {
                     csucc = ""; cfail = ""
-                    if (subclose) { S = subsaved; csucc = S; cfail = S; orsucc = ""; andfail = "" }
+                    if (subclose) { S = subsaved; csucc = S; cfail = S; orsucc = ""; andfail = ""; oldS = suboldS }
                     continue
                 }
                 # `false` NEVER succeeds and `true`/`:` never fail. Giving every command
@@ -560,12 +563,12 @@ for f in "${cloners[@]}"; do
                 # reset that really ran elsewhere (codex).
                 if (cmd ~ /^false([[:space:]]|$)/) {
                     csucc = ""; cfail = S
-                    if (subclose) { S = subsaved; csucc = ""; cfail = S = subsaved; orsucc = ""; andfail = "" }
+                    if (subclose) { S = subsaved; csucc = ""; cfail = S = subsaved; orsucc = ""; andfail = ""; oldS = suboldS }
                     continue
                 }
                 if (cmd ~ /^(true|:)([[:space:]]|$)/) {
                     csucc = S; cfail = ""
-                    if (subclose) { S = subsaved; csucc = subsaved; cfail = ""; orsucc = ""; andfail = "" }
+                    if (subclose) { S = subsaved; csucc = subsaved; cfail = ""; orsucc = ""; andfail = ""; oldS = suboldS }
                     continue
                 }
                 # Any other command leaves the directory alone.
@@ -598,6 +601,7 @@ for f in "${cloners[@]}"; do
                     }
                     oldS = S
                     cfail = S
+                    if (negated) { swaptmp = csucc; csucc = cfail; cfail = swaptmp }
                     # A cd that is part of a PIPELINE runs in a pipeline subshell and
                     # cannot move the parent shell. Unioning its success carried the
                     # target into the commands after the pipeline (codex).
@@ -606,11 +610,16 @@ for f in "${cloners[@]}"; do
                     }
                     # The branch state is subshell-local too: leaving orsucc/andfail behind let
                     # the next separator union a directory the parent never entered (codex).
-                    if (subclose) { S = subsaved; csucc = S; cfail = S; orsucc = ""; andfail = "" }
+                    if (subclose) { S = subsaved; csucc = S; cfail = S; orsucc = ""; andfail = ""; oldS = suboldS }
                     continue
                 }
-                if (subclose) { csucc = subsaved; cfail = subsaved; orsucc = ""; andfail = "" }
+                if (subclose) { csucc = subsaved; cfail = subsaved; orsucc = ""; andfail = ""; oldS = suboldS }
                 if (cmd !~ /^git[[:space:]]/) continue
+                # `!` INVERTS the exit status, so the shell takes the other branch: after
+                # `! cd /missing && git reset` the cd FAILED, the `!` makes that a success,
+                # and the reset runs where the shell already was. Stripping the bang
+                # without swapping propagated the target instead (codex).
+                if (negated) { swaptmp = csucc; csucc = cfail; cfail = swaptmp }
                 # `-C` names the worktree explicitly; otherwise the shell cwd decides.
                 # Compared UNQUOTED: `git -C "/src/tika"` is the ordinary written form,
                 # and requiring a bare path there silently un-scoped it.
