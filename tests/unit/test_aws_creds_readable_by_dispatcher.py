@@ -51,7 +51,7 @@ DOCKERFILE = REPO_ROOT / "deploy" / "docker" / "Dockerfile.host"
 
 def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
             make_config: bool = False, creds_dir: str = "",
-            symlink_to: str = "") -> Run:
+            symlink_to: str = "", extra_env: dict[str, str] | None = None) -> Run:
     """Run the real `_aws_creds_status` with the probe forced either way.
 
     Only the function definitions are taken from the script -- running the
@@ -71,6 +71,7 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
     (repo_root / "deploy" / "docker").mkdir(parents=True)
     if creds_dir:
         (repo_root / "deploy" / "docker" / ".env").write_text(f"AWS_CREDS_DIR={creds_dir}\n")
+    shutil.copy2(DOCKERFILE, repo_root / "deploy" / "docker" / "Dockerfile.host")
     creds = tmp_path / ".aws" / "credentials"
     creds.parent.mkdir(parents=True, exist_ok=True)
     creds.write_text("[default]\n")
@@ -95,6 +96,8 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         # the home one.
         'aws() { echo "$AWS_SHARED_CREDENTIALS_FILE|$AWS_CONFIG_FILE"'
         f' > {str(sts_log)!r}; return 0; }}',
+        # REPO_ROOT is the scratch project for .env, but _dispatcher_uid reads the
+        # real Dockerfile, so it is copied in.
         f'REPO_ROOT={str(repo_root)!r}',
         block("_aws_creds_home"),
         # STUBBED: resolving the mount is compose's job and has its own test
@@ -102,6 +105,7 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         # synthetic repo and resolve to nothing.
         f'_aws_creds_dir() {{ printf "%s" {creds_dir!r}; }}',
         block("_aws_sts_ok"),
+        block("_dispatcher_uid"),
         block("_aws_creds_status"),
         # The probe is REPLACED rather than driven through a flag, so the harness
         # sees which uid the real call site asks about. A production hook that
@@ -112,7 +116,8 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         f'case "$2" in *{unreadable or "__nomatch__"}) return 1 ;; esac; return {readable}; }}',
         "_aws_creds_status",
     ])
-    res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
+    res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True,
+                         timeout=60, env={**os.environ, **(extra_env or {})})
     assert res.returncode == 0, res.stderr
     return Run(
         out=res.stdout.strip(),
@@ -153,6 +158,26 @@ def test_the_uid_checked_is_the_uid_the_dispatcher_runs_as(tmp_path: Path) -> No
     )
     assert re.search(r"^USER 10001:10001$", DOCKERFILE.read_text(), re.M), \
         "Dockerfile.host no longer runs the dispatcher as 10001"
+
+
+def test_the_worker_uid_override_cannot_mislead_the_credential_check(
+    tmp_path: Path,
+) -> None:
+    """`REDTUSK_WORKER_UID` is an override this script honours elsewhere, but
+    `Dockerfile.host` sets `USER 10001:10001` unconditionally and the burst
+    service carries no `user:` override -- so probing the overridden value would
+    report credentials readable by a uid the dispatcher never becomes (codex).
+
+    The uid is read from the image that defines it, so the override cannot move it.
+    """
+    run = _status("0", tmp_path, extra_env={"REDTUSK_WORKER_UID": "2000"})
+    assert run.uid_asked == "10001", (
+        f"an exported REDTUSK_WORKER_UID moved the probe to uid {run.uid_asked!r}"
+    )
+    # And the compose service must still carry no user override, or the image's
+    # USER line stops being the answer.
+    assert not re.search(r"^\s+user:", COMPOSE.read_text(), re.M), \
+        "the burst service gained a user: override; the uid derivation must follow it"
 
 
 def test_the_overlay_still_mounts_the_credentials_read_only() -> None:

@@ -228,6 +228,18 @@ for m in c.get("services", {}).get("dispatcher-aws-burst", {}).get("volumes", []
     printf '%s' "$out"
 }
 
+# The uid the DISPATCHER IMAGE runs as, read from the image that defines it.
+# REDTUSK_WORKER_UID is an override this script honours elsewhere, but
+# Dockerfile.host sets `USER 10001:10001` unconditionally and the burst service
+# carries no `user:` override -- so probing the overridden value reported
+# credentials as readable by a uid the dispatcher never becomes (codex).
+_dispatcher_uid() {
+    local from_image=""
+    from_image="$(sed -n 's/^USER[[:space:]]\+\([0-9]\+\).*/\1/p' \
+                     "$REPO_ROOT/deploy/docker/Dockerfile.host" 2>/dev/null | tail -1)"
+    if [ -n "$from_image" ]; then echo "$from_image"; else echo 10001; fi
+}
+
 _aws_creds_status() {
     local home creds
     home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
@@ -242,7 +254,7 @@ _aws_creds_status() {
         return
     fi
     # `aws sts` above ran as the DEPLOY user (or root). The dispatcher does not:
-    # Dockerfile.host runs it as UID ${REDTUSK_WORKER_UID:-10001}, and a normal
+    # Dockerfile.host runs it as UID $(_dispatcher_uid), and a normal
     # ~/.aws is 0700/0600 owned by the deploy user, so mounting it read-only still
     # leaves that process unable to read a byte. The tier then fails closed and stays
     # on the local tiers, which is silent -- and this line used to say "valid".
@@ -253,7 +265,9 @@ _aws_creds_status() {
     # not resolve without it -- so an unreadable config fails the tier just as an
     # unreadable credentials file does. Absent is fine (a plain key profile needs
     # no config); present-but-unreadable is not.
-    local wuid="${REDTUSK_WORKER_UID:-10001}" conf="$mountdir/config" bad="" unknown=""
+    local wuid conf bad="" unknown=""
+    wuid="$(_dispatcher_uid)"
+    conf="$mountdir/config"
     _aws_readable_by_uid "$wuid" "$creds"
     case "$?" in 1) bad="$creds" ;; 2) unknown=1 ;; esac
     if [ -z "$bad" ] && [ -f "$conf" ]; then
@@ -455,7 +469,7 @@ fi
 log "creating standard dirs"
 DGRP=$(id -gn "$DEPLOY_USER")
 # The uid the api/dispatcher/worker containers run as (see Dockerfile.host).
-REDTUSK_WORKER_UID=${REDTUSK_WORKER_UID:-10001}
+REDTUSK_WORKER_UID=$(_dispatcher_uid)
 # The FC dispatcher runs in a container with ${REDTUSK_FC_DIR} bind-mounted at
 # /var/lib/blastbox-fc, and reads BLASTBOX_FC_BIN=/var/lib/blastbox-fc/firecracker
 # from there -- /usr/local/bin on the host is not visible to it. Installing only
@@ -574,20 +588,20 @@ AWS burst tier (this is the control-plane node):
   2. Add this line to deploy/docker/.env -- the overlay mounts the directory and
      REQUIRES the variable, so 'docker compose up' aborts without it:
        AWS_CREDS_DIR=$(_aws_creds_home)/.aws
-     The dispatcher runs as UID ${REDTUSK_WORKER_UID:-10001} and a normal ~/.aws is
+     The dispatcher runs as UID $(_dispatcher_uid) and a normal ~/.aws is
      0700/0600, so mounting it is not enough -- that uid must be able to READ it.
      The 'aws creds' line above says UNUSABLE when it cannot. Either give that uid a
      copy it owns (this script never writes credentials itself):
-       sudo install -d -m 0500 -o ${REDTUSK_WORKER_UID:-10001} /etc/redtusk/aws
-       sudo install -m 0400 -o ${REDTUSK_WORKER_UID:-10001} $(_aws_creds_home)/.aws/credentials /etc/redtusk/aws/
-       [ -f $(_aws_creds_home)/.aws/config ] && sudo install -m 0400 -o ${REDTUSK_WORKER_UID:-10001} $(_aws_creds_home)/.aws/config /etc/redtusk/aws/
+       sudo install -d -m 0500 -o $(_dispatcher_uid) /etc/redtusk/aws
+       sudo install -m 0400 -o $(_dispatcher_uid) $(_aws_creds_home)/.aws/credentials /etc/redtusk/aws/
+       [ -f $(_aws_creds_home)/.aws/config ] && sudo install -m 0400 -o $(_dispatcher_uid) $(_aws_creds_home)/.aws/config /etc/redtusk/aws/
        AWS_CREDS_DIR=/etc/redtusk/aws
      or grant it narrow access to the existing one (needs the acl package; the
      HOME directory is deliberately NOT widened -- the overlay bind-mounts .aws
      itself, so the container never traverses it):
-       sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:x $(_aws_creds_home)/.aws
-       sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:r $(_aws_creds_home)/.aws/credentials
-       [ -f $(_aws_creds_home)/.aws/config ] && sudo setfacl -m u:${REDTUSK_WORKER_UID:-10001}:r $(_aws_creds_home)/.aws/config
+       sudo setfacl -m u:$(_dispatcher_uid):x $(_aws_creds_home)/.aws
+       sudo setfacl -m u:$(_dispatcher_uid):r $(_aws_creds_home)/.aws/credentials
+       [ -f $(_aws_creds_home)/.aws/config ] && sudo setfacl -m u:$(_dispatcher_uid):r $(_aws_creds_home)/.aws/config
   3. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
   4. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:
