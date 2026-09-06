@@ -515,6 +515,12 @@ for f in "${cloners[@]}"; do
                 # in the CURRENT shell, so its cd persists -- restoring there accepted a
                 # reset that really had moved (codex). Braces are stepped over without
                 # any save or restore.
+                # Shell CONTROL KEYWORDS precede the command they guard, so `if cd X`
+                # and `then git reset` matched neither test and the whole construct was
+                # invisible (codex). `!` negates, and is stepped over the same way.
+                while (cmd ~ /^(if|then|elif|else|do|while|until|for|!)[[:space:]]/)
+                    sub(/^(if|then|elif|else|do|while|until|for|!)[[:space:]]+/, "", cmd)
+                sub(/^(fi|done|esac)[[:space:]]*$/, "", cmd)
                 while (cmd ~ /^\{[[:space:]]*/) sub(/^\{[[:space:]]*/, "", cmd)
                 while (cmd ~ /^\([[:space:]]*/) {
                     if (subdepth == 0) subsaved = S
@@ -540,13 +546,28 @@ for f in "${cloners[@]}"; do
                 else if (sepc != "")  { S = sunion(sunion(csucc, cfail), sunion(orsucc, andfail)); orsucc = ""; andfail = "" }
                 # `exit` ENDS the shell, so nothing after it is reachable by any path.
                 # `false` merely returns a status, which is why the two cannot be grouped.
-                if (cmd ~ /^exit([[:space:]]|$)/) { csucc = ""; cfail = ""; continue }
+                # These return early, so the subshell restore below would be skipped --
+                # a group ending in `true` kept its cd and convicted a reset outside it
+                # (codex). Each early exit applies it first.
+                if (cmd ~ /^exit([[:space:]]|$)/) {
+                    csucc = ""; cfail = ""
+                    if (subclose) { S = subsaved; csucc = S; cfail = S; orsucc = ""; andfail = "" }
+                    continue
+                }
                 # `false` NEVER succeeds and `true`/`:` never fail. Giving every command
                 # both outcomes invented branches the shell cannot take -- `false && cd
                 # /src/tika; git reset` reached the worktree that way and convicted a
                 # reset that really ran elsewhere (codex).
-                if (cmd ~ /^false([[:space:]]|$)/)     { csucc = ""; cfail = S; continue }
-                if (cmd ~ /^(true|:)([[:space:]]|$)/)  { csucc = S; cfail = ""; continue }
+                if (cmd ~ /^false([[:space:]]|$)/) {
+                    csucc = ""; cfail = S
+                    if (subclose) { S = subsaved; csucc = ""; cfail = S = subsaved; orsucc = ""; andfail = "" }
+                    continue
+                }
+                if (cmd ~ /^(true|:)([[:space:]]|$)/) {
+                    csucc = S; cfail = ""
+                    if (subclose) { S = subsaved; csucc = subsaved; cfail = ""; orsucc = ""; andfail = "" }
+                    continue
+                }
                 # Any other command leaves the directory alone.
                 csucc = S; cfail = S
                 if (cmd ~ /^cd([[:space:]]|$)/) {

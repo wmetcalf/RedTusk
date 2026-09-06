@@ -298,6 +298,13 @@ BYPASSES = [
     pytest.param(
         'WORKDIR /src/tika\nRUN cd /opt && cd - && git reset --hard HEAD^\n',
         id="cd-dash-returns-to-oldpwd"),
+    # Shell control keywords precede the command they guard.
+    pytest.param(
+        'WORKDIR /opt\nRUN if cd /src/tika; then git reset --hard HEAD^; fi\n',
+        id="if-then-guarded-reset"),
+    pytest.param(
+        'WORKDIR /opt\nRUN while cd /src/tika; do git reset --hard HEAD^; done\n',
+        id="while-do-guarded-reset"),
     # `--exec-path=<path>` takes its value with `=`, never as a separate token; it
     # must not swallow the `-C` that follows.
     pytest.param(
@@ -517,6 +524,14 @@ BENIGN = [
     pytest.param(
         'WORKDIR /opt\nRUN (cd /src/tika || echo fallback); git reset --hard HEAD^\n',
         id="subshell-branch-state-is-local-too"),
+    # `true`/`false`/`exit` return early, so they must apply the subshell restore
+    # themselves -- a group ending in one of them kept its cd otherwise.
+    pytest.param(
+        'WORKDIR /opt\nRUN (cd /src/tika && true); git reset --hard HEAD^\n',
+        id="subshell-ending-in-true"),
+    pytest.param(
+        'WORKDIR /opt\nRUN (cd /src/tika && false); git reset --hard HEAD^\n',
+        id="subshell-ending-in-false"),
 ]
 
 
