@@ -200,6 +200,19 @@ BYPASSES = [
         'WORKDIR /src/tika\nRUN git -C "" reset --hard HEAD^\n', id="empty-quoted-dash-C"),
     pytest.param(
         'WORKDIR /src/tika\nRUN git -C . reset --hard HEAD^\n', id="explicit-dot-dash-C"),
+    # `RUN <<EOF` opens a heredoc whose BODY is the script. There is no trailing
+    # backslash, so continuation tracking never saw it.
+    pytest.param(
+        'RUN <<EOF\ngit -C /src/tika reset --hard HEAD^\nEOF\n', id="heredoc-run-body"),
+    pytest.param(
+        'WORKDIR /src/tika\nRUN <<EOF\ngit reset --hard HEAD^\nEOF\n',
+        id="heredoc-body-under-a-workdir"),
+    pytest.param(
+        'RUN <<-"EOF"\ngit -C /src/tika reset --hard HEAD^\nEOF\n',
+        id="heredoc-quoted-and-dash-form"),
+    pytest.param(
+        'RUN <<EOF\necho hello\nEOF\nRUN cd /src/tika && git reset --hard HEAD^\n',
+        id="command-after-a-heredoc-is-still-seen"),
     # Only `&&` proves the preceding command succeeded. After a cd that may have
     # failed, the shell is still where it started and the reset runs THERE.
     pytest.param(
@@ -325,6 +338,13 @@ BENIGN = [
     pytest.param(
         'WORKDIR /opt\nRUN git -C "" reset --hard HEAD^\n',
         id="empty-dash-C-outside-the-worktree"),
+    # A backslash escapes the next character, so this is ONE echo.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN echo recovery\\; git reset --hard HEAD\n',
+        id="escaped-separator-is-literal"),
+    pytest.param(
+        'RUN <<EOF\ngit -C /src/other reset --hard HEAD^\nEOF\n',
+        id="heredoc-body-in-another-worktree"),
 ]
 
 
@@ -504,4 +524,51 @@ def test_lowercase_instructions_are_understood_throughout(tmp_path: Path) -> Non
     )
     res = _run(_repo(tmp_path, default=text))
     assert res.returncode == 1, f"an all-lowercase Dockerfile was not parsed: {res.stdout}"
+    assert "moves the Tika worktree" in res.stderr, (
+        "the file was rejected, but not for the reason under test: "
+        f"{res.stderr}"
+    )
+
+
+def test_a_correct_all_lowercase_dockerfile_is_accepted(tmp_path: Path) -> None:
+    """The control the test above needed, and did not have.
+
+    The discovery greps required an uppercase `ARG`, so ANY all-lowercase file was
+    rejected with "declares no full 40-char ARG" -- which meant the rejection test
+    passed even with every lowercase parser branch removed, and a perfectly correct
+    lowercase Dockerfile was refused (codex). The instruction keyword is matched
+    either way now; the ARG NAME still is not, since `arg tika_fork_sha=` declares
+    a different variable and must not satisfy the pin.
+    """
+    text = (
+        "from eclipse-temurin:25-jdk-jammy as pinned\n"
+        f"arg TIKA_FORK_SHA={PIN}\n"
+        f"run git clone {CLONE_URL} /src/tika \\\n"
+        '    && git -C /src/tika checkout "$TIKA_FORK_SHA"\n'
+    )
+    res = _run(_repo(tmp_path, default=text))
+    assert res.returncode == 0, f"a correct lowercase Dockerfile was rejected: {res.stderr}"
+
+
+def test_a_lowercase_decoration_pin_is_still_reported(tmp_path: Path) -> None:
+    """The decoration check has its own file-discovery grep, and it needed the same
+    treatment: a pin on a file that never clones is just as misleading written in
+    lowercase, and the uppercase-only scan could not see it at all."""
+    decoration = f"from scratch\narg TIKA_FORK_SHA={PIN}\n"
+    res = _run(_repo(tmp_path, default=CLONES_AND_PINS, localsrc=decoration))
+    assert res.returncode == 1
+    assert "never clones" in res.stderr
+
+
+def test_a_lowercase_arg_name_does_not_satisfy_the_pin(tmp_path: Path) -> None:
+    """Instruction names are case-insensitive; build ARG NAMES are not."""
+    text = (
+        "from eclipse-temurin:25-jdk-jammy as pinned\n"
+        f"arg tika_fork_sha={PIN}\n"
+        f"run git clone {CLONE_URL} /src/tika \\\n"
+        '    && git -C /src/tika checkout "$TIKA_FORK_SHA"\n'
+    )
+    res = _run(_repo(tmp_path, default=text))
+    assert res.returncode == 1
+    assert "declares no full 40-char" in res.stderr
 

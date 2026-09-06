@@ -32,8 +32,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 CLONE_URL='github.com/wmetcalf/tika.git'
 
+# Dockerfile INSTRUCTION names are case-insensitive; a build ARG NAME is not. So the
+# keyword is matched either way and TIKA_FORK_SHA is matched exactly -- `arg tika_fork_sha=`
+# declares a different variable and must not satisfy the pin. Requiring uppercase ARG here
+# rejected a perfectly correct all-lowercase Dockerfile with "declares no full 40-char
+# ARG", which is also the wrong reason a lowercase parser test was passing (codex).
+
 mapfile -t cloners < <(grep -rlF "$CLONE_URL" deploy/ | sort)
-mapfile -t declarers < <(grep -rlE '^ARG TIKA_FORK_SHA=' deploy/ | sort)
+mapfile -t declarers < <(grep -rlE '^[Aa][Rr][Gg][[:space:]]+TIKA_FORK_SHA=' deploy/ | sort)
 
 if [ "${#cloners[@]}" -eq 0 ]; then
     echo "no Dockerfile clones $CLONE_URL -- has the fork URL changed?" >&2
@@ -57,7 +63,7 @@ for f in "${cloners[@]}"; do
     # Docker honours the LAST ARG default before the instruction that uses it, so a
     # second declaration would silently drive the build while `head -1` reported the
     # first. Rather than model Docker's resolution order, forbid the ambiguity.
-    ndecl="$(grep -cE '^ARG TIKA_FORK_SHA=' "$f" || true)"
+    ndecl="$(grep -cE '^[Aa][Rr][Gg][[:space:]]+TIKA_FORK_SHA=' "$f" || true)"
     if [ "$ndecl" -gt 1 ]; then
         echo "$f: declares TIKA_FORK_SHA $ndecl times." >&2
         echo "  Docker uses the last declaration before the checkout, so the pin this gate" >&2
@@ -65,7 +71,7 @@ for f in "${cloners[@]}"; do
         rc=1
         continue
     fi
-    sha="$(grep -oE '^ARG TIKA_FORK_SHA=[0-9a-f]{40}' "$f" | head -1 | cut -d= -f2 || true)"
+    sha="$(grep -oE '^[Aa][Rr][Gg][[:space:]]+TIKA_FORK_SHA=[0-9a-f]{40}' "$f" | head -1 | cut -d= -f2 || true)"
     if [ -z "$sha" ]; then
         echo "$f: clones the Tika fork but declares no full 40-char ARG TIKA_FORK_SHA." >&2
         echo "  Every cloning image must pin a commit, or it builds an unknown Tika." >&2
@@ -144,6 +150,10 @@ for f in "${cloners[@]}"; do
             out = ""; q = ""
             for (i = 1; i <= length(v); i++) {
                 c = substr(v, i, 1)
+                # A backslash escapes the next character, so `echo recovery\; git reset`
+                # is ONE echo. Treating the escaped separator as a boundary reported a
+                # harmless command (codex).
+                if (c == "\\" && i < length(v)) { out = out c substr(v, i + 1, 1); i++; continue }
                 if (q != "") { out = out c; if (c == q) q = ""; continue }
                 if (c == "\"" || c == "\x27") { q = c; out = out c; continue }
                 nx = substr(v, i + 1, 1)
@@ -286,7 +296,7 @@ for f in "${cloners[@]}"; do
             if (stage != "") { stage_wd[stage] = workdir; stage_env[stage] = envsave() }
             next
         }
-        toupper(line) ~ /^[[:space:]]*RUN[[:space:]]/ || cont {
+        toupper(line) ~ /^[[:space:]]*RUN[[:space:]]/ || cont || heredoc {
             # Each RUN starts a fresh shell at the current WORKDIR, so a `cd` in one
             # instruction does not carry into the next.
             #
@@ -296,6 +306,22 @@ for f in "${cloners[@]}"; do
             # a stale alternative scope and was reported -- a false alarm on ordinary
             # formatting, which is worse than a miss because it gets the gate switched off.
             piece = line
+            # `RUN <<EOF` opens a heredoc whose BODY is the script. There is no trailing
+            # backslash, so continuation tracking never saw it and every command inside
+            # was ignored -- the text scan this parser replaced did catch them.
+            if (!cont && !heredoc && piece ~ /<<-?[\"\x27]?[A-Za-z_][A-Za-z0-9_]*/) {
+                hd = piece
+                sub(/^.*<<-?[\"\x27]?/, "", hd)
+                sub(/[^A-Za-z0-9_].*$/, "", hd)
+                if (hd != "") { heredoc = hd; hdbuf = ""; cwd = workdir; cwdalt = ""; next }
+            }
+            if (heredoc) {
+                probe = line
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", probe)
+                gsub(/[\"\x27]/, "", probe)
+                if (probe == heredoc) { line = hdbuf; heredoc = ""; hdbuf = ""; buf = "" }
+                else { hdbuf = hdbuf " ; " line; next }
+            } else {
             if (!cont) {
                 cwd = workdir; cwdalt = ""; buf = ""
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]+/, "", piece)
@@ -305,6 +331,7 @@ for f in "${cloners[@]}"; do
             buf = (buf == "") ? piece : buf " " piece
             if (cont) next
             line = buf
+            }
             # A single `|` is a command boundary as much as `&&`. The sed this awk
             # replaced split on it; dropping it left `cat x.patch | git -C /src/tika
             # apply` as ONE segment starting with `cat`, so the git test skipped it.
