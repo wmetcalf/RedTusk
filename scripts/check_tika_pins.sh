@@ -397,7 +397,13 @@ for f in "${cloners[@]}"; do
                 json = piece
                 sub(/^[[:space:]]*[Rr][Uu][Nn]([[:space:]]+--[^[:space:]]+)*[[:space:]]*\[/, "", json)
                 sub(/\][[:space:]]*$/, "", json)
+                # Arguments in the exec form are OPAQUE -- docker invokes argv[0]
+                # directly and passes the rest as literal text. Rewriting them into
+                # shell syntax let a semicolon INSIDE an argument become a command
+                # boundary, so `["echo", "note; git reset ..."]` read as a real reset
+                # (codex). Separators inside the array are neutralised.
                 gsub(/[\"\x27]/, "", json)
+                gsub(/[;|&]/, " ", json)
                 gsub(/[[:space:]]*,[[:space:]]*/, " ", json)
                 piece = "RUN " json
             }
@@ -547,6 +553,12 @@ for f in "${cloners[@]}"; do
                     for (si = 1; si <= nS; si++)
                         csucc = sadd(csucc, (d ~ /\$/) ? d : normpath((d ~ /^\//) ? d : sp[si] "/" d))
                     cfail = S
+                    # A cd that is part of a PIPELINE runs in a pipeline subshell and
+                    # cannot move the parent shell. Unioning its success carried the
+                    # target into the commands after the pipeline (codex).
+                    if (sepc == "P" || (i < n && substr(seg[i+1], 1, 1) == "P")) {
+                        csucc = S; cfail = S
+                    }
                     if (subclose) { S = subsaved; csucc = S; cfail = S }
                     continue
                 }

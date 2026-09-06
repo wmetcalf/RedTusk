@@ -470,6 +470,15 @@ BENIGN = [
     pytest.param(
         'WORKDIR /opt\nRUN cd /src/tika && : || git reset --hard HEAD^\n',
         id="colon-never-fails"),
+    # Arguments in the exec form are OPAQUE -- docker runs argv[0] directly and the
+    # rest is literal text, so a separator inside an argument is not a boundary.
+    pytest.param(
+        'WORKDIR /src/tika\nRUN ["echo", "note; git reset --hard HEAD^"]\n',
+        id="exec-form-arguments-are-opaque"),
+    # A cd in a PIPELINE runs in a pipeline subshell and cannot move the parent.
+    pytest.param(
+        'WORKDIR /opt\nRUN cd /src/tika | true; git reset --hard HEAD\n',
+        id="cd-inside-a-pipeline-does-not-move-the-parent"),
 ]
 
 
