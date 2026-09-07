@@ -121,13 +121,28 @@ _aws_creds_home() {
     echo "${AWS_CREDS_HOME:-$home}"
 }
 
+# The credentials directory every consumer must agree on: what compose resolves,
+# else the home copy as a fallback GUESS. Returns 1 when it is the guess, so a
+# caller can say NOT CONFIRMED rather than diagnose a directory it invented.
+#
+# One function because the divergences keep coming from having several: the
+# readability probes were redirected here while `_aws_sts_ok` still read the
+# home copy, and then both were fixed while the provisioning gate below still
+# read `~/.aws/credentials` and reported a correctly mounted copy as absent
+# (codex, three rounds apart).
+_aws_creds_effective_dir() {
+    local dir; dir="$(_aws_creds_dir)"
+    if [ -n "$dir" ]; then printf '%s' "$dir"; return 0; fi
+    printf '%s' "$(_aws_creds_home)/.aws"; return 1
+}
+
 _aws_sts_ok() {
     # Against the credentials the overlay will MOUNT, not the ones convention says
     # are there. Redirecting only the readability probes to _aws_creds_dir left this
     # validating the home copy: a stale mounted copy read as valid because the home
     # one passed, and a good mounted copy read as invalid because the home one did
     # not (codex). Same divergence as the probes, one layer along.
-    local dir; dir="$(_aws_creds_dir)"; [ -n "$dir" ] || dir="$(_aws_creds_home)/.aws"
+    local dir; dir="$(_aws_creds_effective_dir)" || true
     AWS_SHARED_CREDENTIALS_FILE="$dir/credentials" \
     AWS_CONFIG_FILE="$dir/config" \
     aws sts get-caller-identity >/dev/null 2>&1
@@ -151,11 +166,11 @@ _aws_sts_ok() {
 # setpriv takes raw uids and needs no passwd entry, which is exactly this case.
 _aws_readable_by_uid() {
     local uid="$1" gid="$2" file="$3" out=""
-    # An UNKNOWN group is not a licence to probe under the uid: `setpriv --regid`
-    # decides group-readability, so guessing it produces a confident answer to
-    # the wrong question. Untestable is the honest result, and the caller already
-    # reports that as NOT CONFIRMED (codex).
-    [ -n "$gid" ] || return 2
+    # An UNKNOWN id is not a licence to probe under something else: `setpriv`
+    # decides readability from exactly these two numbers, so guessing either
+    # produces a confident answer to the wrong question. Untestable is the
+    # honest result, and the caller reports that as NOT CONFIRMED (codex).
+    [ -n "$uid" ] && [ -n "$gid" ] || return 2
     # `$SUDO -n ...` is WRONG when already root: the documented invocation is
     # `sudo scripts/prepare_node_ubuntu.sh`, so SUDO is "" and the command began
     # with `-n`, which is not a program. Every probe then returned unknown and the
@@ -387,21 +402,25 @@ _dispatcher_user() {
             # chowned the mode-2770 node share away from the root dispatcher
             # that has to write it (codex).
             if [ -z "$user" ]; then echo "0 0"; return; fi
-        else
-            user=""
+                u="${user%%:*}"
+            case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
+            # A NAME resolves against the IMAGE`s own passwd/group, not this host`s,
+            # so it cannot be resolved from out here at all. An explicit
+            # REDTUSK_WORKER_UID/GID is the operator supplying what cannot be looked
+            # up; without one the id is UNKNOWN and every consumer declines.
+            #
+            # This branch RETURNS either way. Falling through to the repository`s
+            # Dockerfile treated 10001 as authoritative for an image that is not
+            # built from it -- probing the wrong uid, and chowning the node share
+            # away from the dispatcher that has to write it (codex).
+            case "$u" in *[!0-9]*) u="${REDTUSK_WORKER_UID:-}" ;; esac
+            case "$u" in *[!0-9]*) u="" ;; esac
+            case "$g" in ""|*[!0-9]*) g="${REDTUSK_WORKER_GID:-}" ;; esac
+            case "$g" in *[!0-9]*) g="" ;; esac
+            echo "$u $g"; return
         fi
-        u="${user%%:*}"
-        case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
-        # A NAME resolves against the IMAGE`s passwd/group, not this host`s, so
-        # it is not usable here. The uid then has no defensible group: `${g:-$u}`
-        # fabricated one, and a probe run under a fabricated group answers the
-        # wrong question in both directions (codex). An explicit
-        # REDTUSK_WORKER_GID is the operator supplying what cannot be looked up;
-        # otherwise the gid is UNKNOWN and the probe declines to guess.
-        case "$u" in ""|*[!0-9]*) u="" ;; esac
-        case "$g" in ""|*[!0-9]*) g="${REDTUSK_WORKER_GID:-}" ;; esac
-        case "$g" in *[!0-9]*) g="" ;; esac
-        if [ -n "$u" ]; then echo "$u $g"; return; fi
+        # inspect FAILED -- the image is not present yet, which is the normal
+        # state while provisioning. Nothing was learned, so fall through.
     fi
     if [ -n "${REDTUSK_WORKER_UID:-}" ]; then
         echo "$REDTUSK_WORKER_UID ${REDTUSK_WORKER_GID:-$REDTUSK_WORKER_UID}"; return
@@ -485,8 +504,7 @@ _aws_creds_status() {
     local home creds
     home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
     local mountdir unresolved=""
-    mountdir="$(_aws_creds_dir)"
-    if [ -z "$mountdir" ]; then mountdir="$home/.aws"; unresolved=1; fi
+    if ! mountdir="$(_aws_creds_effective_dir)"; then unresolved=1; fi
     # Docker resolves the bind SOURCE, so a symlinked AWS_CREDS_DIR
     # (/home/deploy/.aws -> /etc/redtusk/aws, a common layout) exposes the
     # RESOLVED directory at /aws. Comparing paths against the lexical one then
@@ -734,8 +752,9 @@ if [ "$AWS_BURST" -eq 1 ]; then
     fi
     # Provision-time entitlement check — friendlier than discovering it at first burst
     # (the runtime ALSO fails closed on this). Warn, don't die: creds may be placed later.
-    if [ ! -r "${AWS_CREDS_HOME:-/home/$DEPLOY_USER}/.aws/credentials" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
-        warn "no AWS credentials yet — place ~/.aws/credentials on this node, then re-run --check"
+    _creds_dir="$(_aws_creds_effective_dir)" || true
+    if [ ! -r "$_creds_dir/credentials" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+        warn "no AWS credentials yet — place $_creds_dir/credentials on this node, then re-run --check"
     elif _aws_sts_ok; then
         log "aws entitlement OK (sts get-caller-identity passed)"
     else
@@ -779,7 +798,14 @@ stage_firecracker_asset
 # balancer and nothing says so. setgid keeps the deploy group on new files, so
 # an operator can still read the view.
 $SUDO mkdir -p "$NODE_SHARE_DIR"
-$SUDO chown "$REDTUSK_WORKER_UID:$DGRP" "$NODE_SHARE_DIR"
+if [ -n "$REDTUSK_WORKER_UID" ]; then
+    $SUDO chown "$REDTUSK_WORKER_UID:$DGRP" "$NODE_SHARE_DIR"
+else
+    # Guessing here is worse than skipping: chowning to the wrong uid leaves the
+    # real dispatcher unable to write a mode-2770 share, and node sizing then
+    # fails silently. The directory keeps whatever owner it has.
+    warn "the dispatcher image declares a NAMED user, which cannot be resolved from outside it — $NODE_SHARE_DIR was NOT chowned. Set REDTUSK_WORKER_UID to the uid it runs as and re-run."
+fi
 $SUDO chmod 2770 "$NODE_SHARE_DIR"
 
 # ── 8. host tuning (JVM + many microVMs) ───────────────────────────────────

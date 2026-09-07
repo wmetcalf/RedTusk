@@ -118,6 +118,9 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
         # below. Injecting the real one would run `docker compose` against this
         # synthetic repo and resolve to nothing.
         f'_aws_creds_dir() {{ printf "%s" {creds_dir!r}; }}',
+        # The SHARED resolver, injected rather than stubbed: it is what every
+        # consumer must agree on, so a stub here would let them diverge again.
+        block("_aws_creds_effective_dir"),
         block("_aws_sts_ok"),
         block("_dispatcher_user"),
         block("_dispatcher_uid"),
@@ -355,8 +358,9 @@ OVERRIDE = {"REDTUSK_WORKER_UID": "2000"}
     ("appuser", OVERRIDE, "2000",
      "a NAME resolves against the image's passwd, not this host's, so it is "
      "unusable here and the operator's answer is the next best source"),
-    ("appuser", None, "10001",
-     "with no override either, the repository's Dockerfile"),
+    ("appuser", None, "",
+     "and with no override, UNRESOLVED -- the repository's Dockerfile is not "
+     "authoritative for an image that is not built from it (codex)"),
     # An image with NO `USER` directive runs as 0:0. A SUCCESSFUL inspection
     # returning empty is an authoritative answer, not a missing one -- and it
     # outranks a stale override exactly as any other image answer does (codex).
@@ -1265,6 +1269,18 @@ def test_no_override_does_not_blank_the_env_file_value(tmp_path: Path) -> None:
     assert got == "/etc/redtusk/aws", got
 
 
+def test_the_probe_declines_an_unknown_uid_too(tmp_path: Path) -> None:
+    """The uid half of the same rule. A named `USER appuser` leaves it
+    unresolved, and `setpriv` decides readability from exactly these two
+    numbers -- so an empty uid must report UNTESTABLE, not fall through to
+    whatever privilege the caller happens to hold.
+
+    The status tests cannot see this: they stub the probe. Requiring only the
+    group left this mutant alive against a green suite.
+    """
+    assert _probe("#!/bin/sh\necho YES\n", tmp_path, ids='"" 10001') == 2
+
+
 def test_the_probe_declines_an_unknown_group_rather_than_dropping_to_the_uid(
     tmp_path: Path,
 ) -> None:
@@ -1293,6 +1309,52 @@ def test_an_image_with_no_user_directive_is_probed_as_root(tmp_path: Path) -> No
     assert run.uid_asked == "0 0", run.uid_asked
 
 
+def test_a_named_image_user_is_unresolved_not_the_repository_default(
+    tmp_path: Path,
+) -> None:
+    """`USER appuser:appgroup` is legal, and docker resolves that name inside the
+    IMAGE's own account database -- which cannot be read from out here. Falling
+    through to the repository's 10001 treated it as authoritative for an image
+    not built from that Dockerfile, so `--check` probed the wrong uid (codex).
+
+    Everything downstream declines rather than guessing: the probe reports
+    untestable and the status says so.
+    """
+    out = _status("0", tmp_path, image_user="appuser:appgroup")
+    assert "NOT CONFIRMED" in out.out, out.out
+    assert not out.out.startswith("UNUSABLE"), (
+        "an unresolvable identity must not be reported as unreadable"
+    )
+
+
+def test_a_named_image_user_is_resolvable_by_the_operator(tmp_path: Path) -> None:
+    """The counterweight: declining is only defensible because there is a way to
+    supply what cannot be looked up."""
+    out = _status("0", tmp_path, image_user="appuser:appgroup",
+                  extra_env={"REDTUSK_WORKER_UID": "2000",
+                             "REDTUSK_WORKER_GID": "3000"})
+    assert out.uid_asked == "2000 3000", out.uid_asked
+
+
+def test_the_node_share_is_not_chowned_to_a_guessed_uid() -> None:
+    """A share chowned to the wrong uid leaves the real dispatcher unable to
+    write a mode-2770 directory, and node sizing then fails silently -- worse
+    than not chowning at all. The guard and its warning are asserted together
+    because either alone would let the other regress.
+    """
+    text = SCRIPT.read_text()
+    m = re.search(r'\$SUDO mkdir -p "\$NODE_SHARE_DIR"\n(.*?)\$SUDO chmod 2770',
+                  text, re.S)
+    assert m, "the node-share provisioning block moved"
+    block = m.group(1)
+    assert 'if [ -n "$REDTUSK_WORKER_UID" ]; then' in block, (
+        "the chown is no longer guarded on having resolved a uid"
+    )
+    assert "NOT chowned" in block and "REDTUSK_WORKER_UID" in block, (
+        "skipping the chown is silent; the operator is never told"
+    )
+
+
 def test_a_failed_inspection_is_not_read_as_root(tmp_path: Path) -> None:
     """The counterweight, and the one that makes the distinction load-bearing:
     an image that is simply not present yet -- the normal state during
@@ -1300,3 +1362,37 @@ def test_a_failed_inspection_is_not_read_as_root(tmp_path: Path) -> None:
     reported as running as root."""
     run = _status("0", tmp_path, image_user=None)
     assert run.uid_asked == "10001 10001", run.uid_asked
+
+
+def test_every_consumer_resolves_the_credentials_directory_the_same_way() -> None:
+    """Three rounds, three divergences from the same cause: the readability
+    probes were pointed at the compose-resolved directory while `_aws_sts_ok`
+    still read the home copy; both were fixed while the provisioning gate still
+    read `~/.aws/credentials` and reported a correctly mounted copy as absent
+    (codex). They share one resolver now.
+    """
+    text = SCRIPT.read_text()
+    assert re.search(r"^_aws_creds_effective_dir\(\) \{", text, re.M), (
+        "the shared resolver is gone"
+    )
+    # The home path must not be re-derived anywhere outside that resolver.
+    body = re.search(r"^_aws_creds_effective_dir\(\) \{.*?^\}", text, re.S | re.M)
+    assert body
+    outside = text.replace(body.group(0), "")
+    stray = [ln.strip() for ln in outside.splitlines()
+             if '/.aws/credentials"' in ln and ln.strip().startswith(("if [", "[ !"))]
+    assert not stray, f"a consumer still derives the credentials path itself: {stray}"
+
+
+def test_the_provisioning_gate_accepts_a_mounted_copy(tmp_path: Path) -> None:
+    """`--aws-burst` warned `no AWS credentials yet` whenever the deploy user's
+    home copy was absent, even with AWS_CREDS_DIR pointing at the owned copy
+    this PR's own remediation creates -- so following the advice made the
+    provisioner report the result as missing.
+    """
+    text = SCRIPT.read_text()
+    gate = re.search(r'_creds_dir="\$\(_aws_creds_effective_dir\)".*?\n.*?\n', text)
+    assert gate, "the provisioning gate no longer uses the shared resolver"
+    assert '[ ! -r "$_creds_dir/credentials" ]' in gate.group(0), (
+        f"the gate does not test the resolved directory: {gate.group(0)!r}"
+    )
