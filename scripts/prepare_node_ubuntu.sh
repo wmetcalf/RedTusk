@@ -151,6 +151,11 @@ _aws_sts_ok() {
 # setpriv takes raw uids and needs no passwd entry, which is exactly this case.
 _aws_readable_by_uid() {
     local uid="$1" gid="$2" file="$3" out=""
+    # An UNKNOWN group is not a licence to probe under the uid: `setpriv --regid`
+    # decides group-readability, so guessing it produces a confident answer to
+    # the wrong question. Untestable is the honest result, and the caller already
+    # reports that as NOT CONFIRMED (codex).
+    [ -n "$gid" ] || return 2
     # `$SUDO -n ...` is WRONG when already root: the documented invocation is
     # `sudo scripts/prepare_node_ubuntu.sh`, so SUDO is "" and the command began
     # with `-n`, which is not a program. Every probe then returned unknown and the
@@ -229,31 +234,60 @@ _aws_readable_by_uid() {
 # An export made only in a one-off interactive shell is observable to no other
 # process, by anyone; that boundary is stated in the burst notes rather than
 # guessed at here.
-_aws_creds_env_override() {
-    local out=""
-    # SET-BUT-EMPTY is not the same as unset and must not be flattened into it:
-    # the overlay mounts `${AWS_CREDS_DIR:?...}`, so an empty value makes compose
-    # REJECT the stack, while .env would have launched it. Reporting "no
-    # override" there validates the .env directory on a node whose stack cannot
-    # start (codex). Presence is carried in the RETURN status; the value is the
-    # output, which may legitimately be empty.
-    if [ -n "${AWS_CREDS_DIR+set}" ]; then printf '%s' "$AWS_CREDS_DIR"; return 0; fi
+# What the DEPLOY USER's environment says about a compose variable.
+#
+# An exported value beats .env for compose, and the documented `sudo
+# scripts/prepare_node_ubuntu.sh` invocation resets the environment -- measured
+# on toolz2:
+#
+#     under sudo:    AWS_CREDS_DIR=[<stripped>]
+#     under sudo -E: AWS_CREDS_DIR=[/etc/redtusk/aws]
+#
+# so an override the deploy user exports is invisible to the root-run check,
+# which then resolves the .env value while the stack runs on another (codex).
+# Every compose variable this script resolves has that problem, so this is one
+# function taking the NAME rather than a copy per variable -- the second copy is
+# where they start to diverge.
+#
+# Precedence mirrors what compose itself sees:
+#   1. this process`s own environment -- a root export, or `sudo -E`
+#   2. the deploy user`s LOGIN environment, where a persistent export lives; it
+#      is the same value their own `docker compose up` would carry
+#
+# SET-BUT-EMPTY is a third state and must not be flattened into "unset": the
+# overlay mounts `${AWS_CREDS_DIR:?...}`, so an empty value makes compose REJECT
+# the stack while .env would have launched it. Presence is the RETURN STATUS;
+# the value is the output and may legitimately be empty.
+#
+# An export made only in a one-off interactive shell is observable to no other
+# process, by anyone; that boundary is stated in the burst notes.
+_login_env_override() {
+    local name="$1" out=""
+    # `eval` on a NAME this script chooses, never on a value from .env or from
+    # the deploy user -- expanding a value here is how an earlier version of
+    # this code came to run command substitution from .env as root.
+    case "$name" in
+        *[!A-Z_0-9]*|"") return 1 ;;
+    esac
+    eval "out=\${$name+set}"
+    if [ -n "$out" ]; then eval "printf '%s' \"\$$name\""; return 0; fi
     [ "$(id -u)" = 0 ] || return 1
     [ -n "${DEPLOY_USER:-}" ] && [ "$DEPLOY_USER" != root ] || return 1
     have timeout && have sudo || return 1
     # A LOGIN shell is what carries a persistent export, and a login shell is
     # also what prints motd banners and profile chatter -- onto the same stdout.
     # So the value is emitted after a sentinel and read back from the LAST one:
-    # taking the whole output turned a `echo "welcome"` in .profile into part of
-    # the credentials path. `S` marks presence, so an exported empty value stays
-    # distinguishable from an unexported one across the process boundary.
+    # taking the whole output turned an `echo "welcome"` in .profile into part
+    # of the credentials path. `S` marks presence.
     out="$(timeout 10 sudo -n -u "$DEPLOY_USER" -i sh -c \
-              'printf "\n__RT_ACD__%s%s" "${AWS_CREDS_DIR+S}" "${AWS_CREDS_DIR-}"' 2>/dev/null)" || return 1
+              'printf "\n__RT_ENV__%s%s" "${'"$name"'+S}" "${'"$name"'-}"' 2>/dev/null)" || return 1
     case "$out" in
-        *__RT_ACD__S*) printf '%s' "${out##*__RT_ACD__S}"; return 0 ;;
+        *__RT_ENV__S*) printf '%s' "${out##*__RT_ENV__S}"; return 0 ;;
         *) return 1 ;;
     esac
 }
+
+_aws_creds_env_override() { _login_env_override AWS_CREDS_DIR; }
 
 _aws_creds_dir() {
     local out="" override=""
@@ -285,7 +319,7 @@ for m in c.get("services", {}).get("dispatcher-aws-burst", {}).get("volumes", []
 # `redtusk:dev` while the node launches something else (codex). Same rule as the
 # credentials directory: ask compose, do not reimplement its precedence.
 _dispatcher_image() {
-    local out=""
+    local out="" override=""
     if have docker && have python3; then
         # An ABSOLUTE placeholder: compose reads a bare name as a NAMED VOLUME
         # and rejects the whole project ("refers to undefined volume
@@ -295,6 +329,11 @@ _dispatcher_image() {
         set -- HOME="$(_aws_creds_home)" \
                POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder \
                AWS_CREDS_DIR=/nonexistent-placeholder
+        # The deploy user`s REDTUSK_IMAGE beats .env for compose exactly as
+        # AWS_CREDS_DIR does, and `sudo` strips it just the same (codex).
+        if override="$(_login_env_override REDTUSK_IMAGE)"; then
+            set -- "$@" REDTUSK_IMAGE="$override"
+        fi
         out="$(cd "$REPO_ROOT/deploy/docker" 2>/dev/null &&
                env "$@" \
                docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml \
@@ -339,11 +378,16 @@ _dispatcher_user() {
         user="$(docker image inspect --format '{{.Config.User}}' "$image" 2>/dev/null | head -1)"
         u="${user%%:*}"
         case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
-        # A NAME resolves against the image`s passwd, not this host`s, so only a
-        # numeric id is usable here.
+        # A NAME resolves against the IMAGE`s passwd/group, not this host`s, so
+        # it is not usable here. The uid then has no defensible group: `${g:-$u}`
+        # fabricated one, and a probe run under a fabricated group answers the
+        # wrong question in both directions (codex). An explicit
+        # REDTUSK_WORKER_GID is the operator supplying what cannot be looked up;
+        # otherwise the gid is UNKNOWN and the probe declines to guess.
         case "$u" in ""|*[!0-9]*) u="" ;; esac
-        case "$g" in ""|*[!0-9]*) g="" ;; esac
-        if [ -n "$u" ]; then echo "$u ${g:-$u}"; return; fi
+        case "$g" in ""|*[!0-9]*) g="${REDTUSK_WORKER_GID:-}" ;; esac
+        case "$g" in *[!0-9]*) g="" ;; esac
+        if [ -n "$u" ]; then echo "$u $g"; return; fi
     fi
     if [ -n "${REDTUSK_WORKER_UID:-}" ]; then
         echo "$REDTUSK_WORKER_UID ${REDTUSK_WORKER_GID:-$REDTUSK_WORKER_UID}"; return
@@ -353,8 +397,9 @@ _dispatcher_user() {
     u="${user%%:*}"
     case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
     case "$u" in ""|*[!0-9]*) u="" ;; esac
-    case "$g" in ""|*[!0-9]*) g="" ;; esac
-    if [ -n "$u" ]; then echo "$u ${g:-$u}"; return; fi
+    case "$g" in ""|*[!0-9]*) g="${REDTUSK_WORKER_GID:-}" ;; esac
+    case "$g" in *[!0-9]*) g="" ;; esac
+    if [ -n "$u" ]; then echo "$u $g"; return; fi
     echo "10001 10001"
 }
 
@@ -512,7 +557,13 @@ _aws_creds_status() {
     if [ -n "$bad" ]; then
         echo "UNUSABLE — $creds passes sts as $(id -un) but uid $wuid (the dispatcher) cannot read $bad; the burst tier will fail closed. See the burst notes below."
     elif [ -n "$unknown" ]; then
-        echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, or uid $wuid could not be tested)"
+        if [ -z "$wgid" ]; then
+            # Naming the reason, because this one is fixable in one line and the
+            # generic wording sends the operator looking at compose instead.
+            echo "valid (sts ok, $creds; NOT CONFIRMED — the dispatcher image declares no numeric group for uid $wuid, so group-readability cannot be tested. Set REDTUSK_WORKER_GID to the group it runs as.)"
+        else
+            echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, or uid $wuid could not be tested)"
+        fi
     else
         echo "valid (sts ok, $creds; readable by uid $wuid)"
     fi

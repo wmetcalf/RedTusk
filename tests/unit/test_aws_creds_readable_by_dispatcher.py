@@ -217,7 +217,7 @@ def _uid(*, docker_says: str | None, env: dict[str, str] | None = None,
 
 
 def _image(env_file: str = "", env: dict[str, str] | None = None,
-           *, tmp_path: Path) -> str:
+           *, tmp_path: Path, login_exports: str | None = None) -> str:
     """Run the REAL `_dispatcher_image` against the REAL compose files.
 
     `.env` is a compose-file rule, so the project is copied into a scratch
@@ -226,6 +226,8 @@ def _image(env_file: str = "", env: dict[str, str] | None = None,
     text = SCRIPT.read_text()
     m = re.search(r"^_dispatcher_image\(\) \{.*?^\}", text, re.S | re.M)
     assert m, "_dispatcher_image not found"
+    ml = re.search(r"^_login_env_override\(\) \{.*?^\}", text, re.S | re.M)
+    assert ml, "_login_env_override not found"
     root = Path(tempfile.mkdtemp(dir=tmp_path, prefix="project-"))
     (root / "deploy" / "docker").mkdir(parents=True)
     for name in ("docker-compose.yml", "docker-compose.aws-burst.yml"):
@@ -233,11 +235,29 @@ def _image(env_file: str = "", env: dict[str, str] | None = None,
                      root / "deploy" / "docker" / name)
     if env_file:
         (root / "deploy" / "docker" / ".env").write_text(env_file)
+    # When `login_exports` is given the value lives ONLY in the deploy user's
+    # login shell -- not in this process's environment, which `env` would pass to
+    # compose regardless, making the test pass whether or not the code looks it
+    # up. This is the same trap the AWS_CREDS_DIR test fell into.
+    stub = Path(tempfile.mkdtemp(dir=tmp_path, prefix="bin-"))
+    if login_exports is not None:
+        (stub / "id").write_text("#!/bin/sh\necho 0\n")
+        (stub / "timeout").write_text('#!/bin/sh\nshift\nexec "$@"\n')
+        (stub / "sudo").write_text(
+            "#!/bin/sh\n"
+            'while [ $# -gt 0 ]; do case "$1" in sh) shift; break ;; *) shift ;; esac; done\n'
+            f"REDTUSK_IMAGE={login_exports!r}\nexport REDTUSK_IMAGE\n"
+            'exec sh "$@"\n')
+        for n in ("id", "timeout", "sudo"):
+            (stub / n).chmod(0o755)
     harness = "\n".join([
         "set -u",
+        f'export PATH={str(stub)!r}:$PATH',
+        "DEPLOY_USER=deployuser",
         f'REPO_ROOT={str(root)!r}',
         'have() { command -v "$1" >/dev/null; }',
         "_aws_creds_home() { echo /home/tester; }",
+        ml.group(0),
         m.group(0),
         "_dispatcher_image",
     ])
@@ -263,6 +283,35 @@ def test_the_image_is_the_one_compose_will_actually_launch(tmp_path: Path) -> No
     assert _image("REDTUSK_IMAGE=redtusk:from-the-file\n",
                   {"REDTUSK_IMAGE": "redtusk:exported"},
                   tmp_path=tmp_path) == "redtusk:exported"
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
+def test_the_image_honours_the_deploy_users_exported_override(tmp_path: Path) -> None:
+    """`REDTUSK_IMAGE` exported by the deploy user beats .env for compose, and
+    the documented `sudo` invocation strips it exactly as it strips
+    AWS_CREDS_DIR -- so the root-run check read the image from .env while the
+    stack launched another, and then inspected the wrong image's uid/gid
+    (codex).
+
+    Both variables go through one lookup now rather than a second copy of it;
+    the second copy is where they start to diverge.
+    """
+    got = _image("REDTUSK_IMAGE=redtusk:from-the-file\n",
+                 tmp_path=tmp_path, login_exports="redtusk:from-the-login-shell")
+    assert got == "redtusk:from-the-login-shell", got
+
+
+def test_one_lookup_serves_every_compose_variable() -> None:
+    """The wrapper must stay a wrapper. Two functions reading the same three
+    sources independently is how they come to disagree -- which is the bug one
+    level up from the two this pair of findings describes."""
+    text = SCRIPT.read_text()
+    assert re.search(r"^_aws_creds_env_override\(\) \{ _login_env_override AWS_CREDS_DIR; \}$",
+                     text, re.M), "the AWS_CREDS_DIR lookup is no longer the shared one"
+    assert "_login_env_override REDTUSK_IMAGE" in text, (
+        "the image resolution does not use the shared lookup"
+    )
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker is not installed")
@@ -330,15 +379,20 @@ def test_the_dispatcher_uid_comes_from_the_most_authoritative_source(
 @pytest.mark.parametrize("docker_says,env,expected", [
     ("10001:20000", None, "20000"),
     ("10001:10001", None, "10001"),
-    # No group in the image at all -- the uid is the only defensible answer.
-    ("10001", None, "10001"),
+    # No group in the image: docker takes the gid from the IMAGE's own passwd
+    # (0 when there is no entry), so the uid is not a safe stand-in -- unknown.
+    ("10001", None, ""),
     # A NAMED group is as unusable as a named user: it resolves against the
-    # image's /etc/group, not this host's.
-    ("10001:appgroup", None, "10001"),
+    # image's /etc/group, which cannot be read without running the image.
+    ("10001:appgroup", None, ""),
+    # ...unless the operator supplies what cannot be looked up.
+    ("10001:appgroup", {"REDTUSK_WORKER_GID": "20000"}, "20000"),
+    ("10001:appgroup", {"REDTUSK_WORKER_GID": "notanumber"}, ""),
     (None, {"REDTUSK_WORKER_UID": "2000"}, "2000"),
     (None, {"REDTUSK_WORKER_UID": "2000", "REDTUSK_WORKER_GID": "3000"}, "3000"),
     (None, None, "10001"),
 ], ids=["image-split-ids", "image-same-ids", "image-uid-only", "image-named-group",
+        "image-named-group-with-override", "image-named-group-bad-override",
         "override-uid-only", "override-both", "dockerfile"])
 def test_the_gid_comes_from_the_same_source_as_the_uid(
     docker_says: str | None, env: dict[str, str] | None, expected: str,
@@ -364,6 +418,32 @@ def test_the_probe_is_given_the_dispatchers_gid_not_its_uid(tmp_path: Path) -> N
     """
     run = _status("0", tmp_path, image_user="10001:20000")
     assert run.uid_asked == "10001 20000", run.uid_asked
+
+
+def test_an_unknown_group_is_declined_rather_than_guessed(tmp_path: Path) -> None:
+    """`setpriv --regid` decides group-readability, so probing under a GUESSED
+    group returns a confident answer to the wrong question. The previous version
+    substituted the uid; an image declaring `10001:appgroup` was then tested as
+    group 10001 (codex).
+
+    Untestable is the honest result, and the message names the one-line fix --
+    the generic NOT CONFIRMED wording sends the operator to look at compose.
+    """
+    out = _status("0", tmp_path, image_user="10001:appgroup")
+    assert "NOT CONFIRMED" in out.out, out.out
+    assert "REDTUSK_WORKER_GID" in out.out, out.out
+    assert not out.out.startswith("UNUSABLE"), (
+        "an untestable group must not be reported as unreadable"
+    )
+
+
+def test_an_operator_supplied_group_makes_it_testable_again(tmp_path: Path) -> None:
+    """The counterweight: declining is only defensible because there IS a way to
+    supply what cannot be looked up. If this row also came back NOT CONFIRMED
+    the rule would just be 'named groups never work'."""
+    out = _status("0", tmp_path, image_user="10001:appgroup",
+                  extra_env={"REDTUSK_WORKER_GID": "20000"})
+    assert out.uid_asked == "10001 20000", out.uid_asked
 
 
 def test_the_stock_image_still_probes_its_own_ids(tmp_path: Path) -> None:
@@ -422,7 +502,7 @@ def test_the_overlay_still_mounts_the_credentials_read_only() -> None:
     assert ":/aws:ro" in COMPOSE.read_text()
 
 
-def _probe(sudo_behaviour: str, tmp_path: Path) -> int:
+def _probe(sudo_behaviour: str, tmp_path: Path, *, ids: str = "10001 10001") -> int:
     """Run the REAL `_aws_readable_by_uid` with `sudo` and `setpriv` stubbed.
 
     The harness above replaces this function, so its own logic needs exercising
@@ -448,7 +528,7 @@ def _probe(sudo_behaviour: str, tmp_path: Path) -> int:
         # A REAL path: the probe cds into the directory before dropping privilege,
         # modelling the bind mount, so a fixture pointing at a nonexistent
         # directory would measure the failed cd rather than the readability.
-        f'_aws_readable_by_uid 10001 10001 {str(target)!r}; echo "rc=$?"',
+        f'_aws_readable_by_uid {ids} {str(target)!r}; echo "rc=$?"',
     ])
     res = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
     m2 = re.search(r"rc=(\d+)", res.stdout)
@@ -701,8 +781,10 @@ def _real_creds_dir(env: dict[str, str], *, env_file: str = "",
     text = SCRIPT.read_text()
     m = re.search(r"^_aws_creds_dir\(\) \{.*?^\}", text, re.S | re.M)
     assert m, "_aws_creds_dir not found"
-    mo = re.search(r"^_aws_creds_env_override\(\) \{.*?^\}", text, re.S | re.M)
-    assert mo, "_aws_creds_env_override not found"
+    mo = re.search(r"^_login_env_override\(\) \{.*?^\}", text, re.S | re.M)
+    assert mo, "_login_env_override not found"
+    mow = re.search(r"^_aws_creds_env_override\(\) \{.*?\}$", text, re.M)
+    assert mow, "_aws_creds_env_override wrapper not found"
 
     root = REPO_ROOT
     if env_file:
@@ -726,7 +808,7 @@ def _real_creds_dir(env: dict[str, str], *, env_file: str = "",
         # `return 0` because presence is the STATUS: an empty value is an
         # override, and the stub has to be able to say so.
         (f'_aws_creds_env_override() {{ printf "%s" {override_stub!r}; return 0; }}'
-         if override_stub is not None else mo.group(0)),
+         if override_stub is not None else mo.group(0) + "\n" + mow.group(0)),
         m.group(0),
         "_aws_creds_dir",
     ])
@@ -1028,8 +1110,10 @@ def _override(env: dict[str, str], *, uid: str = "0", exports: str | None = None
     the sentinel protocol under test is the real one.
     """
     text = SCRIPT.read_text()
-    m = re.search(r"^_aws_creds_env_override\(\) \{.*?^\}", text, re.S | re.M)
-    assert m, "_aws_creds_env_override not found"
+    m = re.search(r"^_login_env_override\(\) \{.*?^\}", text, re.S | re.M)
+    assert m, "_login_env_override not found"
+    mw = re.search(r"^_aws_creds_env_override\(\) \{.*?\}$", text, re.M)
+    assert mw, "_aws_creds_env_override wrapper not found"
     bindir = Path(tempfile.mkdtemp())
     (bindir / "id").write_text(f"#!/bin/sh\necho {uid}\n")
     # The stub RUNS the command it is handed, in a login environment this fixture
@@ -1061,6 +1145,7 @@ def _override(env: dict[str, str], *, uid: str = "0", exports: str | None = None
         f'have() {{ for n in {absent}; do [ "$1" = "$n" ] && return 1; done;'
         ' command -v "$1" >/dev/null; }',
         m.group(0),
+        mw.group(0),
         'if v="$(_aws_creds_env_override)"; then printf "SET\\t%s" "$v";'
         ' else printf "UNSET\\t"; fi',
     ])
@@ -1169,3 +1254,21 @@ def test_no_override_does_not_blank_the_env_file_value(tmp_path: Path) -> None:
     got = _real_creds_dir({}, env_file="AWS_CREDS_DIR=/etc/redtusk/aws\n",
                           tmp_path=tmp_path)
     assert got == "/etc/redtusk/aws", got
+
+
+def test_the_probe_declines_an_unknown_group_rather_than_dropping_to_the_uid(
+    tmp_path: Path,
+) -> None:
+    """The probe itself, not the resolution: handed no group it must report
+    UNTESTABLE (2), never run under some other group and answer confidently.
+
+    The status-level tests cannot see this -- they stub the probe -- so removing
+    the guard left them all green.
+    """
+    assert _probe("#!/bin/sh\necho YES\n", tmp_path, ids='10001 ""') == 2
+
+
+def test_the_probe_still_answers_when_the_group_is_known(tmp_path: Path) -> None:
+    """The counterweight: declining must be specific to a MISSING group, or the
+    probe would simply never work."""
+    assert _probe("#!/bin/sh\necho YES\n", tmp_path, ids="10001 20000") == 0
