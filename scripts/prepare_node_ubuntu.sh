@@ -192,10 +192,27 @@ _aws_readable_by_uid() {
     local dir base
     dir="$(dirname "$file")"; base="$(basename "$file")"
     if command -v setpriv >/dev/null; then
+        # With the CAPABILITIES the dispatcher has, which is none: the burst
+        # service sets `cap_drop: ALL` and `no-new-privileges:true`. Keeping the
+        # host root`s capabilities answers a question the container never asks --
+        # CAP_DAC_OVERRIDE bypasses the mode bits, so once an image resolved to
+        # uid 0 the probe reported the deploy user`s 0600 credentials as readable
+        # while the capability-less container gets EACCES (codex). Measured on
+        # toolz2 against a 0600 file owned by the deploy user:
+        #
+        #     root, capabilities intact  -> YES     (the bug)
+        #     root, bounding set emptied -> NO
+        #
+        # For a NON-root uid the exec drops capabilities anyway; the flags are
+        # harmless there and keep one code path.
         out="$(cd "$dir" 2>/dev/null && $pre setpriv --reuid="$uid" --regid="$gid" --clear-groups \
+                 --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+                 --securebits=+noroot,+noroot_locked --nnp \
                  sh -c 'test -r "$1" && echo YES || echo NO' _ "$base" 2>/dev/null)"
     fi
-    if [ -z "$out" ]; then
+    # `su` is NOT a fallback for uid 0: it cannot drop capabilities, so it would
+    # reproduce exactly the false YES above. Untestable is the honest answer.
+    if [ -z "$out" ] && [ "$uid" != 0 ]; then
         out="$(cd "$dir" 2>/dev/null && $pre su -s /bin/sh -c 'test -r "$0" && echo YES || echo NO' "#$uid" "$base" 2>/dev/null)"
     fi
     case "$out" in
@@ -585,8 +602,22 @@ _aws_creds_status() {
                return ;;
         esac
     done
-    [ -n "$unresolved" ] && unknown=1
-    if [ -n "$bad" ]; then
+    # An UNRESOLVED mount makes every verdict below a verdict about the FALLBACK
+    # GUESS, including an unreadable one -- the configured directory may be a
+    # dispatcher-owned copy that was never examined, while the home copy exists,
+    # passes sts and is unreadable. Reporting that as definitively UNUSABLE
+    # convicts a node on credentials that may not be mounted at all (codex), so
+    # `unresolved` is tested BEFORE `bad` rather than folded into `unknown`
+    # underneath it.
+    if [ -n "$unresolved" ]; then
+        if [ -n "$bad" ]; then
+            echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, so this is the fallback guess, and uid $wuid cannot read $bad there. If that IS the mounted directory the burst tier will fail closed — resolve the mount to be sure. See the burst notes below.)"
+        elif [ -z "$wgid" ]; then
+            echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, and the dispatcher image declares no numeric group for uid $wuid either. Set REDTUSK_WORKER_GID to the group it runs as.)"
+        else
+            echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, so uid $wuid was tested against the fallback guess)"
+        fi
+    elif [ -n "$bad" ]; then
         echo "UNUSABLE — $creds passes sts as $(id -un) but uid $wuid (the dispatcher) cannot read $bad; the burst tier will fail closed. See the burst notes below."
     elif [ -n "$unknown" ]; then
         if [ -z "$wgid" ]; then
@@ -594,7 +625,7 @@ _aws_creds_status() {
             # generic wording sends the operator looking at compose instead.
             echo "valid (sts ok, $creds; NOT CONFIRMED — the dispatcher image declares no numeric group for uid $wuid, so group-readability cannot be tested. Set REDTUSK_WORKER_GID to the group it runs as.)"
         else
-            echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, or uid $wuid could not be tested)"
+            echo "valid (sts ok, $creds; NOT CONFIRMED — uid $wuid could not be tested)"
         fi
     else
         echo "valid (sts ok, $creds; readable by uid $wuid)"

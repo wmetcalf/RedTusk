@@ -148,10 +148,36 @@ def _status(readable: str, tmp_path: Path, *, unreadable: str = "",
 
 
 def test_credentials_the_dispatcher_uid_cannot_read_are_reported_unusable(tmp_path: Path) -> None:
-    out = _status("1", tmp_path)
+    """The mount is RESOLVED here deliberately. An unreadable file in a directory
+    compose never resolved is a fact about a guess, not about the burst tier --
+    see the pair of tests below. This one asserted UNUSABLE against exactly such
+    a guess until that was pointed out.
+    """
+    resolved = tmp_path / ".aws"
+    resolved.mkdir(parents=True, exist_ok=True)
+    out = _status("1", tmp_path, creds_dir=str(resolved))
     assert "UNUSABLE" in out.out, out
     assert "cannot read" in out.out
     assert "fail closed" in out.out
+
+
+def test_unreadable_credentials_in_an_unresolved_mount_stay_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    """With compose unresolved the directory examined is the fallback home copy,
+    which may not be what the overlay mounts at all: the configured mount can be
+    a dispatcher-owned copy that was never looked at, while the home copy exists,
+    passes sts and is unreadable. Reporting THAT as definitively UNUSABLE
+    convicts a correctly configured node (codex).
+
+    `bad` used to be tested before `unresolved`, so the unknown was set and then
+    immediately overridden.
+    """
+    out = _status("1", tmp_path)          # creds_dir unset -> unresolved
+    assert "NOT CONFIRMED" in out.out, out.out
+    assert not out.out.startswith("UNUSABLE"), out.out
+    # ...and it must still SAY what it found, or the operator learns nothing.
+    assert "cannot read" in out.out, out.out
 
 
 def test_credentials_the_dispatcher_uid_can_read_are_reported_valid(tmp_path: Path) -> None:
@@ -577,7 +603,10 @@ def test_an_unreadable_config_file_is_reported(tmp_path: Path) -> None:
     earlier version of this test pinned the literal `conf="$home/.aws/config"` and
     broke the moment that path was correctly derived from AWS_CREDS_DIR instead.
     """
-    out = _status("0", tmp_path, unreadable="config", make_config=True)
+    resolved = tmp_path / ".aws"
+    resolved.mkdir(parents=True, exist_ok=True)
+    out = _status("0", tmp_path, unreadable="config", make_config=True,
+                  creds_dir=str(resolved))
     assert "UNUSABLE" in out.out, out
     assert "config" in out.out
 
@@ -1395,4 +1424,37 @@ def test_the_provisioning_gate_accepts_a_mounted_copy(tmp_path: Path) -> None:
     assert gate, "the provisioning gate no longer uses the shared resolver"
     assert '[ ! -r "$_creds_dir/credentials" ]' in gate.group(0), (
         f"the gate does not test the resolved directory: {gate.group(0)!r}"
+    )
+
+
+def test_the_probe_runs_without_the_capabilities_the_dispatcher_lacks() -> None:
+    """The burst service sets `cap_drop: ALL` and `no-new-privileges:true`, so a
+    probe holding the host root's capabilities answers a question the container
+    never asks: CAP_DAC_OVERRIDE bypasses the mode bits. Once an image resolved
+    to uid 0 -- which one with no `USER` directive does -- the probe reported the
+    deploy user's 0600 credentials as readable while the container gets EACCES.
+
+    Measured on toolz2 against a 0600 file owned by the deploy user:
+
+        root, capabilities intact  -> YES     (the bug)
+        root, bounding set emptied -> NO
+
+    Asserted on the source because the behaviour needs a root that this suite
+    may not have; the executed evidence is the hardware run above.
+    """
+    text = SCRIPT.read_text()
+    probe = re.search(r"^_aws_readable_by_uid\(\) \{.*?^\}", text, re.S | re.M)
+    assert probe, "the probe moved"
+    body = probe.group(0)
+    assert "--bounding-set=-all" in body, (
+        "the probe keeps the caller's capability bounding set, so a root "
+        "dispatcher's readability is measured with CAP_DAC_OVERRIDE available"
+    )
+    assert "cap_drop" in COMPOSE.read_text(), (
+        "the burst service no longer drops capabilities; this modelling is stale"
+    )
+    # `su` cannot drop capabilities, so it is not a fallback for uid 0 -- it
+    # would reproduce the same false YES.
+    assert '[ "$uid" != 0 ]' in body, (
+        "the su fallback is reachable for uid 0, where it cannot model the container"
     )
