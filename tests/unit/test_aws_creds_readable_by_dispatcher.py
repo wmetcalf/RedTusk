@@ -190,6 +190,10 @@ def _uid(*, docker_says: str | None, env: dict[str, str] | None = None,
     """
     bindir = Path(tempfile.mkdtemp())
     if docker_says is None:
+        # A FAILED inspection. Distinct from a successful one that returns an
+        # empty user, which means the image runs as root -- the pipeline that
+        # used to read this conflated the two, because `| head -1` makes the
+        # exit status head's.
         (bindir / "docker").write_text("#!/bin/sh\nexit 1\n")
     else:
         (bindir / "docker").write_text(f"#!/bin/sh\nprintf '%s\\n' {docker_says!r}\n")
@@ -353,7 +357,10 @@ OVERRIDE = {"REDTUSK_WORKER_UID": "2000"}
      "unusable here and the operator's answer is the next best source"),
     ("appuser", None, "10001",
      "with no override either, the repository's Dockerfile"),
-    ("", OVERRIDE, "2000", "an image with no USER at all"),
+    # An image with NO `USER` directive runs as 0:0. A SUCCESSFUL inspection
+    # returning empty is an authoritative answer, not a missing one -- and it
+    # outranks a stale override exactly as any other image answer does (codex).
+    ("", OVERRIDE, "0", "an image with no USER at all runs as root"),
     (None, OVERRIDE, "2000",
      "provisioning normally runs BEFORE the image exists; the override is then "
      "the only source there is"),
@@ -388,11 +395,13 @@ def test_the_dispatcher_uid_comes_from_the_most_authoritative_source(
     # ...unless the operator supplies what cannot be looked up.
     ("10001:appgroup", {"REDTUSK_WORKER_GID": "20000"}, "20000"),
     ("10001:appgroup", {"REDTUSK_WORKER_GID": "notanumber"}, ""),
+    ("", OVERRIDE, "0"),
     (None, {"REDTUSK_WORKER_UID": "2000"}, "2000"),
     (None, {"REDTUSK_WORKER_UID": "2000", "REDTUSK_WORKER_GID": "3000"}, "3000"),
     (None, None, "10001"),
 ], ids=["image-split-ids", "image-same-ids", "image-uid-only", "image-named-group",
         "image-named-group-with-override", "image-named-group-bad-override",
+        "image-no-user-runs-as-root",
         "override-uid-only", "override-both", "dockerfile"])
 def test_the_gid_comes_from_the_same_source_as_the_uid(
     docker_says: str | None, env: dict[str, str] | None, expected: str,
@@ -1272,3 +1281,22 @@ def test_the_probe_still_answers_when_the_group_is_known(tmp_path: Path) -> None
     """The counterweight: declining must be specific to a MISSING group, or the
     probe would simply never work."""
     assert _probe("#!/bin/sh\necho YES\n", tmp_path, ids="10001 20000") == 0
+
+
+def test_an_image_with_no_user_directive_is_probed_as_root(tmp_path: Path) -> None:
+    """End to end. A successful inspection returning an empty `.Config.User`
+    means the container runs as 0:0; treating it as "could not determine" tested
+    credentials under uid 10001 and chowned the mode-2770 node share away from
+    the root dispatcher that has to write it (codex).
+    """
+    run = _status("0", tmp_path, image_user="")
+    assert run.uid_asked == "0 0", run.uid_asked
+
+
+def test_a_failed_inspection_is_not_read_as_root(tmp_path: Path) -> None:
+    """The counterweight, and the one that makes the distinction load-bearing:
+    an image that is simply not present yet -- the normal state during
+    provisioning -- must fall through to the operator and the Dockerfile, NOT be
+    reported as running as root."""
+    run = _status("0", tmp_path, image_user=None)
+    assert run.uid_asked == "10001 10001", run.uid_asked

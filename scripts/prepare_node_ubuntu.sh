@@ -375,7 +375,21 @@ _dispatcher_user() {
     # eight times).
     image="${REDTUSK_IMAGE_RESOLVED:-${REDTUSK_IMAGE:-redtusk:dev}}"
     if have docker; then
-        user="$(docker image inspect --format '{{.Config.User}}' "$image" 2>/dev/null | head -1)"
+        # NOT piped into `head`: the exit status of a pipeline is the LAST
+        # command`s, so `| head -1` made a failed inspection look identical to a
+        # successful one, and the two mean opposite things here.
+        if user="$(docker image inspect --format '{{.Config.User}}' "$image" 2>/dev/null)"; then
+            user="${user%%
+*}"
+            # An image with NO `USER` directive runs as 0:0. That is an
+            # authoritative answer, not a missing one -- falling through to the
+            # override or the repository`s 10001 tested the wrong identity and
+            # chowned the mode-2770 node share away from the root dispatcher
+            # that has to write it (codex).
+            if [ -z "$user" ]; then echo "0 0"; return; fi
+        else
+            user=""
+        fi
         u="${user%%:*}"
         case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
         # A NAME resolves against the IMAGE`s passwd/group, not this host`s, so
