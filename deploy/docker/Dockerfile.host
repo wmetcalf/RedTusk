@@ -1,3 +1,7 @@
+# Pinnable bases so `blastbox build-images` stamps the digest it actually built
+# against; without these ARGs docker silently ignores --build-arg BASE_IMAGE.
+ARG BASE_IMAGE=python:3.12-slim-bookworm
+
 # api / dispatcher image for RedTusk on blastbox.host (`redtusk:dev`).
 #
 # Runs `blastbox serve` (HTTP ingress + RedTusk's rmeta route via the ingress
@@ -7,7 +11,7 @@
 #
 # Analogue of clippyshot's deploy/docker/Dockerfile. Build context = repo root:
 #   docker build -f deploy/docker/Dockerfile.host -t redtusk:dev .
-FROM python:3.12-slim-bookworm
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -1,0 +1,58 @@
+# Declarative image chain for RedTusk warm/cold tiers.
+#
+#     BLASTBOX_SRC=/home/coz/bb-v0140 \
+#     REDTUSK_FC_DIR=/home/coz/redtusk-bb-fc \
+#     blastbox build-images /home/coz/redtusk-bb --tag <tag>     # --dry-run first
+#
+# The FC rootfs is an ext4 exported from an image. Exported by hand it drifts
+# from the host tier and fails SILENTLY: the microVM boots, the guest never
+# signals READY, every warm job dies on the 300s timeout, and the API keeps
+# answering 200. That is what this deployment was doing before this file.
+#
+# $BLASTBOX_SRC must be a blastbox checkout at the SAME version pinned in
+# deploy/requirements.lock -- the FC guest agent is installed from that tree.
+
+[engine]
+name = "redtusk"
+
+# 1. Tika/JVM worker base (zxing + tika + the fat jar).
+[[image]]
+name       = "redtusk-worker"
+dockerfile = "deploy/docker/Dockerfile.default"
+base       = "eclipse-temurin:25-jre-jammy"
+context    = "."
+build_args = { JDK_BUILD_IMAGE = "eclipse-temurin:25-jdk-jammy", ZXING_BUILD_IMAGE = "ubuntu:jammy" }
+
+# 2. Host/API tier: blastbox[host,s3] from the HASHED lock.
+[[image]]
+name       = "redtusk"
+dockerfile = "deploy/docker/Dockerfile.host"
+base       = "python:3.12-slim-bookworm"
+context    = "."
+
+# 3. Cold worker: blastbox core + the engine, on the JVM base.
+[[image]]
+name       = "redtusk-cold-worker"
+dockerfile = "deploy/docker/Dockerfile.cold-worker"
+base       = "redtusk-worker"
+context    = "."
+# BLASTBOX_VERSION is a SEPARATE pin from the lock: the cold worker installs
+# blastbox --no-deps, so pyproject's floor never upgrades a stale default here.
+# The verify step catches the mismatch (label says X, image contains Y).
+build_args = { BLASTBOX_VERSION = "0.1.40" }
+
+# 4. Firecracker guest: blastbox FC agent + /init, from blastbox's own deploy/.
+[[image]]
+name        = "redtusk-fc-worker"
+dockerfile  = "deploy/firecracker/Dockerfile.redtusk"
+base        = "redtusk-cold-worker"
+context     = "$BLASTBOX_SRC"
+source_repo = "$BLASTBOX_SRC"
+
+# 5. The ext4 the microVM boots. `requires` refuses an image that cannot boot.
+[[rootfs]]
+kind     = "ext4"
+image    = "redtusk-fc-worker"
+dest     = "$REDTUSK_FC_DIR/redtusk-rootfs.ext4"
+size_mib = 1536
+requires = ["/init", "/opt/blastbox/run_guest.py"]
