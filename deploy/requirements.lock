@@ -39,9 +39,9 @@ attrs==26.1.0 \
     # via
     #   jsonschema
     #   referencing
-blastbox==0.1.40 \
-    --hash=sha256:06931f38b116ee63f9391303b19fc9f6b1e3229efa88b375ca9d51eb31fbb710 \
-    --hash=sha256:e55b5bb441d5175b71fa85139b655096e0e48919b730834e2bf9926cccdd8472
+blastbox==0.1.42 \
+    --hash=sha256:3f9864e838bb2c803dd8d9721d75ed3de722a60e80e3a53570007387ed922604 \
+    --hash=sha256:dcf85ffd379ff9d8a12cc8e3e27f3acf25979044e61b46a95d42c522a31bb2d9
     # via redtusk (pyproject.toml)
 boto3==1.43.66 \
     --hash=sha256:8d097a41e2f545c25252105570f782bb035b1ac13d6213c772d1c895dc7cedeb \

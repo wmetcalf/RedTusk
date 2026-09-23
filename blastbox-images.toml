@@ -39,7 +39,7 @@ context    = "."
 # BLASTBOX_VERSION is a SEPARATE pin from the lock: the cold worker installs
 # blastbox --no-deps, so pyproject's floor never upgrades a stale default here.
 # The verify step catches the mismatch (label says X, image contains Y).
-build_args = { BLASTBOX_VERSION = "0.1.40" }
+build_args = { BLASTBOX_VERSION = "0.1.42" }
 
 # 4. Firecracker guest: blastbox FC agent + /init, from blastbox's own deploy/.
 [[image]]
@@ -56,3 +56,23 @@ image    = "redtusk-fc-worker"
 dest     = "$REDTUSK_FC_DIR/redtusk-rootfs.ext4"
 size_mib = 1536
 requires = ["/init", "/opt/blastbox/run_guest.py"]
+
+# gVisor warm guest: the KVM-less C/R tier, from blastbox's own deploy/gvisor/.
+# base_arg is "BASE", NOT the default "BASE_IMAGE": blastbox's gVisor Dockerfiles use the
+# short name, and docker silently discards a --build-arg a Dockerfile never declares.
+[[image]]
+name        = "redtusk-warm-gvisor"
+dockerfile  = "deploy/gvisor/Dockerfile.redtusk"
+base        = "redtusk-cold-worker"
+base_arg    = "BASE"
+context     = "$BLASTBOX_SRC"
+source_repo = "$BLASTBOX_SRC"
+build_args  = { ENGINE = "redtusk.engine:RedTuskEngine" }
+
+# runsc restores a DIRECTORY tree. No /init: runsc launches BLASTBOX_GVISOR_WARM_ARGV.
+# The default REDTUSK_GVISOR_DIR in compose is /var/lib/redtusk-gvisor.
+[[rootfs]]
+kind     = "dir"
+image    = "redtusk-warm-gvisor"
+dest     = "${REDTUSK_GVISOR_DIR:-/var/lib/redtusk-gvisor}/rootfs"
+requires = ["/opt/blastbox/run_warm.py", "/opt/blastbox/engines.py", "/opt/blastbox/engine", "/in", "/out", "/ctrl"]
