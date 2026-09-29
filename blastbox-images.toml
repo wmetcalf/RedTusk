@@ -39,7 +39,7 @@ context    = "."
 # BLASTBOX_VERSION is a SEPARATE pin from the lock: the cold worker installs
 # blastbox --no-deps, so pyproject's floor never upgrades a stale default here.
 # The verify step catches the mismatch (label says X, image contains Y).
-build_args = { BLASTBOX_VERSION = "0.1.42" }
+build_args = { BLASTBOX_VERSION = "0.1.43" }
 
 # 4. Firecracker guest: blastbox FC agent + /init, from blastbox's own deploy/.
 [[image]]
