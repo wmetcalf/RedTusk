@@ -21,7 +21,7 @@ set -euo pipefail
 # Declared ONCE, above the first message that mentions it. Written out by hand
 # in two places, this drifted before: the script told an operator to install a
 # version it then rejected.
-BB_MIN=0.1.39
+BB_MIN=0.1.43
 
 # One check for EVERY way a version can arrive: the legacy bare argument and
 # the `--blastbox-version V` / `--blastbox-version=V` option, which is
@@ -466,6 +466,9 @@ trap - EXIT INT TERM HUP QUIT
   echo "verified, and a mid-chain failure left the tags on a mixture of two" >&2
   echo "builds. Its published children also recorded a base reference the" >&2
   echo "same run then deleted." >&2
+  echo "Before 0.1.43, an exported warm rootfs carried no stamp, so a tier" >&2
+  echo "booting one built from an older image generation had nothing to" >&2
+  echo "check it against, and an aging warm base was never rebuilt." >&2
   echo "  pip install --upgrade 'blastbox>=$BB_MIN'" >&2
   exit 2
 }
