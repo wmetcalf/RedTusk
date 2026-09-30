@@ -64,6 +64,19 @@ context = "$BLASTBOX_SRC"
 kind = "dir"
 image = "redtusk-warm-gvisor"
 dest = "${REDTUSK_GVISOR_DIR:-/var/lib/redtusk-gvisor}/rootfs"
+# No /init: runsc launches BLASTBOX_GVISOR_WARM_ARGV, which runs run_warm.py.
+# That agent imports engines.py beside it and reads the engine name from
+# /opt/blastbox/engine, because `docker export` drops Docker ENV. The restored
+# tree is read-only, so runsc cannot create the /in, /out and /ctrl bind-mount
+# targets either -- an image without them has nowhere to mount a job.
+requires = [
+    "/opt/blastbox/run_warm.py",
+    "/opt/blastbox/engines.py",
+    "/opt/blastbox/engine",
+    "/in",
+    "/out",
+    "/ctrl",
+]
 
 [[rootfs]]
 kind = "ext4"
@@ -76,4 +89,8 @@ size_mib = "${ROOTFS_MIB:-1536}"
 # The guest boots /init. A rootfs without it hangs every warm guest until the
 # boot timeout, which is what took the titanarum FC tier down on 2026-09-02 --
 # nothing checked, because nothing had written down what the artifact needed.
-requires = ["/init"]
+#
+# /init exists to run run_guest.py, so a rootfs with /init and no guest agent
+# boots and then never signals READY -- the same silent 300s timeout by another
+# route.
+requires = ["/init", "/opt/blastbox/run_guest.py"]

@@ -109,10 +109,30 @@ def test_the_firecracker_rootfs_declares_what_it_must_contain() -> None:
     fc = [r for r in PLAN.rootfs if r.kind == "ext4"]
     assert len(fc) == 1
     assert "/init" in fc[0].requires
+    # /init exists to run the guest agent; without it the guest boots and never
+    # signals READY, the same silent timeout by another route.
+    assert "/opt/blastbox/run_guest.py" in fc[0].requires
     # Overridable, as the export script it replaces was. A literal would
     # silently shrink a rootfs a deployment had deliberately grown.
     assert fc[0].resolved_size_mib({}) == 1536
     assert fc[0].resolved_size_mib({"ROOTFS_MIB": "2048"}) == 2048
+
+
+def test_the_gvisor_rootfs_declares_what_it_must_contain() -> None:
+    """The gVisor tree has no /init to check -- runsc launches the warm agent
+    directly -- so an empty `requires` there would check nothing at all. The
+    agent, the files it reads because `docker export` drops ENV, and the
+    bind-mount targets a read-only restore cannot create are what it needs."""
+    gvisor = [r for r in PLAN.rootfs if r.kind == "dir"]
+    assert len(gvisor) == 1
+    assert {
+        "/opt/blastbox/run_warm.py",
+        "/opt/blastbox/engines.py",
+        "/opt/blastbox/engine",
+        "/in",
+        "/out",
+        "/ctrl",
+    } <= set(gvisor[0].requires)
 
 
 def test_the_floor_matches_what_pyproject_pins() -> None:
