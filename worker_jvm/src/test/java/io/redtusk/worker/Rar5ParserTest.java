@@ -62,4 +62,33 @@ class Rar5ParserTest {
         assertNotNull(result.entries().getFirst().error());
         assertTrue(result.entries().getFirst().error().contains("entry budget"));
     }
+
+    @Test void refusesAmbiguousOrOversizedNativeListings() {
+        assertThrows(Exception.class, () -> Rar5Parser.listedEntries("Path = one\nPath = two\nSize = 1\nFolder = -\n", 10, 1024));
+        assertThrows(Exception.class, () -> Rar5Parser.listedEntries("Path = one\nSize = -1\nFolder = -\n", 10, 1024));
+        assertThrows(Exception.class, () -> Rar5Parser.listedEntries("Path = one\nSize = 2048\nFolder = -\n", 10, 1024));
+        assertThrows(Exception.class, () -> Rar5Parser.listedEntries("Path = one\nSize = 1\nFolder = -\nEncrypted = +\n", 10, 1024));
+    }
+
+    @Test void failedDecoderCannotPublishPartialMemberBytes() throws Exception {
+        Path decoder = output.resolve("decoder");
+        java.nio.file.Files.writeString(decoder, "#!/bin/sh\nif [ \"$1\" = l ]; then\n"
+            + "printf 'Path = child.txt\\nSize = 6\\nFolder = -\\nEncrypted = -\\n'\nelse\n"
+            + "printf poison\nexit 2\nfi\n");
+        assertTrue(decoder.toFile().setExecutable(true));
+        var context = new org.apache.tika.parser.ParseContext();
+        var count = new java.util.concurrent.atomic.AtomicInteger();
+        context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+            public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
+            public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml) {
+                count.incrementAndGet();
+            }
+        });
+        try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
+            assertThrows(org.apache.tika.exception.TikaException.class, () -> new Rar5Parser(decoder.toString()).parse(
+                input, new org.xml.sax.helpers.DefaultHandler(), new org.apache.tika.metadata.Metadata(), context));
+        }
+        assertEquals(0, count.get());
+    }
 }

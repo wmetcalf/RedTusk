@@ -32,6 +32,7 @@ RUN apt-get update -qq \
     && groupadd -r -g 10001 redtusk \
     && useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk
 
+COPY --from=artifacts /usr/local/bin/7zz /usr/local/bin/7zz
 COPY --from=artifacts /app/redtusk-worker.jar /app/redtusk-worker.jar
 COPY --from=artifacts /app/libksm_helper.so   /app/libksm_helper.so
 COPY --from=artifacts /app/libcap_dropper.so  /app/libcap_dropper.so

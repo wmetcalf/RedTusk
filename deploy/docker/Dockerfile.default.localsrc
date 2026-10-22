@@ -189,6 +189,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libwps-tools libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
 
+# Keep Java visible under Blastbox warm workers restricted PATH.
+RUN if [ ! -x /usr/local/bin/java ]; then ln -s "$(command -v java)" /usr/local/bin/java; fi
+
+# Pinned modern RAR decoder; no archive-controlled filesystem extraction.
+ADD --checksum=sha256:22cf82fcc6eb7474f1d5bb4f02c0f8ebd573a718089d6833dc30f8350a3b232e https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz /tmp/7zip.tar.xz
+RUN bsdtar -xOf /tmp/7zip.tar.xz 7zzs > /usr/local/bin/7zz \
+    && chmod 755 /usr/local/bin/7zz && rm /tmp/7zip.tar.xz
+
 # ZXingReader may be under /build/zxing/ or /build/zxing/example/ depending on version.
 # Install as ZXingReader.real; the wrapper below adapts v3.x JSON (Type→Format) for the Tika fork.
 RUN --mount=type=bind,from=zxing-build,source=/build/zxing,target=/zxing-build \
