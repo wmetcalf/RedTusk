@@ -107,7 +107,7 @@ FROM azul/zulu-openjdk:25 AS checkpoint
 
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-        criu tesseract-ocr tesseract-ocr-eng libheif-examples \
+        criu tesseract-ocr tesseract-ocr-eng libheif-examples libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ZXingReader binary and the Type→Format adapter wrapper
@@ -161,7 +161,7 @@ FROM azul/zulu-openjdk:25-jre AS runtime
 
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-        criu tesseract-ocr tesseract-ocr-eng libheif-examples \
+        criu tesseract-ocr tesseract-ocr-eng libheif-examples libarchive-tools \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 10001 redtusk \
     && useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk

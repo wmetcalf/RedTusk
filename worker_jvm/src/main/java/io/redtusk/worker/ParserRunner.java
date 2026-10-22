@@ -153,6 +153,7 @@ public final class ParserRunner {
         }
         RecursiveParserWrapper wrapper = new RecursiveParserWrapper(auto);
         ParseContext context = new ParseContext();
+        context.set(JobDescriptor.LimitsDescriptor.class, limits);
 
         // XXE / SSRF hardening: route every JAXP factory Tika may pull from the
         // ParseContext through SafeXml so external entities, DTDs, stylesheets and
@@ -974,6 +975,10 @@ public final class ParserRunner {
         synchronized (ParserRunner.class) {
             if (sharedParser == null) {
                 AutoDetectParser built = new AutoDetectParser();
+                var parsers = new java.util.HashMap<>(built.getParsers());
+                var rar5 = new Rar5Parser();
+                for (var type : rar5.getSupportedTypes(new ParseContext())) parsers.put(type, rar5);
+                built.setParsers(parsers);
                 // AutoDetectParser wraps DefaultParser (itself a CompositeParser) — recurse to
                 // find the actual AbstractImageParser instances and enable perceptual hashing.
                 enableImageHashing(built);

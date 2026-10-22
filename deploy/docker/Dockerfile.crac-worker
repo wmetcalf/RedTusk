@@ -27,7 +27,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Runtime tools the worker may shell out to (OCR/QR are off by default but the
 # binaries must exist). tesseract via apt; ZXingReader copied from the default image.
 RUN apt-get update -qq \
-    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng libheif-examples libwps-tools \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng libheif-examples libwps-tools libarchive-tools \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 10001 redtusk \
     && useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk

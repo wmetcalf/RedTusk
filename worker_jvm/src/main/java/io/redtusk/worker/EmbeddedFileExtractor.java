@@ -157,7 +157,7 @@ public final class EmbeddedFileExtractor {
         context.set(EmbeddedDocumentExtractor.class,
                 new SavingExtractor(parser, embDir, maxDepth, maxFiles, enableThumbnails,
                         fileCount, extractedBytesTotal, hashes,
-                        maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings));
+                        maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings, ""));
         context.set(Parser.class, parser);
         // OCR already ran in the first pass (ParserRunner). Skip it here to avoid
         // running Tesseract a second time on every file in the extraction pass.
@@ -498,67 +498,18 @@ public final class EmbeddedFileExtractor {
             if (name == null || name.isEmpty()) return null;
             rel = name;
         }
-        Path result = root;
-        boolean lossy = false;
-        String[] parts = rel.split("/");
-        for (int idx = 0; idx < parts.length; idx++) {
-            String original = parts[idx];
-            String part = original.replaceAll("[^a-zA-Z0-9._+\\- ]", "_").trim();
-            if (part.isEmpty() || part.equals(".") || part.equals("..")) part = "_";
-            // root/thumbnails/ belongs to writeThumbnail. An entry whose own top-level name is
-            // "thumbnails" would otherwise land there: it could be declared a thumbnail, have
-            // its bytes overwritten by another entry's thumbnail, or (as a plain file) stop the
-            // thumbnails directory from being created. Reserve the name like any lossy rename.
-            if (idx == 0 && part.equals(THUMBNAILS_DIR)) part = THUMBNAILS_DIR + "_";
-            // Sanitization is lossy when it changed the component — distinct
-            // raw names (e.g. "résumé.doc" vs "resume_.doc", or "a/b" vs "a_b")
-            // can collapse to the same sanitized path and silently overwrite
-            // each other's saved bytes, desyncing hashes/forensics. When the
-            // LAST (filename) component was altered, disambiguate it with a
-            // short, deterministic hash of the original relative path so the
-            // mapping is stable across Pass-1 and Pass-2 for the same entry.
-            if (!part.equals(original)) {
-                lossy = true;
-            }
-            if (lossy && idx == parts.length - 1) {
-                part = disambiguate(part, rel);
-            }
-            result = result.resolve(part);
-        }
-        if (!result.normalize().startsWith(root.normalize())) return null;
-        return result;
-    }
-
-    /**
-     * Append a short hash of the entry's original relative path to a sanitized
-     * filename component so two distinct entries whose names sanitize to the
-     * same string land at distinct paths. Deterministic per entry, so Pass-1 and
-     * Pass-2 compute the same disambiguated path for the same entry. The hash is
-     * inserted before the file extension to keep the suffix recognizable.
-     */
-    private static String disambiguate(String sanitized, String originalRel) {
-        String tag = shortHash(originalRel);
-        int dot = sanitized.lastIndexOf('.');
-        if (dot > 0) {
-            return sanitized.substring(0, dot) + "_" + tag + sanitized.substring(dot);
-        }
-        return sanitized + "_" + tag;
-    }
-
-    /** First 8 hex chars of SHA-256(s); falls back to hashCode hex if unavailable. */
-    private static String shortHash(String s) {
+        // Resource names are provenance, not filesystem structure. A container
+        // named nested.rar and its child nested.rar/hello.txt must both be files.
+        // Stable hashed directories also bound hostile name lengths and prevent
+        // lossy Unicode sanitization from overwriting another resource. Every entry
+        // lands under objects/, so none can reach THUMBNAILS_DIR, which belongs to
+        // writeThumbnail.
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] d = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            // 8 bytes (64-bit) of the digest. A 32-bit prefix lets a document
-            // with tens of thousands of lossy-sanitized embed names hit a
-            // birthday collision and silently overwrite an extracted artifact;
-            // 64 bits pushes that threshold beyond any realistic document.
-            StringBuilder sb = new StringBuilder(16);
-            for (int i = 0; i < 8; i++) sb.append(String.format("%02x", d[i]));
-            return sb.toString();
-        } catch (Exception e) {
-            return Integer.toHexString(s.hashCode());
+            String digest = hex(MessageDigest.getInstance("SHA-256")
+                .digest(rel.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            return root.resolve("objects").resolve(digest).resolve("content");
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is required", impossible);
         }
     }
 
@@ -590,6 +541,7 @@ public final class EmbeddedFileExtractor {
 
     private static final class SavingExtractor implements EmbeddedDocumentExtractor {
 
+        private final String parentPath;
         private final AutoDetectParser parser;
         private final Path root;
         private final int maxDepth;
@@ -612,12 +564,13 @@ public final class EmbeddedFileExtractor {
                         Map<String, FileHashes> hashes,
                         long maxFileBytes, long budgetBytes, AtomicInteger budgetSkipped,
                         AtomicInteger countSkipped,
-                        List<ParseResult.WorkerWarning> warnings) {
+                        List<ParseResult.WorkerWarning> warnings, String parentPath) {
             this.maxFileBytes        = maxFileBytes;
             this.budgetBytes         = budgetBytes;
             this.budgetSkipped       = budgetSkipped;
             this.countSkipped        = countSkipped;
             this.warnings            = warnings;
+            this.parentPath          = parentPath;
             this.parser              = parser;
             this.root                = root;
             this.maxDepth            = maxDepth;
@@ -647,6 +600,16 @@ public final class EmbeddedFileExtractor {
                 countSkipped.incrementAndGet();
                 return;
             }
+            String declared = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+            if (declared == null || declared.isBlank()) {
+                String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                if (name == null || name.isBlank()) return;
+                declared = parentPath + "/" + name.replaceFirst("^/+", "");
+            } else if (!parentPath.isEmpty() && !declared.startsWith(parentPath + "/")) {
+                declared = parentPath + "/" + declared.replaceFirst("^/+", "");
+            }
+            metadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_PATH, declared);
+            if (countSlashes(declared) > maxDepth) return;
             // Aggregate extracted-bytes budget — abort further extraction once a
             // zip/embed bomb has already amplified past the cap.
             if (extractedBytesTotal.get() >= budgetBytes) {
@@ -777,8 +740,11 @@ public final class EmbeddedFileExtractor {
                 nested.set(EmbeddedDocumentExtractor.class,
                         new SavingExtractor(parser, root, maxDepth, maxFiles, enableThumbnails,
                                 fileCount, extractedBytesTotal, hashes,
-                                maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings));
+                                maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings, hashKey));
                 nested.set(Parser.class, parser);
+                nested.set(JobDescriptor.LimitsDescriptor.class,
+                    new JobDescriptor.LimitsDescriptor(maxDepth, Math.max(1, maxFiles - fileCount.get()),
+                        Math.max(1, MAX_EXTRACTED_BUDGET_BYTES - extractedBytesTotal.get()), 30));
                 TesseractOCRConfig noOcr = new TesseractOCRConfig();
                 noOcr.setSkipOcr(true);
                 nested.set(TesseractOCRConfig.class, noOcr);
