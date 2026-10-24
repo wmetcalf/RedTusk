@@ -141,13 +141,14 @@ final class DraftSnapshotWriter {
         // there is NO root yet. Synthesize a stub root so the draft validates;
         // it'll be replaced by the real root entry when the final write happens.
         entries.add(buildStubRoot());
+        var resourcePaths = ResourcePaths.resolve(metaList);
         for (Metadata m : metaList) {
             // Skip a real root metadata if it's already in the list at index 0
             // (happens after endDocument runs). Identified by an EMBEDDED_RESOURCE_PATH
             // that's either null or "/" — both indicate the container, not a child.
             String ep = m.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
             if (ep == null || ep.isEmpty() || "/".equals(ep)) continue;
-            entries.add(buildEntry(m));
+            entries.add(buildEntry(m, resourcePaths.get(m)));
         }
 
         ObjectNode limits = root.putObject("limits");
@@ -226,18 +227,16 @@ final class DraftSnapshotWriter {
     }
 
     /** Build a schema-compliant entry from the raw Metadata (no Pass-2 enrichment). */
-    private static ObjectNode buildEntry(Metadata m) {
+    private static ObjectNode buildEntry(Metadata m, ResourcePaths.Resource resource) {
         ObjectNode n = OM.createObjectNode();
-        String embPath = m.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
-        String path = (embPath == null || embPath.isEmpty()) ? "/" : embPath;
+        String path = resource.path();
         n.put("path", path);
-        if (!"/".equals(path)) {
-            int slash = path.lastIndexOf('/');
-            n.put("parent_path", slash <= 0 ? "/" : path.substring(0, slash));
+        if (resource.parent() != null) {
+            n.put("parent_path", resource.parent());
         } else {
             n.putNull("parent_path");
         }
-        n.put("depth", "/".equals(path) ? 0 : countDepth(path));
+        n.put("depth", resource.depth());
         n.put("content_type", firstContentType(m));
         n.put("size_bytes", parseLong(m.get("Content-Length")));
         n.putNull("sha256");
@@ -281,12 +280,6 @@ final class DraftSnapshotWriter {
         ocr.put("skipped", "in_progress");
 
         n.putNull("error");
-        return n;
-    }
-
-    private static int countDepth(String path) {
-        int n = 0;
-        for (char c : path.toCharArray()) if (c == '/') n++;
         return n;
     }
 

@@ -313,22 +313,13 @@ public final class ParserRunner {
         // ZXing subprocess fork for each duplicate.
         java.util.Map<String, java.util.List<String>> uqCache = new java.util.HashMap<>();
 
+        Map<Metadata, ResourcePaths.Resource> resourcePaths = ResourcePaths.resolve(metaList);
         for (int i = 0; i < metaList.size(); i++) {
             Metadata m = metaList.get(i);
-            String embPath = m.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
-            // When Tika generates a synthetic path like "/embedded-1.cls", prefer the
-            // RESOURCE_NAME_KEY (actual filename from VBAMacroReader, OLE, ZIP, etc.)
-            // if it's present and distinct from the synthetic basename.
-            if (embPath != null && embPath.matches(".*/embedded-\\d+(\\..*)?$")) {
-                String rname = m.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-                if (rname != null && !rname.isBlank()) {
-                    String parent = embPath.substring(0, embPath.lastIndexOf('/'));
-                    embPath = parent + "/" + rname;
-                }
-            }
-            String path = (embPath == null || embPath.isEmpty()) ? "/" : embPath;
-            String parentPath = deriveParentPath(path);
-            int depth = countDepth(path);
+            ResourcePaths.Resource resource = resourcePaths.get(m);
+            String path = resource.path();
+            String parentPath = resource.parent();
+            int depth = resource.depth();
 
             if (depth > limits.maxRecursionDepth()) continue;
 
@@ -543,9 +534,10 @@ public final class ParserRunner {
                 // Key on the same EMBEDDED_RESOURCE_PATH string the capture
                 // recorded post-delegate — survives RecursiveParserWrapperHandler's
                 // cloneMetadata in endEmbeddedDocument.
-                byte[] imgBytes = pass1Capture.bufferedBytesFor(path);
+                String captureKey = ResourcePaths.captureKey(m);
+                byte[] imgBytes = pass1Capture.bufferedBytesFor(captureKey);
                 if (imgBytes != null) {
-                    String thumbCt = pass1Capture.contentTypeFor(path);
+                    String thumbCt = pass1Capture.contentTypeFor(captureKey);
                     if (thumbCt == null) thumbCt = contentType;
                     pass1Thumb = writePass1Thumbnail(outDir, path, imgBytes, thumbCt);
 
@@ -571,7 +563,7 @@ public final class ParserRunner {
                         if (sha1   == null) sha1   = saved.sha1;
                         if (sizeBytes == 0) sizeBytes = saved.sizeBytes;
                     }
-                } else if (pass1Capture.wasBufferCapped(path)) {
+                } else if (pass1Capture.wasBufferCapped(captureKey)) {
                     // We saw the image, recognized it as such, but dropped the
                     // buffer to stay under the per-job byte budget. Surface so
                     // the UI explains the missing thumbnail instead of falling
@@ -1363,20 +1355,6 @@ public final class ParserRunner {
         if (ct == null || ct.isEmpty()) return "application/octet-stream";
         int semi = ct.indexOf(';');
         return (semi >= 0) ? ct.substring(0, semi).trim() : ct.trim();
-    }
-
-    private static String deriveParentPath(String path) {
-        if ("/".equals(path)) return null;
-        int lastSlash = path.lastIndexOf('/');
-        if (lastSlash <= 0) return "/";
-        return path.substring(0, lastSlash);
-    }
-
-    private static int countDepth(String path) {
-        if ("/".equals(path)) return 0;
-        int count = 0;
-        for (char c : path.toCharArray()) if (c == '/') count++;
-        return count;
     }
 
     private static long parseLong(String s, long defaultVal) {

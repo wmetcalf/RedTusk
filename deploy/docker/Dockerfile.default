@@ -71,6 +71,13 @@ RUN git clone \
         /src/tika \
     && git -C /src/tika checkout "$TIKA_FORK_SHA"
 
+# Preserve recursive parser state, limits and XML protections when an archive
+# hands a member to our custom embedded extractor. Kept as an explicit patch
+# until the pinned fork includes the corresponding archive-context fix.
+COPY deploy/upstream-patches/tika-archive-extractor-context.patch /tmp/tika-archive-context.patch
+RUN git -C /src/tika apply --check /tmp/tika-archive-context.patch \
+    && git -C /src/tika apply /tmp/tika-archive-context.patch
+
 # Build all modules except gRPC (which needs protoc; not needed for worker).
 # Pre-flight: strip '#' comments from maven.config (apt Maven rejects them),
 # and remove .mvn/extensions.xml (nisse extension is incompatible with apt Maven).

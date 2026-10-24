@@ -1,0 +1,42 @@
+--- a/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/main/java/org/apache/tika/parser/pkg/ZipParser.java
++++ b/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/main/java/org/apache/tika/parser/pkg/ZipParser.java
+@@ -947,7 +947,7 @@
+                     TikaInputStream tis = TikaInputStream.get(entryStream, tmp, entryMetadata);
+                     extractor.parseEmbedded(
+                             tis, embeddedOutput, entryMetadata,
+-                            new ParseContext(), true);
++                            context, true);
+                     throwRecordedOutputFailure(taggedOutput);
+                 } catch (IOException | SAXException | TikaException | RuntimeException | Error e) {
+                     parserFailure = e;
+@@ -1010,7 +1010,7 @@
+                     TikaInputStream tis = TikaInputStream.get(zis, tmp, entryMetadata);
+                     extractor.parseEmbedded(
+                             tis, embeddedOutput, entryMetadata,
+-                            new ParseContext(), true);
++                            context, true);
+                     throwRecordedOutputFailure(taggedOutput);
+                 } catch (IOException | SAXException | TikaException | RuntimeException | Error e) {
+                     parserFailure = e;
+--- a/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/main/java/org/apache/tika/parser/pkg/SevenZParser.java
++++ b/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/main/java/org/apache/tika/parser/pkg/SevenZParser.java
+@@ -175,7 +175,7 @@
+             try {
+                 TikaInputStream tis = TikaInputStream.get(
+                         new SevenZEntryInputStream(sevenZFile), tmp, entrydata);
+-                extractor.parseEmbedded(tis, xhtml, entrydata, new ParseContext(), true);
++                extractor.parseEmbedded(tis, xhtml, entrydata, context, true);
+             } finally {
+                 tmp.dispose();
+             }
+--- a/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/main/java/org/apache/tika/parser/pkg/PackageParser.java
++++ b/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/main/java/org/apache/tika/parser/pkg/PackageParser.java
+@@ -177,7 +177,7 @@
+                 TemporaryResources tmp = new TemporaryResources();
+                 try {
+                     TikaInputStream tis = TikaInputStream.get(archive, tmp, entrydata);
+-                    extractor.parseEmbedded(tis, xhtml, entrydata, new ParseContext(), true);
++                    extractor.parseEmbedded(tis, xhtml, entrydata, context, true);
+                 } finally {
+                     tmp.dispose();
+                 }
