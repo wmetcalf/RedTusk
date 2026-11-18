@@ -103,6 +103,32 @@ def test_detonate_embeds_rmeta_and_drops_metadata_json(tmp_path: Path,
     assert embedded["extraction"]["entries"][1]["path"] == "/image3.jpeg"
 
 
+def test_ok_result_always_carries_redtusk_rmeta(tmp_path: Path,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """Contract invariant (blastbox-engine.toml required_root_fields): every ok result's root
+    metadata carries ``redtusk_rmeta``. Drive the serialization-failure branch (unreachable
+    from json.loads output today, so forced here): the field must stay present (empty string,
+    which the UI already treats as "fall back to /rmeta") and a warning must say why, rather
+    than the field being silently dropped from an ok result."""
+    import redtusk.engine as eng
+
+    real_json = json
+
+    def _boom(*a: Any, **k: Any) -> str:
+        raise TypeError("not serializable")
+
+    monkeypatch.setattr(eng, "json", types.SimpleNamespace(loads=real_json.loads, dumps=_boom))
+    res = _detonate(tmp_path, monkeypatch)
+    assert res.status == "ok"
+    fields = res.payload.metadata.fields
+    assert "redtusk_rmeta" in fields, "ok result silently dropped redtusk_rmeta"
+    assert fields["redtusk_rmeta"] == ""
+    codes = [w.code for w in res.warnings]
+    assert "rmeta_embed_failed" in codes
+    # The rest of the evidence (tree, artifacts) is kept, not dropped with the field.
+    assert "rmeta/embedded/image3.jpeg" in [a.path for a in res.artifacts]
+
+
 def test_detonate_declares_thumbnail_artifacts_servable_by_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

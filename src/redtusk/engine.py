@@ -1001,18 +1001,29 @@ class RedTuskEngine:
         # (mirrors ClippyShot's ``clippyshot_metadata``): the host UI reads the
         # extraction tree straight from the sealed envelope, so we no longer ship a
         # separate ``rmeta/metadata.json`` artifact (which collided by name with the
-        # blastbox ENVELOPE metadata.json at the zip root). Fail-open: a
-        # serialization hiccup must never fail the job — the UI falls back to /rmeta.
+        # blastbox ENVELOPE metadata.json at the zip root).
+        #
+        # Contract (blastbox-engine.toml required_root_fields): every ok result's root metadata
+        # carries redtusk_rmeta. A serialization failure must not fail the job (the typed tree and
+        # artifacts are still good evidence) NOR silently drop the field: the field stays present
+        # as "" (the UI already treats that as "fall back to /rmeta") and a warning says why.
+        # Unreachable today (rmeta is json.loads output, default=str, allow_nan on), but enforced
+        # here rather than by that argument. RecursionError is not caught: it propagates as
+        # engine_error, never an ok result.
+        rmeta_embed_warning: Warning | None = None
         try:
             rmeta_json = json.dumps(rmeta, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             rmeta_json = ""
-        if rmeta_json and payload.metadata is not None:
-            try:
-                # frozen models still allow mutating the contained fields dict
-                payload.metadata.fields["redtusk_rmeta"] = rmeta_json
-            except Exception:  # noqa: BLE001
-                pass
+            rmeta_embed_warning = Warning(
+                code="rmeta_embed_failed",
+                message=f"rmeta document could not be serialized into redtusk_rmeta: "
+                        f"{type(exc).__name__}: {exc}"[:2000],
+            )
+        # _build_tree always gives the root a Record; frozen models still allow mutating the
+        # contained fields dict. No guard/except: a failure here is a bug and must surface.
+        assert payload.metadata is not None
+        payload.metadata.fields["redtusk_rmeta"] = rmeta_json
 
         # Detection from root content-type. Both contract fields RAISE past their bound and
         # root_content_type is schema-valid at any length (no maxLength), so clip label to 64
@@ -1063,6 +1074,8 @@ class RedTuskEngine:
 
         # Map rmeta warnings
         warnings: list[Warning] = []
+        if rmeta_embed_warning is not None:
+            warnings.append(rmeta_embed_warning)
         for w in rmeta.get("warnings", []):
             code = str(w.get("code") or "redtusk_warning")[:64]
             detail = str(w.get("detail") or "")[:2000]

@@ -93,8 +93,10 @@ root = "embedded_resource"
 node_types = ["embedded_resource", "extracted_text"]
 # Checked on the root EmbeddedResource's metadata Record (ok results only). size_bytes: the rmeta
 # schema requires an integer size_bytes on the root entry and _build_tree copies it whenever it is
-# not None. redtusk_rmeta: see gap contract-cannot-require-rmeta-field for why the fail-open
-# omission branch is unreachable. No schema_version: neither field carries one.
+# not None. redtusk_rmeta: detonate() sets it unconditionally on every ok result; if the rmeta
+# doc cannot be serialized the value is "" and the result carries warning rmeta_embed_failed
+# (tests/unit/test_engine_envelope.py drives that branch). No schema_version: neither field
+# carries one.
 required_root_fields = ["size_bytes", "redtusk_rmeta"]
 
 # --- Findings a consumer is expected to turn into detections -----------------------------------
@@ -189,7 +191,7 @@ description = "QR decodes, OCR results, parent_path, has_thumbnail/thumbnail_ski
 
 [[gaps]]
 id = "contract-cannot-require-rmeta-field"
-description = "redtusk_rmeta is required (checked on the root's metadata fields), but its value is unchecked: a JSON string with no schema version. detonate() still has a fail-open branch that omits it when json.dumps raises TypeError/ValueError; that branch is unreachable today (the input is json.loads output, so no cycles or non-str keys; default=str; allow_nan stays True). A RecursionError propagates as engine_error, not an ok result without the field. Other root fields (sha256 may be null, Tika keys vary by format) cannot be required."
+description = "redtusk_rmeta is required (checked on the root's metadata fields), but its value is unchecked: a JSON string with no schema version, and it is \"\" (with warning rmeta_embed_failed) if json.dumps raises TypeError/ValueError. That fallback is unreachable today (the input is json.loads output, so no cycles or non-str keys; default=str; allow_nan stays True) but is enforced in code and tested, so a consumer must treat \"\" as absent rather than parse it. A RecursionError propagates as engine_error, never an ok result. Other root fields (sha256 may be null, Tika keys vary by format) cannot be required."
 
 [[gaps]]
 id = "exploitclass-free-text"
