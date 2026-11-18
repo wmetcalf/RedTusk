@@ -420,4 +420,24 @@ class Rar5ParserTest {
             }
         }
     }
+
+    @Test void aStreamTheNameFilterCannotSelectIsNeverStandIn() throws Exception {
+        // 7zz lists the stream as "host:stream" but its filter selects a decoy file under
+        // "host:stream/" instead: the decoy must never be published as the stream.
+        for (String f : java.util.List.of("hide_nocolon", "hide_tslash", "hide_tslash_dir", "hide_abs",
+                "hide_mid", "hide_dslash")) {
+            String fixture = "ads_namefilter_" + f;
+            var seen = new java.util.LinkedHashMap<String, String>();
+            try { decodeRealInto(fixture, seen); }
+            catch (org.apache.tika.exception.TikaException refused) { /* refused: fine */ }
+            for (var e : seen.entrySet()) {
+                if (e.getKey().contains(":") && !e.getValue().contains("MALWARE-ADS-PAYLOAD")) {
+                    // a member named like the stream must carry the stream's bytes, unless it
+                    // is a regular file below "host:stream/" published under its own full name
+                    assertTrue(e.getKey().endsWith("/x") || e.getKey().matches(".*:.*/.+"),
+                        fixture + ": " + e.getKey() + " carries decoy bytes");
+                }
+            }
+        }
+    }
 }

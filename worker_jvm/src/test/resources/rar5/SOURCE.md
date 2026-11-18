@@ -24,3 +24,8 @@ ads_payload_{file,dir,file_16}.rar: hand-built RAR5 (2026-11-18 review of RedTus
 CVE-2025-8088 shape: NTFS alternate streams (one with a traversal name) carrying a benign
 "MALWARE-ADS-PAYLOAD" string, attached to a file or a folder (16-member variant to reach the
 single-run threshold).
+
+ads_namefilter_*.rar: hand-built RAR5 (2026-11-18 review of RedTusk#67). An NTFS alternate
+stream whose stored name has no leading ':' or contains '/' is listed as "host:stream", but
+7zz's name filter does not select it by that path; it selects a decoy regular file under
+"host:stream/" instead. Benign ("MALWARE-ADS-PAYLOAD" text).
