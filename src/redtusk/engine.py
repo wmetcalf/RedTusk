@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -235,6 +236,40 @@ def _make_record(raw: dict[str, Any]) -> Record:
     return Record(fields=fields)
 
 
+def _engine_entry_fields(e: dict[str, Any]) -> dict[str, Any]:
+    """The rmeta entry's own (non-Tika) evidence as ``redtusk:*`` Record fields.
+
+    QR decodes and OCR text are the IOC-bearing ones (a decoded QR is commonly a phishing URL);
+    parent_path and the thumbnail state let a consumer walk and explain the tree without parsing
+    the rmeta string. Empty results are omitted so 10k-entry trees do not carry 10k empty bags.
+    """
+    out: dict[str, Any] = {"redtusk:parent_path": _coerce_metadata_value(e.get("parent_path"))}
+    if "has_thumbnail" in e:
+        out["redtusk:has_thumbnail"] = bool(e.get("has_thumbnail"))
+    if e.get("thumbnail_skipped") is not None:
+        out["redtusk:thumbnail_skipped"] = str(e["thumbnail_skipped"])
+    qr = e.get("qr")
+    if isinstance(qr, dict):
+        codes = [c for c in (qr.get("codes") or []) if isinstance(c, dict)]
+        if codes or qr.get("skipped") is not None:
+            out["redtusk:qr"] = Record(fields={
+                "data": [_coerce_metadata_value(c.get("data")) for c in codes],
+                "format": [_coerce_metadata_value(c.get("format")) for c in codes],
+                "position": [_coerce_metadata_value(c.get("position")) for c in codes],
+                "raw_bytes": [_coerce_metadata_value(c.get("raw_bytes")) for c in codes],
+                "skipped": _coerce_metadata_value(qr.get("skipped")),
+            })
+    ocr = e.get("ocr")
+    if isinstance(ocr, dict) and (ocr.get("text") or ocr.get("skipped") is not None):
+        out["redtusk:ocr"] = Record(fields={
+            "text": _coerce_metadata_value(ocr.get("text") or ""),
+            "language": _coerce_metadata_value(ocr.get("language")),
+            "duration_ms": _coerce_metadata_value(ocr.get("duration_ms")),
+            "skipped": _coerce_metadata_value(ocr.get("skipped")),
+        })
+    return out
+
+
 def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
     """Reconstruct the recursive ``EmbeddedResource`` tree from a flat list.
 
@@ -280,9 +315,12 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
                 extra[scalar_key] = _coerce_metadata_value(val)
         combined: dict[str, Any] = {**extra}
         if isinstance(meta_raw, dict):
-            # cap key COUNT (see _MAX_RECORD_KEYS)
+            # cap key COUNT (see _MAX_RECORD_KEYS); the drop is reported by detonate()
             for k, v in list(meta_raw.items())[:_MAX_RECORD_KEYS]:
                 combined[str(k)] = _coerce_metadata_value(v)
+        # Engine-derived per-entry evidence that used to survive only inside the redtusk_rmeta
+        # string. Namespaced and applied AFTER the Tika keys so a document cannot spoof them.
+        combined.update(_engine_entry_fields(e))
         # Clip to the contract field bounds (which RAISE, not truncate): rmeta entry path /
         # content_type / text are schema-valid at ANY length (no maxLength), so an attacker's
         # container entry name (ZIP allows 64KiB names) would overflow embedded_path (4096) /
@@ -328,6 +366,15 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
 # ---------------------------------------------------------------------------
 # Worker invocation
 # ---------------------------------------------------------------------------
+
+
+def _reset_rmeta_dir(rmeta_dir: Path) -> None:
+    """Empty *rmeta_dir* before a cold fallback, so the failed attempt's partial files (embedded
+    bytes, a draft temp) are not declared next to the cold result as if the cold JVM wrote them."""
+    if rmeta_dir.is_symlink() or rmeta_dir.is_file():
+        rmeta_dir.unlink()
+    elif rmeta_dir.exists():
+        shutil.rmtree(rmeta_dir)
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -830,6 +877,7 @@ class RedTuskEngine:
                 return
             except Exception as exc:  # noqa: BLE001
                 logger.warning("redtusk CRaC restore failed (%s); cold fallback", exc)
+                _reset_rmeta_dir(rmeta_dir)
                 _run_worker(input, rmeta_dir, timeout=timeout)
                 return
 
@@ -926,6 +974,7 @@ class RedTuskEngine:
             # JVM produces the rmeta into the same dir. Pinned by
             # tests/integration/test_warm_path.py.
             logger.warning("redtusk warm detonation failed (%s); cold fallback", exc)
+            _reset_rmeta_dir(rmeta_dir)
             _run_worker(input, rmeta_dir, timeout=timeout)
             return
         finally:
@@ -1064,12 +1113,19 @@ class RedTuskEngine:
         # stale-view sentinel above, but drop it from the DECLARED set so it isn't a
         # second metadata.json in the sealed /result zip. Sentinel check stays intact
         # (it ran on the unfiltered rglob result).
-        rel_paths = [p for p in rel_paths if p != "rmeta/metadata.json"]
+        # The draft-snapshot temp is a superseded partial copy of metadata.json (orphaned only
+        # when a JVM is killed between write and rename); never evidence, never declared.
+        rel_paths = [p for p in rel_paths
+                     if p not in ("rmeta/metadata.json", "rmeta/" + _DRAFT_TMP_NAME)]
+        known_embedded = frozenset(
+            "rmeta/embedded/" + _embedded_disk_relpath(str(e.get("path") or ""))
+            for e in entries if str(e.get("path") or "").lstrip("/")
+        )
         artifacts: list[DeclaredArtifact] = []
         used_ids: set[str] = set()
         for rel_str in rel_paths:
             artifact_id = _safe_artifact_id(rel_str, used_ids)
-            kind = _infer_artifact_kind(rel_str)
+            kind = _infer_artifact_kind(rel_str, known_embedded)
             artifacts.append(DeclaredArtifact(id=artifact_id, path=rel_str, kind=kind))
 
         # Map rmeta warnings
@@ -1079,9 +1135,31 @@ class RedTuskEngine:
         for w in rmeta.get("warnings", []):
             code = str(w.get("code") or "redtusk_warning")[:64]
             detail = str(w.get("detail") or "")[:2000]
-            warnings.append(Warning(code=code, message=detail))
+            entry_path = w.get("entry_path")
+            warnings.append(Warning(
+                code=code, message=detail,
+                context=str(entry_path)[:255] if entry_path is not None else None,
+            ))
+        # Record key cap (_MAX_RECORD_KEYS): say which entries lost metadata keys, not just drop.
+        for e in entries:
+            meta_raw = e.get("metadata")
+            if isinstance(meta_raw, dict) and len(meta_raw) > _MAX_RECORD_KEYS:
+                warnings.append(Warning(
+                    code="metadata_keys_capped",
+                    message=(f"entry metadata has {len(meta_raw)} keys; only the first "
+                             f"{_MAX_RECORD_KEYS} are in the typed tree (all are in "
+                             f"redtusk_rmeta)")[:2000],
+                    context=str(e.get("path") or "/")[:255],
+                ))
         if rmeta.get("truncated"):
             tr = rmeta["truncated"]
+            # Structured on the root as well as in the message, so a consumer can key on the
+            # reason / limit without parsing text.
+            payload.metadata.fields["redtusk:truncated"] = Record(fields={
+                "reason": _coerce_metadata_value(tr.get("reason")),
+                "limit": _coerce_metadata_value(tr.get("limit")),
+                "observed": _coerce_metadata_value(tr.get("observed")),
+            })
             # Clip like the rmeta-warnings loop above: truncated.limit/observed are schema-valid
             # but UNBOUNDED integers, and Warning.message is Field(max_length=2000) (pydantic
             # RAISES, not truncates), so an unclipped f-string crashes the mapping.
@@ -1089,6 +1167,7 @@ class RedTuskEngine:
                 code="truncated",
                 message=(f"Extraction truncated: reason={tr.get('reason')}, "
                          f"limit={tr.get('limit')}, observed={tr.get('observed')}")[:2000],
+                context=str(tr.get("reason"))[:255],
             ))
 
         return DetonationResult(
@@ -1147,11 +1226,20 @@ def _reconstruct_rmeta_artifact_paths(
     if (rmeta_dir / "metadata.json").is_file():
         paths.add("rmeta/metadata.json")
     emb_root = rmeta_dir / "embedded"
+    cands: list[Path] = []
     for e in entries:
         ep = e.get("path") or ""
         if not ep.lstrip("/"):
+            # The root entry's thumbnail (Main.tryGenerateRootThumbnail) is rmeta/thumbnail.jpg.
+            if e.get("has_thumbnail"):
+                cands.append(rmeta_dir / "thumbnail.jpg")
             continue
-        cand = emb_root / _embedded_disk_relpath(ep)
+        disk = _embedded_disk_relpath(ep)
+        cands.append(emb_root / disk)
+        if e.get("has_thumbnail"):
+            # EmbeddedFileExtractor.writeThumbnail: embedded/thumbnails/<embedded rel>.jpg
+            cands.append(emb_root / "thumbnails" / (disk + ".jpg"))
+    for cand in cands:
         try:
             if cand.is_file():
                 paths.add(cand.relative_to(outdir).as_posix())
@@ -1185,13 +1273,23 @@ def _safe_artifact_id(rel_str: str, used: set[str]) -> str:
     return candidate
 
 
-def _infer_artifact_kind(rel_path: str) -> str:
-    """Infer a ``DeclaredArtifact.kind`` from the relative output path."""
-    lower = rel_path.lower()
-    if "thumbnail" in lower or lower.endswith(".jpg") or lower.endswith(".jpeg"):
-        return "thumbnail"
-    if lower.startswith("embedded/") or lower.startswith("embedded\\"):
+_DRAFT_TMP_NAME = ".metadata.json.draft.tmp"  # DraftSnapshotWriter.DRAFT_TMP_NAME
+
+
+def _infer_artifact_kind(rel_path: str, known_embedded: frozenset[str] = frozenset()) -> str:
+    """``DeclaredArtifact.kind`` from the file's ROLE in the rmeta layout, never its name.
+
+    ``rmeta/thumbnail.jpg`` is the root thumbnail; ``rmeta/embedded/thumbnails/*.jpg`` are entry
+    thumbnails; everything else under ``rmeta/embedded/`` is an embedded file -- including one
+    whose own name ends .jpg or .txt, and an archive member that really is called
+    ``thumbnails/x.jpg`` (*known_embedded*: the on-disk paths of the rmeta entries).
+    """
+    if rel_path in known_embedded:
         return "embedded_file"
-    if lower.endswith(".txt"):
-        return "text"
+    if rel_path == "rmeta/thumbnail.jpg":
+        return "thumbnail"
+    if rel_path.startswith("rmeta/embedded/thumbnails/") and rel_path.endswith(".jpg"):
+        return "thumbnail"
+    if rel_path.startswith("rmeta/embedded/"):
+        return "embedded_file"
     return "output"

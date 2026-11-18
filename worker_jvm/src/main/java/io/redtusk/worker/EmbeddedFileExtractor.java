@@ -29,7 +29,10 @@ import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.file.*;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -63,11 +66,39 @@ public final class EmbeddedFileExtractor {
     private final int maxDepth;
     private final int maxFiles;
     private final boolean enableThumbnails;
+    private final long maxFileBytes;
+    private final long budgetBytes;
+    /**
+     * Size-cap events of the last {@link #extract} (a file cut at {@link #maxFileBytes}, entries
+     * skipped past {@link #budgetBytes}). They used to reach only the worker log, so a capped
+     * result looked complete; Main merges these into the result's warnings.
+     */
+    private final List<ParseResult.WorkerWarning> warnings =
+            Collections.synchronizedList(new ArrayList<>());
 
     public EmbeddedFileExtractor(int maxDepth, int maxFiles, boolean enableThumbnails) {
+        this(maxDepth, maxFiles, enableThumbnails, MAX_FILE_BYTES, MAX_EXTRACTED_BUDGET_BYTES);
+    }
+
+    /** Test seam: the production caps are the 3-arg constructor's. */
+    EmbeddedFileExtractor(int maxDepth, int maxFiles, boolean enableThumbnails,
+                          long maxFileBytes, long budgetBytes) {
         this.maxDepth = maxDepth;
         this.maxFiles = maxFiles;
         this.enableThumbnails = enableThumbnails;
+        this.maxFileBytes = maxFileBytes;
+        this.budgetBytes = budgetBytes;
+    }
+
+    long maxFileBytes() { return maxFileBytes; }
+
+    long budgetBytes() { return budgetBytes; }
+
+    /** Warnings from the last {@link #extract} call (a copy). */
+    public List<ParseResult.WorkerWarning> warnings() {
+        synchronized (warnings) {
+            return List.copyOf(warnings);
+        }
     }
 
     static final int THUMB_MAX_PX  = 256;  // max dimension of thumbnail
@@ -84,6 +115,7 @@ public final class EmbeddedFileExtractor {
      */
     public Map<String, FileHashes> extract(File inputFile, Path outDir) {
         Map<String, FileHashes> hashes = new ConcurrentHashMap<>();
+        warnings.clear();
         if (!inputFile.exists() || inputFile.length() == 0) return hashes;
 
         Path embDir = outDir.resolve("embedded");
@@ -120,9 +152,11 @@ public final class EmbeddedFileExtractor {
 
         AtomicInteger fileCount = new AtomicInteger(0);
         AtomicLong extractedBytesTotal = new AtomicLong(0);
+        AtomicInteger budgetSkipped = new AtomicInteger(0);
         context.set(EmbeddedDocumentExtractor.class,
                 new SavingExtractor(parser, embDir, maxDepth, maxFiles, enableThumbnails,
-                        fileCount, extractedBytesTotal, hashes));
+                        fileCount, extractedBytesTotal, hashes,
+                        maxFileBytes, budgetBytes, budgetSkipped, warnings));
         context.set(Parser.class, parser);
         // OCR already ran in the first pass (ParserRunner). Skip it here to avoid
         // running Tesseract a second time on every file in the extraction pass.
@@ -148,6 +182,16 @@ public final class EmbeddedFileExtractor {
             LOG.warning("EmbeddedFileExtractor: parse error on "
                     + inputFile.getName() + ": " + e.getClass().getSimpleName()
                     + ": " + e.getMessage());
+        }
+        int skipped = budgetSkipped.get();
+        if (skipped > 0) {
+            // One warning per pass, not per entry: a bomb skips thousands.
+            warnings.add(new ParseResult.WorkerWarning(
+                    "extracted_bytes_budget",
+                    skipped + " embedded entr" + (skipped == 1 ? "y" : "ies")
+                            + " not written: the per-pass extracted-bytes budget of "
+                            + budgetBytes + " bytes was reached",
+                    null));
         }
         return hashes;
     }
@@ -528,11 +572,21 @@ public final class EmbeddedFileExtractor {
         /** Running total of bytes extracted in this pass; aborts past the budget. */
         private final AtomicLong extractedBytesTotal;
         private final Map<String, FileHashes> hashes;
+        private final long maxFileBytes;
+        private final long budgetBytes;
+        private final AtomicInteger budgetSkipped;
+        private final List<ParseResult.WorkerWarning> warnings;
 
         SavingExtractor(AutoDetectParser parser, Path root, int maxDepth,
                         int maxFiles, boolean enableThumbnails,
                         AtomicInteger fileCount, AtomicLong extractedBytesTotal,
-                        Map<String, FileHashes> hashes) {
+                        Map<String, FileHashes> hashes,
+                        long maxFileBytes, long budgetBytes, AtomicInteger budgetSkipped,
+                        List<ParseResult.WorkerWarning> warnings) {
+            this.maxFileBytes        = maxFileBytes;
+            this.budgetBytes         = budgetBytes;
+            this.budgetSkipped       = budgetSkipped;
+            this.warnings            = warnings;
             this.parser              = parser;
             this.root                = root;
             this.maxDepth            = maxDepth;
@@ -558,15 +612,20 @@ public final class EmbeddedFileExtractor {
             if (fileCount.get() >= maxFiles) return;
             // Aggregate extracted-bytes budget — abort further extraction once a
             // zip/embed bomb has already amplified past the cap.
-            if (extractedBytesTotal.get() >= MAX_EXTRACTED_BUDGET_BYTES) {
+            if (extractedBytesTotal.get() >= budgetBytes) {
                 LOG.warning("EmbeddedFileExtractor: extracted-bytes budget exceeded ("
-                        + extractedBytesTotal.get() + " >= " + MAX_EXTRACTED_BUDGET_BYTES
+                        + extractedBytesTotal.get() + " >= " + budgetBytes
                         + "); skipping remaining embedded entries");
+                budgetSkipped.incrementAndGet();
                 return;
             }
 
             // Buffer bytes with size cap
-            byte[] bytes = stream.readNBytes((int) Math.min(MAX_FILE_BYTES, Integer.MAX_VALUE));
+            int cap = (int) Math.min(maxFileBytes, Integer.MAX_VALUE);
+            byte[] bytes = stream.readNBytes(cap);
+            // A full buffer is ambiguous (exactly cap bytes, or more): probe one byte so only a
+            // real cut is reported.
+            boolean cut = bytes.length == cap && stream.read() != -1;
             if (bytes.length == 0) {
                 String embPath0 = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
                 String hashKey0;
@@ -597,10 +656,11 @@ public final class EmbeddedFileExtractor {
             // can't see this entry's length; without this check a single entry
             // could push extractedBytesTotal past MAX_EXTRACTED_BUDGET_BYTES
             // (bounded by MAX_FILE_BYTES, but still an overshoot of the cap).
-            if (extractedBytesTotal.get() + bytes.length > MAX_EXTRACTED_BUDGET_BYTES) {
+            if (extractedBytesTotal.get() + bytes.length > budgetBytes) {
                 LOG.warning("EmbeddedFileExtractor: extracted-bytes budget would be exceeded ("
                         + extractedBytesTotal.get() + " + " + bytes.length + " > "
-                        + MAX_EXTRACTED_BUDGET_BYTES + "); skipping entry");
+                        + budgetBytes + "); skipping entry");
+                budgetSkipped.incrementAndGet();
                 return;
             }
 
@@ -611,6 +671,15 @@ public final class EmbeddedFileExtractor {
                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
                 fileCount.incrementAndGet();
                 extractedBytesTotal.addAndGet(bytes.length);
+                if (cut) {
+                    String where = embPath != null && !embPath.isEmpty() ? embPath
+                            : "/" + root.relativize(outFile).toString().replace(File.separatorChar, '/');
+                    warnings.add(new ParseResult.WorkerWarning(
+                            "embedded_file_truncated",
+                            "embedded file truncated to the " + cap + "-byte per-file cap; "
+                                    + "hashes and size describe the truncated bytes",
+                            where));
+                }
             } catch (IOException e) {
                 LOG.warning("EmbeddedFileExtractor: write failed " + outFile + ": " + e.getMessage());
                 return;
@@ -670,7 +739,8 @@ public final class EmbeddedFileExtractor {
                 ParserRunner.hardenXmlParsing(nested);
                 nested.set(EmbeddedDocumentExtractor.class,
                         new SavingExtractor(parser, root, maxDepth, maxFiles, enableThumbnails,
-                                fileCount, extractedBytesTotal, hashes));
+                                fileCount, extractedBytesTotal, hashes,
+                                maxFileBytes, budgetBytes, budgetSkipped, warnings));
                 nested.set(Parser.class, parser);
                 TesseractOCRConfig noOcr = new TesseractOCRConfig();
                 noOcr.setSkipOcr(true);

@@ -23,11 +23,17 @@ statuses = ["ok", "engine_error"]
 
 # --- Declared artifacts ------------------------------------------------------------------------
 # Every file the JVM writes under <outdir>/rmeta/ is declared, except rmeta/metadata.json (its
-# content is embedded in the payload as redtusk_rmeta). The id is the path with every character
-# outside [A-Za-z0-9._-] mapped to "_" (so normally "rmeta_..."), but an over-long path keeps
-# only its tail plus a 16-hex hash and collisions get a "_N" suffix, so ids are matched with "*".
-# Kind comes from _infer_artifact_kind(path), which looks only at the file NAME: any path with
-# "thumbnail" in it or ending .jpg/.jpeg is "thumbnail", else ".txt" is "text", else "output".
+# content is embedded in the payload as redtusk_rmeta) and the draft-snapshot temp
+# rmeta/.metadata.json.draft.tmp (a superseded partial copy, never evidence). A cold fallback
+# after a failed CRaC/warm attempt starts from an emptied rmeta/, so nothing the failed attempt
+# wrote is declared. The id is the path with every character outside [A-Za-z0-9._-] mapped to
+# "_" (so normally "rmeta_..."), but an over-long path keeps only its tail plus a 16-hex hash and
+# collisions get a "_N" suffix, so ids are matched with "*".
+# Kind comes from _infer_artifact_kind(path, entries): the file's ROLE in the layout, never its
+# name. rmeta/thumbnail.jpg and rmeta/embedded/thumbnails/*.jpg are "thumbnail"; everything else
+# under rmeta/embedded/ is "embedded_file", including an entry whose own path is under
+# thumbnails/ (the rmeta entries disambiguate). On a gVisor C/R-restored worker with a stale
+# directory view the same set, thumbnails included, is rebuilt from the rmeta entries.
 # fnmatch "*" crosses "/", and families are matched in order, so the specific ones come first.
 
 [[artifacts]]
@@ -49,37 +55,11 @@ description = "Thumbnail of the submitted file itself, only when the root conten
 [[artifacts]]
 id = "*"
 path = "rmeta/embedded/*"
-kind = "output"
+kind = "embedded_file"
 max_count = 10000
 max_bytes = 52428800
 role = "embedded_file"
-description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at a sanitized path mirroring the entry path. Read capped at 50 MiB per file, 256 MiB per pass."
-
-[[artifacts]]
-id = "*"
-path = "rmeta/embedded/*"
-kind = "thumbnail"
-max_count = 10000
-max_bytes = 52428800
-role = "embedded_file"
-description = "An embedded resource whose NAME ends .jpg/.jpeg or contains 'thumbnail' (gap kind-from-filename): the raw embedded bytes, not a thumbnail."
-
-[[artifacts]]
-id = "*"
-path = "rmeta/embedded/*"
-kind = "text"
-max_count = 10000
-max_bytes = 52428800
-role = "embedded_file"
-description = "An embedded resource whose name ends .txt (gap kind-from-filename): the raw embedded bytes."
-
-[[artifacts]]
-id = "*"
-path = "rmeta/.metadata.json.draft.tmp"
-kind = "output"
-max_count = 1
-role = "draft_leftover"
-description = "In-flight draft-snapshot temp file left by a warm or CRaC JVM that died mid-write, when the engine then re-runs the job cold into the same rmeta/ dir (gap fallback-reuses-rmeta-dir)."
+description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at a sanitized path mirroring the entry path. Read capped at 50 MiB per file (warning embedded_file_truncated) and 256 MiB per pass (warning extracted_bytes_budget)."
 
 # --- Payload -----------------------------------------------------------------------------------
 
@@ -89,6 +69,12 @@ description = "In-flight draft-snapshot temp file left by a warm or CRaC JVM tha
 # Per-entry scalars (sha256, md5, sha1, size_bytes, language, error, phash, colorhash) and the
 # Tika metadata keys live in EmbeddedResource.metadata (a Record, not a child node). The root's
 # metadata also carries redtusk_rmeta, the full rmeta document as a JSON string.
+# Engine-derived per-entry evidence is on every node's metadata under a "redtusk:" namespace,
+# applied after the Tika keys so a document cannot spoof it: redtusk:parent_path,
+# redtusk:has_thumbnail, redtusk:thumbnail_skipped, redtusk:qr (Record of parallel lists data /
+# format / position / raw_bytes plus skipped; only when there are codes or a skip reason) and
+# redtusk:ocr (Record text / language / duration_ms / skipped; only when non-empty). A truncated
+# result also carries redtusk:truncated (Record reason / limit / observed) on the root.
 root = "embedded_resource"
 node_types = ["embedded_resource", "extracted_text"]
 # Checked on the root EmbeddedResource's metadata Record (ok results only). size_bytes: the rmeta
@@ -108,14 +94,38 @@ required_root_fields = ["size_bytes", "redtusk_rmeta"]
 [[detections]]
 code = "truncated"
 severity = "medium"
-source = "envelope warnings[] code=truncated (from rmeta.truncated; reason/limit/observed only inside the message text)"
+source = "envelope warnings[] code=truncated (context = reason); structured reason/limit/observed on root EmbeddedResource.metadata.fields['redtusk:truncated']"
 description = "Extraction stopped at max_embedded_entries / max_recursion_depth / max_extracted_bytes; the tree is incomplete."
 
 [[detections]]
 code = "partial_extraction"
 severity = "medium"
-source = "envelope warnings[] code=partial_extraction; root EmbeddedResource.metadata.fields.error carries the parser exception"
+source = "envelope warnings[] code=partial_extraction (context = entry path); root EmbeddedResource.metadata.fields.error carries the parser exception"
 description = "The parser crashed mid-document; the entries emitted before the crash were salvaged."
+
+[[detections]]
+code = "embedded_file_truncated"
+severity = "low"
+source = "envelope warnings[] code=embedded_file_truncated (context = entry path)"
+description = "An embedded file was cut at the 50 MiB per-file cap; its declared bytes, hashes and size describe the truncated prefix."
+
+[[detections]]
+code = "extracted_bytes_budget"
+severity = "medium"
+source = "envelope warnings[] code=extracted_bytes_budget (one per result; count in the message)"
+description = "Pass 2 stopped writing embedded files once the 256 MiB per-pass budget was spent; those entries are in the tree but have no declared file."
+
+[[detections]]
+code = "metadata_keys_capped"
+severity = "info"
+source = "envelope warnings[] code=metadata_keys_capped (context = entry path)"
+description = "An entry carried more than 4000 Tika metadata keys; the typed tree has the first 4000, redtusk_rmeta has all."
+
+[[detections]]
+code = "rmeta_embed_failed"
+severity = "low"
+source = "envelope warnings[] code=rmeta_embed_failed"
+description = "The rmeta document could not be serialized, so redtusk_rmeta is the empty string (the typed tree is unaffected)."
 
 [[detections]]
 code = "rtf:templateUrl"
@@ -180,72 +190,50 @@ description = "XLM macro sheets present in an OOXML / XLSB workbook."
 [[detections]]
 code = "qr_code"
 severity = "info"
-source = "ONLY inside payload root metadata.fields.redtusk_rmeta (JSON string): extraction.entries[].qr.codes[].data"
-description = "Decoded QR / barcode payload (commonly a phishing URL). Not in the typed tree (gap qr-only-in-rmeta-string)."
+source = "any EmbeddedResource.metadata.fields['redtusk:qr'].fields.data[] (format[] parallel)"
+description = "Decoded QR / barcode payload (commonly a phishing URL)."
 
 # --- Gaps --------------------------------------------------------------------------------------
-
-[[gaps]]
-id = "qr-only-in-rmeta-string"
-description = "QR decodes, OCR results, parent_path, has_thumbnail/thumbnail_skipped and text_wsnorm are dropped by _build_tree; they exist only inside the redtusk_rmeta JSON string, so a consumer walking the typed tree never sees them."
+# What remains is either a decision for the owner (each says why) or Loadout-consumer-side.
 
 [[gaps]]
 id = "contract-cannot-require-rmeta-field"
-description = "redtusk_rmeta is required (checked on the root's metadata fields), but its value is unchecked: a JSON string with no schema version, and it is \"\" (with warning rmeta_embed_failed) if json.dumps raises TypeError/ValueError. That fallback is unreachable today (the input is json.loads output, so no cycles or non-str keys; default=str; allow_nan stays True) but is enforced in code and tested, so a consumer must treat \"\" as absent rather than parse it. A RecursionError propagates as engine_error, never an ok result. Other root fields (sha256 may be null, Tika keys vary by format) cannot be required."
+description = "redtusk_rmeta is required (checked on the root's metadata fields), but its value is unchecked: a JSON string with no schema version, and it is \"\" (with warning rmeta_embed_failed) if json.dumps raises TypeError/ValueError. That fallback is unreachable today (the input is json.loads output, so no cycles or non-str keys; default=str; allow_nan stays True) but is enforced in code and tested, so a consumer must treat \"\" as absent rather than parse it. A RecursionError propagates as engine_error, never an ok result. Other root fields (sha256 may be null, Tika keys vary by format) cannot be required. Left: versioning the rmeta document is an owner decision (it is also the UI's and the /rmeta route's format)."
 
 [[gaps]]
 id = "exploitclass-free-text"
-description = "ExploitClass is a single free-text string (e.g. 'Decoded N Unicode-art QR code(s) ...'); a later setter overwrites an earlier one, and there is no stable sub-code a consumer can key severity on."
+description = "ExploitClass is a single free-text string (e.g. 'Decoded N Unicode-art QR code(s) ...'); a later setter overwrites an earlier one, and there is no stable sub-code a consumer can key severity on. Left: it is set by the Tika fork (wmetcalf/tika), not this repo, and needs an owner-chosen code namespace there."
 
 [[gaps]]
 id = "detections-are-metadata-keys"
-description = "Every finding except the two warnings is a Tika metadata key mixed in with thousands of ordinary keys on EmbeddedResource.metadata; there is no findings list, severity or code namespace, and the RTF keys are emitted only for the root entry."
-
-[[gaps]]
-id = "kind-from-filename"
-description = "_infer_artifact_kind sees the 'rmeta/...' path, so its embedded/ branch is dead and kind 'embedded_file' is never emitted; embedded files get 'output', or 'thumbnail' / 'text' purely from their name (an embedded photo.jpg is declared kind thumbnail). Role must be read from the path prefix, not the kind."
-
-[[gaps]]
-id = "cr-tier-drops-thumbnails"
-description = "On a gVisor C/R-restored worker with a stale directory view, the declaration is rebuilt from rmeta entries and covers only embedded/<entry> files: embedded thumbnails and rmeta/thumbnail.jpg are not declared there."
-
-[[gaps]]
-id = "fallback-reuses-rmeta-dir"
-description = "A failed CRaC or warm attempt falls back to a cold JVM writing into the SAME rmeta/ dir without clearing it, so partial files from the failed attempt (embedded files, a draft temp) are declared alongside the cold result."
-
-[[gaps]]
-id = "silent-size-caps"
-description = "An embedded file over 50 MiB is truncated to 50 MiB, entries past the 256 MiB per-pass byte budget are skipped, and Record metadata past 4000 keys is dropped, all with no warning in the result (worker log only)."
-
-[[gaps]]
-id = "truncated-warning-unstructured"
-description = "The truncated warning carries reason/limit/observed only as text in its message; the structured rmeta.truncated object survives only inside the redtusk_rmeta string."
+description = "Every finding except the warnings is a Tika metadata key mixed in with thousands of ordinary keys on EmbeddedResource.metadata; there is no findings list, severity or code namespace, and the RTF keys are emitted only for the root entry. Left: a findings channel (shape, severities, who assigns them) is an owner design decision; this contract's [[detections]] is the interim map."
 
 [[gaps]]
 id = "detected-is-root-mime"
-description = "detected is the root content type with confidence 1.0 on every result; it is identification, not a verdict, and says nothing about the findings."
+description = "detected is the root content type with confidence 1.0 on every result; it is identification, not a verdict, and says nothing about the findings. Left: that is blastbox's meaning of Detection (file identification); turning it into a verdict is an owner/blastbox decision, not an engine defect."
 
 [[gaps]]
 id = "local-main-diverges"
-description = "This contract is written against origin/main (3414567). Local unpushed commits (fix/rar5-worker-extraction lineage, e48433b) add payload.metadata.fields.embedded_paths and archive ancestry; those are not described here."
+description = "This contract is written against origin/main (3414567). Local unpushed commits (fix/rar5-worker-extraction lineage, e48433b) add payload.metadata.fields.embedded_paths and archive ancestry; those are not described here. Left: landing that lineage is the owner's call."
 
 # Loadout-side mismatches (consumer = backend/loadout/engines.py in loadout_handoff_package).
+# Left here for the Loadout side to close; nothing in this engine causes them.
 
 [[gaps]]
 id = "loadout-embedded-paths-absent"
-description = "redtusk_map_outputs reads payload.metadata.fields.embedded_paths to map entries to declared files; this engine never emits it, so the mapper always falls back to rmeta/embedded/<path> and unique-sha256 correlation, which misses lossy-sanitized names."
+description = "redtusk_map_outputs reads payload.metadata.fields.embedded_paths to map entries to declared files; this engine never emits it (the unpushed rar5 lineage adds it, see local-main-diverges), so the mapper always falls back to rmeta/embedded/<path> and unique-sha256 correlation, which misses lossy-sanitized names."
 
 [[gaps]]
 id = "loadout-envelope-drops-findings"
-description = "With an envelope Loadout sets dets=[] for redtusk and never reads ExploitClass, rtf:*, msoffice:* or the partial_extraction warning; extraction_evidence only marks coverage incomplete on 'truncated' and fields.error. redtusk_status_to_detections reads the legacy result.extraction shape and only runs without an envelope."
+description = "With an envelope Loadout sets dets=[] for redtusk and never reads ExploitClass, rtf:*, msoffice:*, redtusk:qr or the warnings (partial_extraction, embedded_file_truncated, extracted_bytes_budget, metadata_keys_capped); extraction_evidence only marks coverage incomplete on 'truncated' and fields.error. redtusk_status_to_detections reads the legacy result.extraction shape and only runs without an envelope."
 
 [[gaps]]
 id = "loadout-ignores-rmeta-and-qr"
-description = "Loadout never parses redtusk_rmeta, so QR-decoded URLs, OCR text and parent_path are lost; URLs are only regex-scraped from ExtractedText. The manifest also does not list qr_code in emits."
+description = "Loadout never reads redtusk:qr / redtusk:ocr / redtusk:parent_path (now on every node) nor parses redtusk_rmeta, so QR-decoded URLs and OCR text are lost; URLs are only regex-scraped from ExtractedText. The manifest also does not list qr_code in emits."
 
 [[gaps]]
 id = "loadout-thumbnails-as-resources"
-description = "redtusk_map_outputs keys only on the rmeta/embedded/ path prefix (never on kind): embedded thumbnails are ingested as tika_resource file artifacts with embedded_path '/thumbnails/...', and rmeta/thumbnail.jpg is ingested as a plain file artifact."
+description = "redtusk_map_outputs keys only on the rmeta/embedded/ path prefix (never on kind, which now says thumbnail vs embedded_file): embedded thumbnails are ingested as tika_resource file artifacts with embedded_path '/thumbnails/...', and rmeta/thumbnail.jpg is ingested as a plain file artifact."
 
 [[gaps]]
 id = "loadout-caps-below-engine"

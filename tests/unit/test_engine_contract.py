@@ -39,7 +39,7 @@ def test_contract_names_this_engine() -> None:
 
 
 def test_contract_kinds_are_ones_the_engine_can_declare() -> None:
-    # _infer_artifact_kind sees "rmeta/..." paths, so these are the only kinds it returns.
+    # _infer_artifact_kind sees "rmeta/..." paths and keys on the layout role.
     reachable = {_infer_artifact_kind(p) for p in (
         "rmeta/embedded/a.bin", "rmeta/embedded/a.jpg", "rmeta/embedded/a.txt",
         "rmeta/thumbnail.jpg", "rmeta/embedded/thumbnails/a.png.jpg")}
@@ -73,8 +73,8 @@ def test_sealed_envelope_conforms(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     # The families the contract documents, as the engine really declares them.
     assert kinds["rmeta/thumbnail.jpg"] == "thumbnail"
     assert kinds["rmeta/embedded/thumbnails/image3.jpeg.jpg"] == "thumbnail"
-    assert kinds["rmeta/embedded/image3.jpeg"] == "thumbnail"  # gap kind-from-filename
-    assert kinds["rmeta/embedded/notes.txt"] == "text"
+    assert kinds["rmeta/embedded/image3.jpeg"] == "embedded_file"  # role, not the .jpeg name
+    assert kinds["rmeta/embedded/notes.txt"] == "embedded_file"
 
 
 def test_contract_rejects_an_undeclared_family(tmp_path: Path,
