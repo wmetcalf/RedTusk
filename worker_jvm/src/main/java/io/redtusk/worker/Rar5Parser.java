@@ -214,8 +214,10 @@ final class Rar5Parser implements Parser {
                 return true;
             });
         if (run.value() && run.drained() && run.exit() == 0) return members.size();
-        if (next[0] >= members.size())
-            throw new TikaException("RAR5 decoder wrote more than its member listing describes");
+        if (next[0] >= members.size()) {
+            if (!run.drained()) throw new TikaException("RAR5 decoder wrote more than its member listing describes");
+            throw new TikaException("RAR5 decoder refused archive: " + run.errors());
+        }
         return next[0];
     }
 
