@@ -22,6 +22,7 @@ import pytest
 from blastbox.limits import Limits
 
 from redtusk.engine import RedTuskEngine, _env_param_overrides
+from tests.engine_contract import conform
 
 
 def _entry(path: str, parent: str | None, depth: int, ct: str, sha: str,
@@ -83,7 +84,9 @@ def _detonate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    return RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
+    res = RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
+    conform(res, out)
+    return res
 
 
 def test_detonate_embeds_rmeta_and_drops_metadata_json(tmp_path: Path,
@@ -297,6 +300,7 @@ def test_detonate_clips_huge_truncated_warning(tmp_path: Path,
     out.mkdir()
     # must NOT raise
     res = RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
+    conform(res, out)
     tw = [w for w in res.warnings if w.code == "truncated"]
     assert tw and len(tw[0].message) <= 2000
 
@@ -329,6 +333,7 @@ def test_detonate_clips_unbounded_rmeta_strings(tmp_path: Path,
     out.mkdir()
     # must NOT raise
     res = RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
+    conform(res, out)
     assert len(res.detected.mime) <= 255
 
 
@@ -352,7 +357,7 @@ def test_detonate_bounds_record_key_count(tmp_path: Path, monkeypatch: pytest.Mo
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))  # must NOT raise
+    conform(RedTuskEngine().detonate(inp, out, Limits(timeout_s=10)), out)  # must NOT raise
 
 
 def test_detonate_clamps_out_of_range_entry_depth(tmp_path: Path,
@@ -377,4 +382,4 @@ def test_detonate_clamps_out_of_range_entry_depth(tmp_path: Path,
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))  # must NOT raise
+    conform(RedTuskEngine().detonate(inp, out, Limits(timeout_s=10)), out)  # must NOT raise

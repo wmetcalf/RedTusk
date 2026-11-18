@@ -787,6 +787,26 @@ pytest tests/integration -m integration
 
 ---
 
+## Engine contract
+
+[`blastbox-engine.toml`](blastbox-engine.toml) states what the `redtusk` blastbox engine emits
+today: its statuses, every declared artifact family under `rmeta/`, the payload tree
+(`embedded_resource` root, `extracted_text` children), the findings a consumer is expected to
+turn into detections, Loadout's mapper, and the gaps where the output cannot be mapped cleanly.
+It describes current behaviour, not intended behaviour. Change it in the same commit as any
+engine change that alters the output.
+
+```sh
+python -m blastbox.contract.engine_contract validate blastbox-engine.toml
+python -m blastbox.contract.engine_contract check blastbox-engine.toml <envelope metadata.json>
+```
+
+The tests check every result they already produce against it (`tests/engine_contract.py`), and
+`tests/unit/test_engine_contract.py` validates the file. The checker ships in a blastbox newer
+than the pinned release, so on the pinned blastbox those checks are skipped.
+
+---
+
 ## Project layout
 
 ```

@@ -31,6 +31,7 @@ from blastbox.limits import Limits
 from blastbox.worker.harness import run_detonation
 
 from redtusk.engine import _DEFAULT_WORKER_JAR, RedTuskEngine, _build_tree
+from tests.engine_contract import conform
 
 pytestmark = pytest.mark.integration
 
@@ -41,6 +42,13 @@ pytestmark = pytest.mark.integration
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _run_detonation(engine: Any, *, input_path: Path, output_dir: Path, limits: Limits) -> int:
+    """The harness, plus a contract check of the envelope it sealed."""
+    rc = run_detonation(engine, input_path=input_path, output_dir=output_dir, limits=limits)
+    conform(json.loads((output_dir / "metadata.json").read_text()))
+    return rc
 
 
 def _worker_jar() -> str:
@@ -98,7 +106,7 @@ def test_run_detonation_exits_zero(simple_txt: Path, tmp_path: Path) -> None:
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
 
-    rc = run_detonation(
+    rc = _run_detonation(
         cast(Any, engine),
         input_path=simple_txt,
         output_dir=outdir,
@@ -120,7 +128,7 @@ def test_validate_worker_output_accepts_ok(simple_txt: Path, tmp_path: Path) -> 
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
-    rc = run_detonation(
+    rc = _run_detonation(
         cast(Any, engine),
         input_path=simple_txt,
         output_dir=outdir,
@@ -146,7 +154,7 @@ def test_validate_worker_output_finds_embedded_resource(simple_txt: Path, tmp_pa
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
-    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
+    _run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
     env = validate_worker_output(
         output_dir=outdir,
         input_sha256=input_sha256,
@@ -170,7 +178,7 @@ def test_validate_worker_output_finds_extracted_text(simple_txt: Path, tmp_path:
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
-    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
+    _run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
     env = validate_worker_output(
         output_dir=outdir,
         input_sha256=input_sha256,
@@ -192,7 +200,7 @@ def test_validate_worker_output_rejects_wrong_sha(simple_txt: Path, tmp_path: Pa
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
 
-    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
+    _run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
 
     wrong_sha = "a" * 64
     with pytest.raises(OutputTrustError):
