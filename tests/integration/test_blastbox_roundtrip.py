@@ -437,6 +437,8 @@ def test_member_caps_and_thumbnail_namespace_reach_the_envelope(tmp_path: Path) 
     codes = [w["code"] for w in env["warnings"]]
     assert "embedded_file_truncated" in codes, codes
     kinds = {a["path"]: a["kind"] for a in env["artifacts"]}
-    evil = [p for p in kinds if "evil" in p]
-    assert evil and all(kinds[p] == "embedded_file" for p in evil), kinds
-    assert not any(p.startswith("rmeta/embedded/thumbnails/") for p in evil), evil
+    from redtusk.engine import _embedded_storage_relpath
+
+    evil = "rmeta/embedded/" + _embedded_storage_relpath("/thumbnails/evil.jpg")
+    assert kinds.get(evil) == "embedded_file", kinds
+    assert [p for p, k in kinds.items() if k == "thumbnail"] == [], kinds

@@ -302,7 +302,7 @@ public final class Main {
             job.limits().maxRecursionDepth(),
             job.limits().maxEmbeddedEntries(),
             job.enableThumbnails()
-        );
+        ).useJobLimits(job.limits());
         var fileHashes = pass2.extract(inputFile, outDir.toPath());
         // Pass 2's size-cap events (file cut at the per-file cap, entries skipped past the byte
         // budget) join the result's warnings instead of living only in the worker log.

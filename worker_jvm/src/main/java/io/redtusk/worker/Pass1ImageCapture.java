@@ -238,11 +238,10 @@ final class Pass1ImageCapture implements EmbeddedDocumentExtractor {
             int semi = ct.indexOf(';');
             if (semi >= 0) ct = ct.substring(0, semi).trim();
         }
-        // EmbeddedParserDecorator has now set EMBEDDED_RESOURCE_PATH to the
-        // final, parent-prefixed value (e.g. /VGP report.msg/image001.jpg).
-        // Key the buffer on that string so ParserRunner can match against
-        // the cloned Metadata in the metaList.
-        String embPath = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+        // The wrapper has assigned a hierarchical entry ID. Prefer that key:
+        // its basename paths collide for one/logo.png and two/logo.png. Both
+        // the ID and fallback path survive the handler's Metadata clone.
+        String embPath = ResourcePaths.captureKey(metadata);
         if (embPath == null || embPath.isEmpty()) {
             // Parser never tagged this entry — nothing for ParserRunner to look up.
             return;

@@ -325,6 +325,7 @@
     // engine auto-declares them as artifacts. The host serves artifacts by *id*, so
     // we resolve a thumbnail's relative PATH to its declared id via _curArtMap
     // (built from the envelope's artifacts[] when the detail view loads).
+    let _curEntryPaths = {};
     let _curArtMap = {};            // artifact path → id, for the job being rendered
 
     function _artUrl(jobId, path) {
@@ -339,6 +340,10 @@
 
     function _entryThumbPath(entryPath) {
       if (!entryPath || entryPath === '/') return 'rmeta/thumbnail.jpg';
+      const stored = _curEntryPaths[entryPath];
+      if (typeof stored === 'string' && stored.startsWith('rmeta/embedded/')) {
+        return 'rmeta/embedded/thumbnails/' + stored.slice('rmeta/embedded/'.length) + '.jpg';
+      }
       const rel = entryPath.startsWith('/') ? entryPath.slice(1) : entryPath;
       return 'rmeta/embedded/thumbnails/' + rel + '.jpg';
     }
@@ -969,7 +974,7 @@
           return;
         }
         const job = normalizeJob(await r.json());
-        _curArtMap = {};
+        _curArtMap = {}; _curEntryPaths = {};
         if (job.state === 'succeeded') {
           // Prefer the sealed envelope: it carries the embedded rmeta document
           // (redtusk_rmeta) — exactly the {extraction,input,sandbox,…} shape
@@ -983,6 +988,10 @@
                 if (a && a.path && a.id) _curArtMap[a.path] = a.id;
               }
               const fields = (((env.payload || {}).metadata) || {}).fields || {};
+              if (typeof fields.embedded_paths === 'string') {
+                try { _curEntryPaths = JSON.parse(fields.embedded_paths); } catch { _curEntryPaths = {}; }
+                if (!_curEntryPaths || typeof _curEntryPaths !== 'object') _curEntryPaths = {};
+              }
               const rj = fields.redtusk_rmeta;
               if (typeof rj === 'string' && rj) {
                 try { job.result = JSON.parse(rj); } catch { job.result = null; }

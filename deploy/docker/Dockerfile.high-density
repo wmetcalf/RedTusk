@@ -48,7 +48,12 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # (wmetcalf/tika #7) + audit-hardening PRs (#8/#9/#10) + inventory regen (#11)
 # + the OCR downscale fix (#48) merged. Validated end-to-end through the RedTusk
 # worker; inventory CI green on the branch.
-ARG TIKA_FORK_SHA=1ed7b37d11c4363fdf92f62a38947918803522ed
+# Bumped 2026-11-18 to 99deda72bb: 1ed7b37 + "fix(archives): retain caller context for embedded
+# extractors" (wmetcalf/tika fix/archive-caller-context-on-pin). Replaces the git-apply'd
+# tika-archive-extractor-context.patch, which the pin gate rightly rejects. Until that branch is
+# merged into 4.0-upstream-office-links, the commit is reachable only through it (the clone below
+# fetches all heads, so the checkout works either way).
+ARG TIKA_FORK_SHA=99deda72bb09abd9998b900a0178fa685ebbf182
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
@@ -107,8 +112,16 @@ FROM azul/zulu-openjdk:25 AS checkpoint
 
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-        criu tesseract-ocr tesseract-ocr-eng libheif-examples \
+        criu tesseract-ocr tesseract-ocr-eng libheif-examples libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
+
+# Keep Java visible under Blastbox warm workers restricted PATH.
+RUN if [ ! -x /usr/local/bin/java ]; then ln -s "$(command -v java)" /usr/local/bin/java; fi
+
+# Pinned modern RAR decoder; no archive-controlled filesystem extraction.
+ADD --checksum=sha256:22cf82fcc6eb7474f1d5bb4f02c0f8ebd573a718089d6833dc30f8350a3b232e https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz /tmp/7zip.tar.xz
+RUN bsdtar -xOf /tmp/7zip.tar.xz 7zzs > /usr/local/bin/7zz \
+    && chmod 755 /usr/local/bin/7zz && rm /tmp/7zip.tar.xz
 
 # Install ZXingReader binary and the Type→Format adapter wrapper
 RUN --mount=type=bind,from=zxing-build,source=/build/zxing,target=/zxing-build \
@@ -161,10 +174,18 @@ FROM azul/zulu-openjdk:25-jre AS runtime
 
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-        criu tesseract-ocr tesseract-ocr-eng libheif-examples \
+        criu tesseract-ocr tesseract-ocr-eng libheif-examples libarchive-tools \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 10001 redtusk \
     && useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk
+
+# Keep Java visible under Blastbox warm workers restricted PATH.
+RUN if [ ! -x /usr/local/bin/java ]; then ln -s "$(command -v java)" /usr/local/bin/java; fi
+
+# Pinned modern RAR decoder; no archive-controlled filesystem extraction.
+ADD --checksum=sha256:22cf82fcc6eb7474f1d5bb4f02c0f8ebd573a718089d6833dc30f8350a3b232e https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz /tmp/7zip.tar.xz
+RUN bsdtar -xOf /tmp/7zip.tar.xz 7zzs > /usr/local/bin/7zz \
+    && chmod 755 /usr/local/bin/7zz && rm /tmp/7zip.tar.xz
 
 WORKDIR /opt/redtusk
 COPY --from=checkpoint /opt/redtusk/ ./

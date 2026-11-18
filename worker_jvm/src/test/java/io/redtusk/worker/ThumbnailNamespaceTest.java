@@ -53,44 +53,45 @@ class ThumbnailNamespaceTest {
         Path out = tmp.resolve("out");
         new EmbeddedFileExtractor(10, 100, true).extract(in, out);
 
-        Path thumbs = out.resolve("embedded/thumbnails");
+        Path embedded = out.resolve("embedded");
+        Path thumbs = embedded.resolve("thumbnails");
         List<String> inThumbs;
         try (Stream<Path> s = Files.walk(thumbs)) {
             inThumbs = s.filter(Files::isRegularFile).map(p -> thumbs.relativize(p).toString()).toList();
         }
-        assertEquals(List.of("pic.png.jpg"), inThumbs);
-        assertFalse(java.util.Arrays.equals(mz, Files.readAllBytes(thumbs.resolve("pic.png.jpg"))));
+        Path picFile = EmbeddedFileExtractor.resolveOutFile(
+                embedded, "/pic.png", new org.apache.tika.metadata.Metadata());
+        assertEquals(List.of(embedded.relativize(picFile) + ".jpg"), inThumbs);
+        assertFalse(java.util.Arrays.equals(mz, Files.readAllBytes(thumbs.resolve(inThumbs.get(0)))));
 
         Path payload = EmbeddedFileExtractor.resolveOutFile(
                 out.resolve("embedded"), "/thumbnails/pic.png.jpg", new org.apache.tika.metadata.Metadata());
         assertNotNull(payload);
-        assertTrue(out.resolve("embedded").relativize(payload).toString().startsWith("thumbnails_/"),
+        assertTrue(out.resolve("embedded").relativize(payload).toString().startsWith("objects/"),
                 payload.toString());
         assertArrayEquals(mz, Files.readAllBytes(payload));
     }
 
     @Test
     void goldenPathsMatchThePythonMirror(@TempDir Path tmp) {
-        // Pinned on both sides (tests/unit/test_engine_gaps.py): the engine's stale-view
-        // rebuild derives these paths without listing the directory.
+        // Pinned on both sides (tests/unit/test_engine_gaps.py, _embedded_storage_relpath): the
+        // engine's stale-view rebuild derives these paths without listing the directory.
         Path root = tmp.resolve("embedded");
         var md = new org.apache.tika.metadata.Metadata();
-        assertEquals(root.resolve("thumbnails_/evil_33feaa5d1557bc9a.jpg"),
+        assertEquals(root.resolve(
+                "objects/33feaa5d1557bc9a620b2000117b736fd3ee79120dd0d258cae4639ec2f83e8f/content"),
                 EmbeddedFileExtractor.resolveOutFile(root, "/thumbnails/evil.jpg", md));
-        assertEquals(root.resolve("thumbnails_/pic_9edc501bb0b9b528.png"),
-                EmbeddedFileExtractor.resolveOutFile(root, "/thumbnails/pic.png", md));
-        assertEquals(root.resolve("thumbnails__abfbce806c67c03d"),
-                EmbeddedFileExtractor.resolveOutFile(root, "/thumbnails", md));
     }
 
     @Test
-    void onlyTheTopLevelComponentIsReserved(@TempDir Path tmp) {
+    void noEntryPathReachesTheThumbnailDir(@TempDir Path tmp) {
         Path root = tmp.resolve("embedded");
         var md = new org.apache.tika.metadata.Metadata();
-        assertEquals(root.resolve("a/thumbnails/x.jpg"),
-                EmbeddedFileExtractor.resolveOutFile(root, "/a/thumbnails/x.jpg", md));
-        Path file = EmbeddedFileExtractor.resolveOutFile(root, "/thumbnails", md);
-        assertNotNull(file);
-        assertNotEquals(root.resolve("thumbnails"), file);
+        for (String p : new String[]{"/thumbnails/x.jpg", "/thumbnails", "/a/thumbnails/x.jpg",
+                "/../thumbnails/x.jpg"}) {
+            Path f = EmbeddedFileExtractor.resolveOutFile(root, p, md);
+            assertNotNull(f, p);
+            assertTrue(root.relativize(f).toString().startsWith("objects/"), p + " -> " + f);
+        }
     }
 }

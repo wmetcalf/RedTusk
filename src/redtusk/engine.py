@@ -293,23 +293,11 @@ def _engine_entry_fields(e: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
-    """Reconstruct the recursive ``EmbeddedResource`` tree from a flat list.
+    """Reconstruct resource ancestry by path, independent of completion order.
 
-    The ``extraction.entries[]`` list is depth-ordered (parent always appears
-    before its children) and each entry carries a ``depth`` integer.  We use a
-    *depth-stack* to attach each entry as a child of the most-recent entry
-    whose depth is one less than the current entry's depth.
-
-    Algorithm:
-    - ``stack`` is a list of ``(depth, EmbeddedResource)`` pairs, representing
-      the "open" ancestry at any point.
-    - For each entry, pop entries from the stack whose depth >= current depth
-      (they are closed siblings or ancestors that are now fully processed).
-    - Attach the new node to the top of the stack (its parent).
-    - Push the new node.
-
-    Text: each entry with non-empty ``text`` gets an ``ExtractedText`` child
-    appended immediately after the ``EmbeddedResource`` is created.
+    Tika's recursive wrapper can emit children before their container. Paths and
+    parent_path, rather than adjacency, preserve that relationship. Invalid or
+    missing parents remain explicit evidence gaps attached to the root.
     """
     if not entries:
         # Synthesize a minimal root node when the worker produced nothing.
@@ -372,24 +360,22 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
     # Build all nodes first.
     nodes = [_make_node(e) for e in entries]
 
-    # Depth-stack tree assembly.
-    # stack: list of (node_depth, node) open ancestors
+    # Tika emits embedded-document completion in postorder: children can precede
+    # their parents. Resolve explicit resource paths after building all nodes.
     root = nodes[0]
-    if len(nodes) == 1:
-        return root
-
-    stack: list[tuple[int, EmbeddedResource]] = [(root.depth, root)]
-
-    for node in nodes[1:]:
-        # Pop until the top of the stack is the correct parent
-        # (depth == node.depth - 1), or we're back to root.
-        while len(stack) > 1 and stack[-1][0] >= node.depth:
-            stack.pop()
-        # Attach as child of the current stack top.
-        parent = stack[-1][1]
+    # Keyed by the FULL entry path: embedded_path is clipped to 4096, and two long paths that
+    # share a 4096-char prefix (a long-named container and its own child) would collide.
+    by_path = {str(e.get("path") or "/"): node for e, node in zip(entries, nodes, strict=True)}
+    for entry, node in zip(entries[1:], nodes[1:], strict=True):
+        parent_path = entry.get("parent_path")
+        if not isinstance(parent_path, str) or not parent_path:
+            parent_path = str(entry.get("path") or "/").rsplit("/", 1)[0] or "/"
+        parent = by_path.get(parent_path)
+        if parent is None or parent is node or parent.depth >= node.depth:
+            parent = root
+            if parent_path != root.embedded_path and node.metadata is not None:
+                node.metadata.fields["parent_resolution"] = "missing_or_invalid_parent"
         parent.children.append(node)
-        stack.append((node.depth, node))
-
     return root
 
 
@@ -1162,9 +1148,11 @@ class RedTuskEngine:
         # when a JVM is killed between write and rename); never evidence, never declared.
         rel_paths = [p for p in rel_paths
                      if p not in ("rmeta/metadata.json", "rmeta/" + _DRAFT_TMP_NAME)]
+        taken = _current_objects(entries)
         known_embedded = frozenset(
-            "rmeta/embedded/" + _embedded_disk_relpath(str(e.get("path") or ""))
+            "rmeta/embedded/" + rel
             for e in entries if str(e.get("path") or "").lstrip("/")
+            for rel in _legacy_layouts(str(e.get("path") or ""), taken)
         )
         artifacts: list[DeclaredArtifact] = []
         used_ids: set[str] = set()
@@ -1172,6 +1160,20 @@ class RedTuskEngine:
             artifact_id = _safe_artifact_id(rel_str, used_ids)
             kind = _infer_artifact_kind(rel_str, known_embedded)
             artifacts.append(DeclaredArtifact(id=artifact_id, path=rel_str, kind=kind))
+
+        if payload.metadata is not None:
+            declared_paths = set(rel_paths)
+            entry_paths: dict[str, str] = {}
+            for entry in entries:
+                ep = entry.get("path") or ""
+                if not ep.lstrip("/"):
+                    continue
+                for relative in _legacy_layouts(ep, taken):
+                    candidate = "rmeta/embedded/" + relative
+                    if candidate in declared_paths:
+                        entry_paths[ep] = candidate
+                        break
+            payload.metadata.fields["embedded_paths"] = json.dumps(entry_paths, ensure_ascii=False)
 
         # Map rmeta warnings
         warnings: list[Warning] = []
@@ -1230,13 +1232,34 @@ _EMBEDDED_NAME_DISALLOWED = re.compile(r"[^a-zA-Z0-9._+\- ]")
 
 
 def _sanitize_embedded_component(part: str) -> str:
-    """Sanitize ONE path component exactly like the JVM EmbeddedFileExtractor.resolveOutFile."""
+    """Sanitize a component using the historical JVM storage layout."""
     cleaned = _EMBEDDED_NAME_DISALLOWED.sub("_", part).strip()
     return cleaned if cleaned not in ("", ".", "..") else "_"
 
 
+def _legacy_layouts(entry_path: str, taken: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """Storage paths to try for an entry: the current object layout, then the sanitized-name
+    layout of earlier workers -- unless that legacy path is some entry's CURRENT object
+    (*taken*), which an entry named objects/<sha>/content would otherwise alias."""
+    legacy = _embedded_disk_relpath(entry_path)
+    current = _embedded_storage_relpath(entry_path)
+    return (current,) if legacy in taken else (current, legacy)
+
+
+def _current_objects(entries: list[dict[str, Any]]) -> frozenset[str]:
+    """Every entry's current-layout storage path (see _legacy_layouts)."""
+    return frozenset(_embedded_storage_relpath(str(e.get("path") or ""))
+                     for e in entries if str(e.get("path") or "").lstrip("/"))
+
+
+def _embedded_storage_relpath(entry_path: str) -> str:
+    """Current JVM layout: stable bounded paths independent of resource names."""
+    digest = hashlib.sha256(entry_path.lstrip("/").encode("utf-8")).hexdigest()
+    return f"objects/{digest}/content"
+
+
 def _embedded_disk_relpath(entry_path: str) -> str:
-    """Map an rmeta entry path (e.g. ``/sub/évil*.png``) to the embedded file's ON-DISK relative
+    """Read the historical sanitized-name layout. Map an rmeta entry path to its relative
     path under ``rmeta/embedded/`` — a FULL replication of the JVM EmbeddedFileExtractor's
     ``resolveOutFile`` + ``disambiguate``: each component is sanitized; if ANY component was altered
     (``lossy``) the FINAL component is suffixed with a 16-hex (64-bit) prefix of SHA-256(original
@@ -1274,6 +1297,7 @@ def _reconstruct_rmeta_artifact_paths(
     if (rmeta_dir / "metadata.json").is_file():
         paths.add("rmeta/metadata.json")
     emb_root = rmeta_dir / "embedded"
+    taken = _current_objects(entries)
     cands: list[Path] = []
     for e in entries:
         ep = e.get("path") or ""
@@ -1282,11 +1306,14 @@ def _reconstruct_rmeta_artifact_paths(
             if e.get("has_thumbnail"):
                 cands.append(rmeta_dir / "thumbnail.jpg")
             continue
-        disk = _embedded_disk_relpath(ep)
-        cands.append(emb_root / disk)
-        if e.get("has_thumbnail"):
-            # EmbeddedFileExtractor.writeThumbnail: embedded/thumbnails/<embedded rel>.jpg
-            cands.append(emb_root / "thumbnails" / (disk + ".jpg"))
+        # Current workers separate resource provenance from filesystem layout
+        # (objects/<sha256(path)>/content); earlier workers used sanitized names. Both are
+        # read, so a result from either worker is declared.
+        for rel in _legacy_layouts(ep, taken):
+            cands.append(emb_root / rel)
+            if e.get("has_thumbnail"):
+                # EmbeddedFileExtractor.writeThumbnail: embedded/thumbnails/<embedded rel>.jpg
+                cands.append(emb_root / "thumbnails" / (rel + ".jpg"))
     for cand in cands:
         try:
             if cand.is_file():
@@ -1330,10 +1357,11 @@ def _infer_artifact_kind(rel_path: str, known_embedded: frozenset[str] = frozens
     ``rmeta/thumbnail.jpg`` is the root thumbnail; ``rmeta/embedded/thumbnails/*.jpg`` are entry
     thumbnails; everything else under ``rmeta/embedded/`` is an embedded file -- including one
     whose own name ends .jpg or .txt. The worker never writes an embedded file under
-    ``embedded/thumbnails/``: an entry whose top-level name is ``thumbnails`` is saved as
-    ``thumbnails_/...`` (EmbeddedFileExtractor.resolveOutFile, mirrored by
-    _embedded_disk_relpath). *known_embedded* (the rmeta entries' on-disk paths) is a second
-    guard for the same thing.
+    ``embedded/thumbnails/``: current workers store every entry at
+    ``embedded/objects/<sha256(path)>/content`` (EmbeddedFileExtractor.resolveOutFile, mirrored
+    by _embedded_storage_relpath), and the previous sanitized-name layout saved a top-level
+    ``thumbnails`` entry as ``thumbnails_/...`` (_embedded_disk_relpath). *known_embedded* (the
+    rmeta entries' paths in both layouts) is a second guard for the same thing.
     """
     if rel_path in known_embedded:
         return "embedded_file"
