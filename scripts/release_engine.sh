@@ -6,7 +6,7 @@
 # This wires the existing pieces into that single path, with a gate at each end:
 #
 #   pre-gate   scripts/deploy_inventory.sh        -- know the current state before touching it
-#   1. test    mvn test                           -- fast feedback before a long image build
+#   1. test    worker_build.sh test               -- fast feedback before a long image build
 #   2. image   Dockerfile.localtika               -- builds the jar from source AND regenerates
 #                                                    the AOT cache from it (record -> create)
 #   3. audit   jar/AOT consistency in the image   -- the stale-AOT trap, caught before deploy
@@ -66,7 +66,8 @@ else
 fi
 
 step "1. test the engine before spending a long image build on it"
-run mvn -f "$REPO/worker_jvm/pom.xml" test \
+# In the pinned-Tika stage, never against the host ~/.m2 (worker_jvm/pom.xml refuses that).
+run "$REPO/scripts/worker_build.sh" test \
     || die "java tests failed — not building an image from this"
 run python3 -m pytest "$REPO/tests" -q --ignore="$REPO/tests/http" --ignore="$REPO/tests/docker" \
     || die "python tests failed — not building an image from this"

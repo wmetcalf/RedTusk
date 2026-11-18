@@ -775,8 +775,13 @@ docker build -f deploy/docker/Dockerfile.api -t redtusk-api:dev .
 # Pure unit + HTTP — no JVM, no Docker required
 pytest tests/unit tests/http
 
-# Java worker unit tests
-cd worker_jvm && mvn test
+# Java worker unit tests / the worker jar -- built inside the PINNED Tika stage, never against
+# your ~/.m2 (a plain `mvn` in worker_jvm/ refuses to run; see the enforcer note in its pom.xml)
+scripts/worker_build.sh test
+scripts/worker_build.sh package          # -> worker_jvm/target/redtusk-worker.jar
+
+# Live-JVM Python tests (tests/integration) use that jar; without it they skip
+REDTUSK_WORKER_JAR=$PWD/worker_jvm/target/redtusk-worker.jar PYTHONPATH=src pytest
 
 # Docker image tests — needs built images + Docker daemon
 pytest tests/docker -m docker
