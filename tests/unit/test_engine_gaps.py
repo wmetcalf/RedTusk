@@ -248,6 +248,11 @@ def test_an_entry_named_thumbnails_never_lands_in_the_thumbnail_dir() -> None:
         disk = _embedded_disk_relpath(entry)
         assert not disk.startswith("thumbnails/") and disk != "thumbnails", disk
         assert disk.startswith("thumbnails_"), disk
+    # Golden values from the JVM's EmbeddedFileExtractor.resolveOutFile (also pinned by
+    # ThumbnailNamespaceTest): the rename is lossy, so the final component carries the hash tag.
+    assert _embedded_disk_relpath("/thumbnails/evil.jpg") == "thumbnails_/evil_33feaa5d1557bc9a.jpg"
+    assert _embedded_disk_relpath("/thumbnails/pic.png") == "thumbnails_/pic_9edc501bb0b9b528.png"
+    assert _embedded_disk_relpath("/thumbnails") == "thumbnails__abfbce806c67c03d"
     # Deeper "thumbnails" components are ordinary directories.
     assert _embedded_disk_relpath("/a/thumbnails/x.jpg") == "a/thumbnails/x.jpg"
 
@@ -303,6 +308,8 @@ def test_fallback_runs_when_the_rmeta_dir_cannot_be_emptied(
         raise RuntimeError("restore failed mid-job")
 
     def stale_view_rmtree(path: Any, *a: Any, **k: Any) -> None:
+        if k.get("ignore_errors"):
+            return  # like the real one: errors swallowed, unseen files left behind
         raise OSError(39, "Directory not empty", str(path))
 
     seen: list[list[str]] = []
@@ -316,5 +323,6 @@ def test_fallback_runs_when_the_rmeta_dir_cannot_be_emptied(
     monkeypatch.setenv("REDTUSK_CRAC_CHECKPOINT", "/ckpt")
     RedTuskEngine()._produce_rmeta(Path("in"), rmeta_dir, 10.0)
     assert seen == [[]], f"cold fallback did not run on a clean rmeta dir: {seen}"
+    # The failed tree was moved out of rmeta/ (rmtree is patched to fail here, so it stays).
     (aside,) = [p for p in out.iterdir() if p.name.startswith(".rmeta.failed-")]
     assert (aside / "embedded" / "half-written.bin").is_file()

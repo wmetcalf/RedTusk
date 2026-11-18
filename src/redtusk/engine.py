@@ -393,6 +393,10 @@ def _reset_rmeta_dir(rmeta_dir: Path) -> None:
         logger.warning("redtusk: could not empty %s before cold fallback (%s); moving it to %s",
                        rmeta_dir, exc, aside.name)
         rmeta_dir.rename(aside)
+        # Best effort: drop whatever this view CAN see, so the aside tree does not count
+        # twice against the host's output-size cap. On a stale view some files remain;
+        # they are never declared.
+        shutil.rmtree(aside, ignore_errors=True)
 
 
 def _sha256_bytes(data: bytes) -> str:

@@ -70,6 +70,20 @@ class ThumbnailNamespaceTest {
     }
 
     @Test
+    void goldenPathsMatchThePythonMirror(@TempDir Path tmp) {
+        // Pinned on both sides (tests/unit/test_engine_gaps.py): the engine's stale-view
+        // rebuild derives these paths without listing the directory.
+        Path root = tmp.resolve("embedded");
+        var md = new org.apache.tika.metadata.Metadata();
+        assertEquals(root.resolve("thumbnails_/evil_33feaa5d1557bc9a.jpg"),
+                EmbeddedFileExtractor.resolveOutFile(root, "/thumbnails/evil.jpg", md));
+        assertEquals(root.resolve("thumbnails_/pic_9edc501bb0b9b528.png"),
+                EmbeddedFileExtractor.resolveOutFile(root, "/thumbnails/pic.png", md));
+        assertEquals(root.resolve("thumbnails__abfbce806c67c03d"),
+                EmbeddedFileExtractor.resolveOutFile(root, "/thumbnails", md));
+    }
+
+    @Test
     void onlyTheTopLevelComponentIsReserved(@TempDir Path tmp) {
         Path root = tmp.resolve("embedded");
         var md = new org.apache.tika.metadata.Metadata();
