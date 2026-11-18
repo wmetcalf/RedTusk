@@ -80,8 +80,17 @@ _WARM_STDERR_LOG = "warm-stderr.log"
 # failure path.
 _WARM_STDERR_TAIL_BYTES = 64 * 1024
 
+# CVE-2026-114938 ("Java4Shell"): heap overflow in HotSpot's AVX-512 VBMI Base64 decode
+# intrinsic (JDK 17.0.6+ .. 27). Hostile documents reach java.util.Base64 inside the worker,
+# so the intrinsic is OFF for every worker JVM. java.util.Base64 still works (pure-Java path);
+# only the assembly stub is disabled. It is part of the default bundle (so the AOT cache and
+# the warm FC/gVisor JVMs are booted with it) AND forced onto a REDTUSK_JAVA_OPTS override --
+# an operator flag bundle must not be able to silently re-enable the vulnerable stub.
+_BASE64_INTRINSICS_OFF = "-XX:-UseBASE64Intrinsics"
+
 _DEFAULT_JVM_FLAGS: tuple[str, ...] = (
     "-XX:+UseSerialGC",
+    _BASE64_INTRINSICS_OFF,
     "-XX:TieredStopAtLevel=1",
     "-Xms800m",
     "-Xmx800m",
@@ -325,6 +334,39 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _force_base64_intrinsics_off(flags: list[str]) -> list[str]:
+    """Drop any UseBASE64Intrinsics setting from *flags* and append the OFF flag last.
+
+    HotSpot honours the LAST occurrence of a flag, so appending alone would already win;
+    stripping the others keeps the argv unambiguous to a reader of ``ps``/logs.
+    """
+    kept = [f for f in flags if not f.startswith(("-XX:+UseBASE64Intrinsics",
+                                                  "-XX:-UseBASE64Intrinsics"))]
+    return [*kept, _BASE64_INTRINSICS_OFF]
+
+
+# Marker a CRaC checkpoint image carries when the JVM that baked it ran with the intrinsic
+# OFF (written by the image build after the checkpoint succeeds; the worker refuses to
+# checkpoint with the intrinsic on). A restore keeps the checkpointed JVM's flags, so a
+# checkpoint without it -- one baked before the mitigation -- is never restored.
+_CRAC_BASE64_OFF_MARKER = "redtusk-base64-intrinsics-off"
+
+
+def _jvm_env(env: dict[str, str]) -> dict[str, str]:
+    """Return *env* with any ``_JAVA_OPTIONS`` forced to end in the OFF flag.
+
+    HotSpot reads ``_JAVA_OPTIONS`` AFTER the command line, so an inherited
+    ``_JAVA_OPTIONS=-XX:+UseBASE64Intrinsics`` beats the argv's trailing OFF flag. Appending
+    the OFF flag to it restores "the last occurrence is OFF". ``JAVA_TOOL_OPTIONS`` and
+    ``JDK_JAVA_OPTIONS`` are read before the command line, so the argv already wins over them.
+    Used for JVMs that boot; NOT for a CRaC restore (see _crac_restore_worker).
+    """
+    java_options = env.get("_JAVA_OPTIONS")
+    if java_options is not None:
+        env["_JAVA_OPTIONS"] = f"{java_options} {_BASE64_INTRINSICS_OFF}".strip()
+    return env
+
+
 def _java_worker_argv(scratch: Path) -> list[str]:
     """Build the in-process JVM worker argv (``java ... -jar ... --run <scratch>``).
 
@@ -336,7 +378,9 @@ def _java_worker_argv(scratch: Path) -> list[str]:
     - ``REDTUSK_AOT_CACHE``         AOT cache; only added when the file exists
     - ``REDTUSK_JAVA_LIBRARY_PATH`` native lib dir (default ``/app``)
     - ``REDTUSK_JAVA_OPTS``         full JVM-flag override (shlex-split), replacing
-                                    the default flag bundle entirely
+                                    the default flag bundle -- except
+                                    ``-XX:-UseBASE64Intrinsics`` (CVE-2026-114938),
+                                    which is always forced on
     """
     java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
     jar = os.environ.get("REDTUSK_WORKER_JAR", _DEFAULT_WORKER_JAR)
@@ -345,7 +389,7 @@ def _java_worker_argv(scratch: Path) -> list[str]:
 
     opts_override = os.environ.get("REDTUSK_JAVA_OPTS")
     if opts_override is not None:
-        jvm_flags = shlex.split(opts_override)
+        jvm_flags = _force_base64_intrinsics_off(shlex.split(opts_override))
     else:
         jvm_flags = [f"-Djava.library.path={lib_path}", *_DEFAULT_JVM_FLAGS]
         # The AOT cache is flag-sensitive and baked into the cold-worker image;
@@ -460,6 +504,7 @@ def _run_worker(
             # something the operator setting it on a container would ever expect.
             "REDTUSK_PREWARM": "0",
         }
+        _jvm_env(env)
 
         logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
         # Set once the JVM has exited: nothing will read the go-signal after that, and the
@@ -552,6 +597,14 @@ def _crac_restore_worker(
     re-announces ready, sees the go signal, processes one job, writes
     metadata.json, exits.
     """
+    if not (Path(checkpoint_dir) / _CRAC_BASE64_OFF_MARKER).is_file():
+        # Raise before staging anything: the caller falls back to a cold JVM, which gets the
+        # OFF flag from _java_worker_argv.
+        raise RuntimeError(
+            f"CRaC checkpoint {checkpoint_dir} has no {_CRAC_BASE64_OFF_MARKER} marker: it was "
+            "baked before the CVE-2026-114938 mitigation and would restore with the Base64 "
+            "intrinsic on; rebuild redtusk-worker:crac and redtusk-cold-worker:crac"
+        )
     input_bytes = input_path.read_bytes()
     filename_hint = input_path.name or "input"
     scratch = Path(scratch_dir)
@@ -580,6 +633,11 @@ def _crac_restore_worker(
 
     java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
     cmd = [java_bin, f"-XX:CRaCRestoreFrom={checkpoint_dir}"]
+    # Not _jvm_env: a restore keeps the checkpoint's VM flags, and CRaC refuses any
+    # non-restore-settable option at restore ("VM option 'UseBASE64Intrinsics' is not
+    # restore-settable"), so appending the OFF flag would only make every restore fail. An
+    # inherited -XX:+UseBASE64Intrinsics is refused the same way, so it cannot re-enable the
+    # intrinsic either; the checkpoint's flags are vouched for by the marker checked above.
     env = {
         **os.environ,
         "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
@@ -643,6 +701,7 @@ class RedTuskEngine:
                 # with scripts/verify_warm_tier.sh before enabling it anywhere.
                 "REDTUSK_PREWARM": os.environ.get("REDTUSK_PREWARM", "0"),
             }
+            _jvm_env(env)
             started = time.monotonic()
             # FILES, not pipes. Nothing reads this process's output until communicate() at the
             # FIRST JOB, so everything it emits before then -- boot, Tika class loading, and

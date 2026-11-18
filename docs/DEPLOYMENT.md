@@ -260,6 +260,21 @@ per-job in-guest 3.30s for a 3-byte input, of which ~2.2s was rebuilding the Tik
 - **Hand-set container env** does not survive `compose up` recreating the container.
 - **Two stacks share these hosts** (`redtusk-bb-*`, `titanarum-bb-*`) with independent images,
   rootfs images and blastbox versions. Always scope actions by stack prefix.
+- **JVM flags live in the snapshot, not the image tag.** Every worker JVM must run with
+  `-XX:-UseBASE64Intrinsics` (CVE-2026-114938, see `engine.py` `_BASE64_INTRINSICS_OFF`). A warm
+  FC/gVisor snapshot or CRaC checkpoint keeps the flags of the JVM it captured, so after a flag
+  change rebuild the cold-worker image (AOT cache included), re-export the warm rootfs, and
+  restart the warm dispatchers so they bake a fresh snapshot.
+  The CRaC images are built separately and need their own rebuild: `redtusk-worker:crac`
+  (`Dockerfile.crac-worker`), then `redtusk-cold-worker:crac` on top of it, and the
+  high-density image (`Dockerfile.high-density`). Their checkpoint JVMs run C2, which is the
+  compiler that installs the vulnerable stub, so they are the most exposed tier, not the least.
+  The engine refuses to restore a checkpoint that lacks the `redtusk-base64-intrinsics-off`
+  marker and falls back to a cold JVM, logging `redtusk CRaC restore failed`. A stale
+  `redtusk-worker:crac` therefore costs a cold boot per job until it is rebuilt.
+  The worker itself exits with status 2 at startup when the intrinsic is on, whatever
+  launched it (including an inherited `_JAVA_OPTIONS`, which HotSpot reads after the command
+  line; the engine appends the OFF flag to it).
 
 ## Measured: why prewarm did NOT ship to the FC snapshot tier (2026-08-14)
 

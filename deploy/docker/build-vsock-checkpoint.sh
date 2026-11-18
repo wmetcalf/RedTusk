@@ -46,6 +46,7 @@ java \
     -XX:AOTCache=/app/redtusk.aot \
     --enable-native-access=ALL-UNNAMED \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \

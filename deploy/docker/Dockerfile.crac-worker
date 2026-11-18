@@ -54,10 +54,15 @@ WORKDIR /app
 # the file-IPC scratch, then Core.checkpointRestore() dumps the warm JVM to
 # /app/checkpoint and exits. (warp may exit non-zero by design on some builds; the
 # `test` confirms the image was actually written, which is the real success gate.)
+# The marker tells the engine this checkpoint's JVM ran with the Base64 intrinsic OFF
+# (CVE-2026-114938; the worker refuses to checkpoint with it on). The engine will not
+# restore a checkpoint without it, so a pre-mitigation image falls back to a cold JVM.
 RUN java -XX:CRaCEngine=warp -XX:CRaCCheckpointTo=/app/checkpoint \
+        -XX:-UseBASE64Intrinsics \
         --enable-native-access=ALL-UNNAMED -Djava.library.path=/app \
         -jar /app/redtusk-worker.jar --checkpoint ${REDTUSK_CRAC_SCRATCH} \
     ; test -s /app/checkpoint/core.img \
+    && touch /app/checkpoint/redtusk-base64-intrinsics-off \
     && echo "warp checkpoint baked at ${REDTUSK_CRAC_SCRATCH}: $(du -sh /app/checkpoint | cut -f1)"
 
 # Runtime: warp restore. The JVM resumes at the point Core.checkpointRestore()

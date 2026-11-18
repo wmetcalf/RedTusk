@@ -151,6 +151,15 @@ RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" 
 # --------------------------------------------------------------------------
 FROM eclipse-temurin:25-jre-jammy AS runtime
 
+# CVE-2026-114938 ("Java4Shell"): heap overflow in HotSpot's AVX-512 VBMI Base64
+# decode intrinsic (JDK 17.0.6+ .. 27). Attacker-controlled document content reaches
+# java.util.Base64 here, so the intrinsic is switched off for EVERY JVM this image
+# starts. Base64 keeps working via the pure-Java path; only the assembly stub goes.
+# JAVA_TOOL_OPTIONS is the catch-all for any `java` launched in this image; every
+# launch path ALSO passes the flag explicitly (ENTRYPOINT, AOT bake, engine.py argv)
+# because `docker export` drops ENV for the warm FC/gVisor rootfs.
+ENV JAVA_TOOL_OPTIONS="-XX:-UseBASE64Intrinsics"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-eng \
@@ -222,6 +231,7 @@ RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \
@@ -231,6 +241,7 @@ RUN java \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar && \
@@ -251,6 +262,7 @@ ENV REDTUSK_LOG_LEVEL=INFO
 ENTRYPOINT ["java", \
     "-XX:AOTCache=/app/redtusk.aot", \
     "-XX:+UseSerialGC", \
+    "-XX:-UseBASE64Intrinsics", \
     "-XX:TieredStopAtLevel=1", \
     "-Xms800m", \
     "-Xmx800m", \
