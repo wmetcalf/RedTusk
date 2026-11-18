@@ -145,7 +145,10 @@ WORKDIR /build
 
 # Maven fat JAR
 COPY worker_jvm/ ./worker_jvm/
-RUN cd worker_jvm && mvn package -DskipTests -q
+# REDTUSK_PINNED_TIKA: this stage's ~/.m2 holds the fork built above from .tika-src (local-source
+# variant: its provenance is recorded above, it is not TIKA_FORK_SHA), never a host ~/.m2
+# (worker_jvm/pom.xml refuses to build without it; see the enforcer comment there).
+RUN cd worker_jvm && REDTUSK_PINNED_TIKA=1 mvn package -DskipTests -q
 
 # JNI native helpers (KSM + CapDropper)
 RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" && \

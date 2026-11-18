@@ -298,11 +298,20 @@ public final class Main {
         long durationMs = System.currentTimeMillis() - start;
 
         // Second pass: save embedded file bytes to outDir/embedded/ and compute digests.
-        var fileHashes = new EmbeddedFileExtractor(
+        var pass2 = new EmbeddedFileExtractor(
             job.limits().maxRecursionDepth(),
             job.limits().maxEmbeddedEntries(),
             job.enableThumbnails()
-        ).extract(inputFile, outDir.toPath());
+        );
+        var fileHashes = pass2.extract(inputFile, outDir.toPath());
+        // Pass 2's size-cap events (file cut at the per-file cap, entries skipped past the byte
+        // budget) join the result's warnings instead of living only in the worker log.
+        var pass2Warnings = pass2.warnings();
+        if (!pass2Warnings.isEmpty()) {
+            var merged = new java.util.ArrayList<>(result.warnings());
+            merged.addAll(pass2Warnings);
+            result = new ParseResult(result.entries(), merged, result.truncated());
+        }
 
         // Merge per-file digests (sha256/md5/sha1/size) back into the entry results.
         // Always run this loop so we can also mark image entries that Pass 2 missed
