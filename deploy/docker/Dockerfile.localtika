@@ -88,6 +88,15 @@ RUN cd /src/tika && \
         -q
 # JARs installed to /root/.m2/repository/org/apache/tika/
 
+# The same pinned 7-Zip the runtime stage ships, so the worker_jvm tests run here
+# (scripts/worker_build.sh, the CI worker-jvm job) can exercise Rar5Parser. After the Tika
+# compile on purpose: a layer above it would invalidate that cache on every 7-Zip bump.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends libarchive-tools \
+    && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:22cf82fcc6eb7474f1d5bb4f02c0f8ebd573a718089d6833dc30f8350a3b232e https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz /tmp/7zip.tar.xz
+RUN bsdtar -xOf /tmp/7zip.tar.xz 7zzs > /usr/local/bin/7zz \
+    && chmod 755 /usr/local/bin/7zz && rm /tmp/7zip.tar.xz
+
 # --------------------------------------------------------------------------
 # Stage 1: build — compile fat JAR and JNI native libraries
 # --------------------------------------------------------------------------
