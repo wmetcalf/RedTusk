@@ -96,7 +96,7 @@ def _instructions(dockerfile: Path) -> list[str]:
     return out
 
 
-_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n|\$\(|`")
+_OPERATORS = ";&|()`"
 # Options that take their value as the NEXT token.
 _ARG_OPTS = frozenset({"-cp", "-classpath", "--class-path", "-p", "--module-path",
                        "--add-modules", "--add-opens", "--add-exports", "--add-reads",
@@ -108,6 +108,24 @@ def _tokens(text: str) -> list[str]:
         return shlex.split(text, posix=True)
     except ValueError:
         return text.split()
+
+
+def _commands(text: str) -> list[list[str]]:
+    """Split a shell string into commands on ; & | ( ) ` -- but only OUTSIDE quotes, so a
+    quoted ``sh -c 'a; java ...'`` stays one argument (and is parsed recursively)."""
+    lex = shlex.shlex(text, posix=True, punctuation_chars=_OPERATORS)
+    lex.whitespace_split = True
+    try:
+        toks = list(lex)
+    except ValueError:
+        toks = text.split()
+    groups: list[list[str]] = [[]]
+    for tok in toks:
+        if tok and all(c in _OPERATORS for c in tok):
+            groups.append([])
+        else:
+            groups[-1].append(tok)
+    return [g for g in groups if g]
 
 
 def _is_java(tok: str) -> bool:
@@ -132,7 +150,7 @@ def _java_launches(command: str | list[str]) -> list[list[str]]:
     if isinstance(command, list):
         groups = [command]
     else:
-        groups = [_tokens(seg) for seg in _SEGMENT_SPLIT.split(command)]
+        groups = _commands(command)
     out: list[list[str]] = []
     for toks in groups:
         for i, tok in enumerate(toks):
@@ -208,6 +226,9 @@ class _Text:
         'CMD ["java", "-jar", "/app/w.jar", "--run", "/s"]',
         "RUN java -XX:CRaCRestoreFrom=/c -XX:+CRaCIgnoreRestoreIfUnavailable -jar /app/w.jar",
         "RUN $JAVA_HOME/bin/java -cp -XX:-UseBASE64Intrinsics Main",
+        "RUN sh -c 'java -XX:+UseBASE64Intrinsics -jar /app/w.jar --run /s; echo done'",
+        "RUN sh -c 'true && java -jar /app/w.jar --run /s'",
+        "RUN true; java -jar /app/w.jar --run /s",
     ],
 )
 def test_inventory_catches_unflagged_launch_shapes(dockerfile: str) -> None:
@@ -326,7 +347,7 @@ def test_jvm_env_appends_the_flag_to_java_options() -> None:
 
 
 @pytest.mark.parametrize("site", ["cold", "warmup", "crac"])
-def test_every_launch_site_neutralises_java_options(
+def test_every_booting_launch_site_neutralises_java_options(
     site: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _clear_env(monkeypatch)
@@ -359,7 +380,12 @@ def test_every_launch_site_neutralises_java_options(
                 scratch_dir=str(tmp_path / "scr"), timeout=5,
             )
     assert seen, f"{site}: no JVM launched"
-    assert seen[0]["_JAVA_OPTIONS"].split()[-1] == FLAG
+    if site == "crac":
+        # A restore keeps the checkpoint's flags and CRaC rejects any non-restore-settable
+        # option at restore, so appending the flag would only break every restore.
+        assert seen[0]["_JAVA_OPTIONS"] == "-XX:+UseBASE64Intrinsics"
+    else:
+        assert seen[0]["_JAVA_OPTIONS"].split()[-1] == FLAG
 
 
 def test_crac_restore_refuses_a_checkpoint_without_the_marker(tmp_path: Path) -> None:
@@ -382,11 +408,17 @@ def test_stale_checkpoint_falls_back_to_a_cold_jvm(
 ) -> None:
     ckpt = tmp_path / "ckpt"
     ckpt.mkdir()
+    (ckpt / "core.img").write_bytes(b"x")
+    inp = tmp_path / "in.txt"
+    inp.write_bytes(b"x")
     calls: list[str] = []
+    restores: list[object] = []
     monkeypatch.setenv("REDTUSK_CRAC_CHECKPOINT", str(ckpt))
     monkeypatch.setenv("REDTUSK_CRAC_SCRATCH", str(tmp_path / "scr"))
     monkeypatch.setattr(eng, "_run_worker", lambda i, r, *, timeout: calls.append("cold"))
-    eng.RedTuskEngine()._produce_rmeta(tmp_path / "in", tmp_path / "rmeta", 5.0)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: restores.append(a))
+    eng.RedTuskEngine()._produce_rmeta(inp, tmp_path / "rmeta", 5.0)
+    assert restores == [], "a checkpoint without the marker must never be restored"
     assert calls == ["cold"]
 
 
@@ -417,6 +449,13 @@ _JAR = os.environ.get("REDTUSK_WORKER_JAR", "")
 def test_worker_refuses_to_start_with_the_intrinsic_on(tmp_path: Path) -> None:
     # The backstop for a launcher this file does not know about: the worker itself exits
     # before announcing ready (so before reading any input) when the intrinsic is on.
+    probe = subprocess.run(
+        ["java", "-XX:+UseBASE64Intrinsics", "-XX:+PrintFlagsFinal", "-version"],
+        capture_output=True, text=True, timeout=60, check=False,
+        env={k: v for k, v in os.environ.items() if k != "_JAVA_OPTIONS"},
+    )
+    if not re.search(r"UseBASE64Intrinsics\s+=\s+true", probe.stdout):
+        pytest.skip("this CPU cannot enable the Base64 intrinsic, so the guard has nothing to do")
     for d in ("in", "control"):
         (tmp_path / d).mkdir()
     r = subprocess.run(

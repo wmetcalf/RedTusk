@@ -359,6 +359,7 @@ def _jvm_env(env: dict[str, str]) -> dict[str, str]:
     ``_JAVA_OPTIONS=-XX:+UseBASE64Intrinsics`` beats the argv's trailing OFF flag. Appending
     the OFF flag to it restores "the last occurrence is OFF". ``JAVA_TOOL_OPTIONS`` and
     ``JDK_JAVA_OPTIONS`` are read before the command line, so the argv already wins over them.
+    Used for JVMs that boot; NOT for a CRaC restore (see _crac_restore_worker).
     """
     java_options = env.get("_JAVA_OPTIONS")
     if java_options is not None:
@@ -632,10 +633,15 @@ def _crac_restore_worker(
 
     java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
     cmd = [java_bin, f"-XX:CRaCRestoreFrom={checkpoint_dir}"]
-    env = _jvm_env({
+    # Not _jvm_env: a restore keeps the checkpoint's VM flags, and CRaC refuses any
+    # non-restore-settable option at restore ("VM option 'UseBASE64Intrinsics' is not
+    # restore-settable"), so appending the OFF flag would only make every restore fail. An
+    # inherited -XX:+UseBASE64Intrinsics is refused the same way, so it cannot re-enable the
+    # intrinsic either; the checkpoint's flags are vouched for by the marker checked above.
+    env = {
         **os.environ,
         "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
-    })
+    }
     logger.debug("RedTusk CRaC restore cmd: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
     if result.returncode != 0:
