@@ -119,7 +119,9 @@
           <environmentVariables>
             <REDTUSK_TEST_SCRATCH>${project.build.directory}/test-scratch</REDTUSK_TEST_SCRATCH>
           </environmentVariables>
-          <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+          <!-- The worker's own guard (Base64IntrinsicGuard, CVE-2026-114938) exits when the
+               Base64 intrinsic is on, so tests that call Main run with the production flag. -->
+          <argLine>--enable-native-access=ALL-UNNAMED -XX:-UseBASE64Intrinsics</argLine>
         </configuration>
       </plugin>
       <!-- Fat JAR for running standalone.

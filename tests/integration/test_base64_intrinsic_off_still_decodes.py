@@ -4,8 +4,15 @@ worker argv, Base64 content in a sample must still be decoded and extracted.
 The sample is an iCalendar invite carrying an inline ``ATTACH;ENCODING=BASE64`` payload --
 the Tika fork's ICalParser decodes that with ``java.util.Base64`` (the exact API whose
 intrinsic is disabled), hashes the bytes into ``ical:attach_sha256`` and parses them as an
-embedded entry. The payload is a few KiB so that, on a VBMI host without the flag, the decode
-would have gone through the vulnerable intrinsic.
+embedded entry.
+
+This test proves only that decoding still works with the flag set. It cannot show the
+intrinsic being avoided: the default bundle runs C1 only (``-XX:TieredStopAtLevel=1``), and
+only C2 replaces ``Base64$Decoder.decodeBlock`` with the stub, so this decode takes the same
+pure-Java path with or without the flag. The exposed JVMs are the ones that reach C2: a
+``REDTUSK_JAVA_OPTS`` bundle without ``TieredStopAtLevel=1`` and the CRaC checkpoint JVMs
+(Dockerfile.crac-worker, Dockerfile.high-density). The flag itself is asserted in
+tests/unit/test_java4shell_base64_intrinsics.py and by the worker's own startup guard.
 
 Requires a JRE and the worker jar (``REDTUSK_WORKER_JAR``), like the other live tests here.
 """

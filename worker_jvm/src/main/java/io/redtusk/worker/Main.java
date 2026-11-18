@@ -39,6 +39,9 @@ public final class Main {
             System.err.println("Usage: redtusk-worker [--appcds-warmup|--checkpoint|--run] <path>");
             System.exit(2);
         }
+        // Before any mode runs: no input is parsed, and no CRaC checkpoint is baked, by a JVM
+        // that has the CVE-2026-114938 Base64 intrinsic on.
+        Base64IntrinsicGuard.requireOff();
         String mode = args[0];
         File path = new File(args[1]);
 

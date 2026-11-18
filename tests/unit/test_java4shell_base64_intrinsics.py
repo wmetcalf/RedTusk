@@ -3,7 +3,9 @@ Base64 intrinsic OFF (``-XX:-UseBASE64Intrinsics``).
 
 The bug is a heap overflow in the AVX-512 VBMI Base64 *decode intrinsic* (JDK 17.0.6+ .. 27).
 Hostile documents reach ``java.util.Base64`` inside the Tika fork (e.g. ICalParser's inline
-ATTACH), so a JVM that boots without the flag is exploitable on a VBMI-capable host. These
+ATTACH), so a JVM that boots without the flag is exploitable on a VBMI-capable host once C2
+compiles the decoder (C1-only JVMs never install the stub, but checkpoint JVMs and operator
+flag bundles run C2). These
 tests fail if any launch path loses the flag: the engine argv (cold + warm FC/gVisor, which
 all go through ``_java_worker_argv``), every ``java`` invocation in the Dockerfiles (AOT bake,
 CRaC/warp checkpoint, ENTRYPOINT), the release/checkpoint scripts, and the gVisor tier's
@@ -11,7 +13,10 @@ JAVA_TOOL_OPTIONS override.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -62,6 +67,13 @@ def test_java_opts_override_without_the_flag_gets_it(monkeypatch: pytest.MonkeyP
 
 
 # --- static launch-path inventory -----------------------------------------------------------
+#
+# Every ``java`` launch in the Dockerfiles, the deploy scripts and the guest init scripts is
+# found by TOKEN (any token whose basename is ``java``, so wrappers like ``exec``/``setpriv``/
+# ``timeout``/``sh -c``, absolute paths and ``$JAVA_HOME/bin/java`` are all seen), and the
+# check is POSITIONAL: only the JVM options before ``-jar``/the main class count (Main ignores
+# extra program args, so a flag after ``-jar x.jar`` does nothing), and the LAST
+# UseBASE64Intrinsics option there must be the OFF flag (HotSpot honours the last one).
 
 
 def _instructions(dockerfile: Path) -> list[str]:
@@ -84,53 +96,159 @@ def _instructions(dockerfile: Path) -> list[str]:
     return out
 
 
-_SEGMENT_SPLIT = re.compile(r"&&|\|\||;")
-_ENV_ASSIGN = re.compile(r"^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+")
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n|\$\(|`")
+# Options that take their value as the NEXT token.
+_ARG_OPTS = frozenset({"-cp", "-classpath", "--class-path", "-p", "--module-path",
+                       "--add-modules", "--add-opens", "--add-exports", "--add-reads",
+                       "--upgrade-module-path", "--limit-modules"})
 
 
-def _java_commands(shell: str) -> list[str]:
-    """Each `java ...` command in a shell string (env-assignment prefixes stripped)."""
-    cmds = []
-    for seg in _SEGMENT_SPLIT.split(shell):
-        seg = _ENV_ASSIGN.sub("", seg.strip())
-        if re.match(r"^java\s", seg):
-            cmds.append(seg)
-    return cmds
+def _tokens(text: str) -> list[str]:
+    try:
+        return shlex.split(text, posix=True)
+    except ValueError:
+        return text.split()
 
 
-def _is_restore_only(cmd: str) -> bool:
+def _is_java(tok: str) -> bool:
+    return tok.rsplit("/", 1)[-1] == "java"
+
+
+def _jvm_options(tokens: list[str]) -> list[str]:
+    """The JVM options after a ``java`` token, stopping at ``-jar``/``-m``/the main class."""
+    opts: list[str] = []
+    it = iter(tokens)
+    for tok in it:
+        if tok in ("-jar", "-m", "--module") or not tok.startswith("-") and not tok.startswith("@"):
+            break
+        opts.append(tok)
+        if tok in _ARG_OPTS:
+            next(it, "")  # its value is not a VM option, whatever it looks like
+    return opts
+
+
+def _java_launches(command: str | list[str]) -> list[list[str]]:
+    """JVM option lists of every java launch in a shell string or an exec-form argv."""
+    if isinstance(command, list):
+        groups = [command]
+    else:
+        groups = [_tokens(seg) for seg in _SEGMENT_SPLIT.split(command)]
+    out: list[list[str]] = []
+    for toks in groups:
+        for i, tok in enumerate(toks):
+            if _is_java(tok):
+                out.append(_jvm_options(toks[i + 1:]))
+            elif tok in ("-c",) and i + 1 < len(toks) and i > 0 and toks[i - 1].endswith("sh"):
+                out.extend(_java_launches(toks[i + 1]))
+    return out
+
+
+def _is_restore_only(opts: list[str]) -> bool:
     # A CRaC/warp RESTORE resumes the checkpointed process with the checkpoint's VM flags; the
-    # flag belongs on the checkpoint-creating JVM (asserted separately), not on restore.
-    return "CRaCRestoreFrom" in cmd and "CRaCCheckpointTo" not in cmd
+    # flag belongs on the checkpoint-creating JVM. A restore that may fall back to a fresh
+    # boot (CRaCIgnoreRestoreIfUnavailable) is a boot, so it needs the flag too.
+    joined = " ".join(opts)
+    return ("CRaCRestoreFrom" in joined and "CRaCCheckpointTo" not in joined
+            and "CRaCIgnoreRestoreIfUnavailable" not in joined)
+
+
+def _launch_ok(opts: list[str]) -> bool:
+    if _is_restore_only(opts):
+        return True
+    settings = [o for o in opts if "UseBASE64Intrinsics" in o]
+    return bool(settings) and settings[-1] == FLAG
+
+
+def _dockerfile_launches(text_or_path: Path) -> list[list[str]]:
+    out: list[list[str]] = []
+    for ins in _instructions(text_or_path):
+        kw, _, rest = ins.partition(" ")
+        if kw not in ("RUN", "CMD", "ENTRYPOINT"):
+            continue
+        while rest.startswith("--"):  # RUN --mount=... --network=...
+            rest = rest.split(" ", 1)[1] if " " in rest else ""
+        if rest.startswith("["):
+            try:
+                argv = json.loads(rest)
+            except ValueError:
+                argv = None
+            if isinstance(argv, list):
+                out.extend(_java_launches([str(a) for a in argv]))
+                continue
+        out.extend(_java_launches(rest))
+    return out
+
+
+def _script_launches(path: Path) -> list[list[str]]:
+    code = "\n".join(
+        ln for ln in path.read_text().splitlines() if not ln.lstrip().startswith("#")
+    )
+    return _java_launches(re.sub(r"\\\n\s*", " ", code))
+
+
+class _Text:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def read_text(self) -> str:
+        return self._text
+
+
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        "RUN java -XX:CRaCCheckpointTo=/c -jar /app/w.jar --checkpoint /s -XX:-UseBASE64Intrinsics",
+        "RUN java -XX:-UseBASE64Intrinsics -XX:+UseBASE64Intrinsics -jar /app/w.jar --run /s",
+        "RUN /opt/java/openjdk/bin/java -jar /app/w.jar --run /s",
+        'RUN ["java", "-jar", "/app/w.jar", "--run", "/s"]',
+        "RUN --mount=type=cache,target=/c java -jar /app/w.jar --run /s",
+        "RUN sh -c 'java -jar /app/w.jar --run /s'",
+        "RUN timeout 60 java -jar /app/w.jar --run /s",
+        "RUN FOO=\"a b\" java -jar /app/w.jar --run /s",
+        'CMD ["java", "-jar", "/app/w.jar", "--run", "/s"]',
+        "RUN java -XX:CRaCRestoreFrom=/c -XX:+CRaCIgnoreRestoreIfUnavailable -jar /app/w.jar",
+        "RUN $JAVA_HOME/bin/java -cp -XX:-UseBASE64Intrinsics Main",
+    ],
+)
+def test_inventory_catches_unflagged_launch_shapes(dockerfile: str) -> None:
+    launches = _dockerfile_launches(_Text(dockerfile))  # type: ignore[arg-type]
+    assert launches, f"scan did not see the launch: {dockerfile}"
+    assert not all(_launch_ok(o) for o in launches), f"scan accepted: {dockerfile}"
+
+
+def test_inventory_accepts_flagged_and_restore_launches() -> None:
+    ok = [
+        "RUN java -XX:-UseBASE64Intrinsics -jar /app/w.jar --run /s",
+        'ENTRYPOINT ["java", "-XX:-UseBASE64Intrinsics", "-jar", "/app/w.jar"]',
+        'ENTRYPOINT ["java", "-XX:CRaCRestoreFrom=/app/checkpoint"]',
+    ]
+    for df in ok:
+        launches = _dockerfile_launches(_Text(df))  # type: ignore[arg-type]
+        assert launches and all(_launch_ok(o) for o in launches), df
 
 
 DOCKERFILES = sorted(DOCKER.glob("Dockerfile.*"))
+SCRIPTS = sorted(
+    {
+        *REPO.glob("scripts/*.sh"),
+        *REPO.glob("deploy/**/*.sh"),
+        *REPO.glob("deploy/firecracker/init*"),
+    }
+)
 
 
 def test_inventory_finds_the_launch_paths() -> None:
     # Guard against the scan silently matching nothing (and so proving nothing).
-    runs = [
-        c
-        for df in DOCKERFILES
-        for ins in _instructions(df)
-        if ins.startswith("RUN ")
-        for c in _java_commands(ins[4:])
-    ]
-    assert len(runs) >= 8, runs
+    docker = [o for df in DOCKERFILES for o in _dockerfile_launches(df)]
+    scripts = [o for sc in SCRIPTS for o in _script_launches(sc)]
+    assert len(docker) >= 8, docker
+    assert len(scripts) >= 3, scripts
 
 
 @pytest.mark.parametrize("dockerfile", DOCKERFILES, ids=lambda p: p.name)
 def test_every_dockerfile_java_launch_disables_the_intrinsic(dockerfile: Path) -> None:
-    missing = []
-    for ins in _instructions(dockerfile):
-        if ins.startswith("RUN "):
-            for cmd in _java_commands(ins[4:]):
-                if not _is_restore_only(cmd) and FLAG not in cmd:
-                    missing.append(cmd[:160])
-        elif ins.startswith("ENTRYPOINT [") and '"java"' in ins:
-            if not _is_restore_only(ins) and f'"{FLAG}"' not in ins:
-                missing.append(ins[:160])
-    assert not missing, f"{dockerfile.name}: java launch without {FLAG}: {missing}"
+    bad = [o for o in _dockerfile_launches(dockerfile) if not _launch_ok(o)]
+    assert not bad, f"{dockerfile.name}: java launch without a final {FLAG}: {bad}"
 
 
 @pytest.mark.parametrize(
@@ -139,28 +257,30 @@ def test_every_dockerfile_java_launch_disables_the_intrinsic(dockerfile: Path) -
 )
 def test_temurin_runtime_images_set_java_tool_options(dockerfile: str) -> None:
     # The catch-all for any java started inside the cold-worker image family.
-    ins = _instructions(DOCKER / dockerfile)
-    assert any(
-        i.startswith("ENV JAVA_TOOL_OPTIONS=") and FLAG in i for i in ins
-    ), dockerfile
+    ins = [i for i in _instructions(DOCKER / dockerfile) if i.startswith("ENV JAVA_TOOL_OPTIONS=")]
+    assert ins, dockerfile
+    for i in ins:
+        settings = [t for t in _tokens(i.split("=", 1)[1]) if "UseBASE64Intrinsics" in t]
+        assert settings and settings[-1] == FLAG, i
 
 
-@pytest.mark.parametrize(
-    "script", ["deploy/docker/build-vsock-checkpoint.sh", "scripts/release_engine.sh"]
-)
-def test_scripts_launching_java_disable_the_intrinsic(script: str) -> None:
-    code = "\n".join(
-        ln for ln in (REPO / script).read_text().splitlines() if not ln.lstrip().startswith("#")
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: str(p.relative_to(REPO)))
+def test_scripts_launching_java_disable_the_intrinsic(script: Path) -> None:
+    bad = [o for o in _script_launches(script) if not _launch_ok(o)]
+    assert not bad, f"{script.relative_to(REPO)}: java launch without a final {FLAG}: {bad}"
+
+
+def test_crac_worker_checkpoint_carries_the_marker() -> None:
+    # The engine refuses to restore a checkpoint without the marker (one baked before the
+    # mitigation keeps the intrinsic on), so the image that bakes the checkpoint the engine
+    # restores must write it -- and only after the checkpoint actually exists.
+    run = next(
+        i for i in _instructions(DOCKER / "Dockerfile.crac-worker")
+        if i.startswith("RUN ") and "CRaCCheckpointTo" in i
     )
-    joined = re.sub(r"\\\n\s*", " ", code)
-    # A java launch is `java` followed by an option, up to its `-jar` (or end of line).
-    cmds = [
-        m.group(0)
-        for m in re.finditer(r"(?<![\w/.$-])java\s+-[^\n]*?(?=\s-jar\s|$)", joined, re.M)
-    ]
-    assert cmds, f"{script}: no java invocation found -- the scan is stale"
-    for c in cmds:
-        assert FLAG in c, f"{script}: {c[:160]}"
+    marker = f"/app/checkpoint/{eng._CRAC_BASE64_OFF_MARKER}"
+    assert marker in run
+    assert run.index("test -s /app/checkpoint/core.img") < run.index(marker)
 
 
 def test_gvisor_java_tool_options_override_keeps_the_flag() -> None:
@@ -169,7 +289,8 @@ def test_gvisor_java_tool_options_override_keeps_the_flag() -> None:
     vals = re.findall(r"JAVA_TOOL_OPTIONS=([^\"\]]*)", text)
     assert vals, "gVisor overlay no longer sets JAVA_TOOL_OPTIONS -- re-check this test"
     for v in vals:
-        assert FLAG in v, v
+        settings = [t for t in v.split() if "UseBASE64Intrinsics" in t]
+        assert settings and settings[-1] == FLAG, v
 
 
 # --- live JVM: the flag is actually in effect ------------------------------------------------
@@ -191,3 +312,119 @@ def test_live_jvm_reports_the_intrinsic_disabled(monkeypatch: pytest.MonkeyPatch
     assert r.returncode == 0, r.stderr[-2000:]
     line = next(ln for ln in r.stdout.splitlines() if " UseBASE64Intrinsics " in ln)
     assert re.search(r"UseBASE64Intrinsics\s+=\s+false", line), line
+
+
+# --- environment overrides and stale checkpoints ----------------------------------------------
+
+
+def test_jvm_env_appends_the_flag_to_java_options() -> None:
+    # HotSpot reads _JAVA_OPTIONS after the command line, so it would beat the argv's flag.
+    env = eng._jvm_env({"_JAVA_OPTIONS": "-XX:+UseBASE64Intrinsics", "PATH": "/bin"})
+    assert env["_JAVA_OPTIONS"].split()[-1] == FLAG
+    assert env["PATH"] == "/bin"
+    assert "_JAVA_OPTIONS" not in eng._jvm_env({"PATH": "/bin"})
+
+
+@pytest.mark.parametrize("site", ["cold", "warmup", "crac"])
+def test_every_launch_site_neutralises_java_options(
+    site: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("_JAVA_OPTIONS", "-XX:+UseBASE64Intrinsics")
+    seen: list[dict[str, str]] = []
+
+    class _LaunchedError(Exception):
+        pass
+
+    def capture(*_a: object, **kw: object) -> None:
+        seen.append(kw["env"])  # type: ignore[arg-type]
+        raise _LaunchedError
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    monkeypatch.setattr(subprocess, "Popen", capture)
+    inp = tmp_path / "in.txt"
+    inp.write_bytes(b"x")
+    if site == "cold":
+        with pytest.raises(_LaunchedError):
+            eng._run_worker(inp, tmp_path / "rmeta", timeout=5)
+    elif site == "warmup":
+        eng.RedTuskEngine().warmup()  # fail-soft: swallows the error
+    else:
+        ckpt = tmp_path / "ckpt"
+        ckpt.mkdir()
+        (ckpt / eng._CRAC_BASE64_OFF_MARKER).touch()
+        with pytest.raises(_LaunchedError):
+            eng._crac_restore_worker(
+                inp, tmp_path / "rmeta", checkpoint_dir=str(ckpt),
+                scratch_dir=str(tmp_path / "scr"), timeout=5,
+            )
+    assert seen, f"{site}: no JVM launched"
+    assert seen[0]["_JAVA_OPTIONS"].split()[-1] == FLAG
+
+
+def test_crac_restore_refuses_a_checkpoint_without_the_marker(tmp_path: Path) -> None:
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "core.img").write_bytes(b"x")
+    scratch = tmp_path / "scr"
+    inp = tmp_path / "in.txt"
+    inp.write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="redtusk-base64-intrinsics-off"):
+        eng._crac_restore_worker(
+            inp, tmp_path / "rmeta", checkpoint_dir=str(ckpt), scratch_dir=str(scratch),
+            timeout=5,
+        )
+    assert not scratch.exists(), "nothing may be staged for a refused checkpoint"
+
+
+def test_stale_checkpoint_falls_back_to_a_cold_jvm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    calls: list[str] = []
+    monkeypatch.setenv("REDTUSK_CRAC_CHECKPOINT", str(ckpt))
+    monkeypatch.setenv("REDTUSK_CRAC_SCRATCH", str(tmp_path / "scr"))
+    monkeypatch.setattr(eng, "_run_worker", lambda i, r, *, timeout: calls.append("cold"))
+    eng.RedTuskEngine()._produce_rmeta(tmp_path / "in", tmp_path / "rmeta", 5.0)
+    assert calls == ["cold"]
+
+
+@pytest.mark.skipif(shutil.which("java") is None, reason="no java on PATH")
+def test_live_jvm_java_options_cannot_reenable_the_intrinsic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("REDTUSK_AOT_CACHE", "")
+    argv = eng._java_worker_argv(Path("/scr"))
+    env = eng._jvm_env({**os.environ, "_JAVA_OPTIONS": "-XX:+UseBASE64Intrinsics"})
+    r = subprocess.run(
+        ["java", *argv[1 : argv.index("-jar")], "-XX:+PrintFlagsFinal", "-version"],
+        capture_output=True, text=True, timeout=60, check=False, env=env,
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    line = next(ln for ln in r.stdout.splitlines() if " UseBASE64Intrinsics " in ln)
+    assert re.search(r"UseBASE64Intrinsics\s+=\s+false", line), line
+
+
+_JAR = os.environ.get("REDTUSK_WORKER_JAR", "")
+
+
+@pytest.mark.skipif(
+    shutil.which("java") is None or not Path(_JAR).is_file(),
+    reason="needs java and REDTUSK_WORKER_JAR",
+)
+def test_worker_refuses_to_start_with_the_intrinsic_on(tmp_path: Path) -> None:
+    # The backstop for a launcher this file does not know about: the worker itself exits
+    # before announcing ready (so before reading any input) when the intrinsic is on.
+    for d in ("in", "control"):
+        (tmp_path / d).mkdir()
+    r = subprocess.run(
+        ["java", "-XX:+UseBASE64Intrinsics", "--enable-native-access=ALL-UNNAMED",
+         "-jar", _JAR, "--run", str(tmp_path)],
+        capture_output=True, text=True, timeout=120, check=False,
+        env={k: v for k, v in os.environ.items() if k != "_JAVA_OPTIONS"},
+    )
+    assert r.returncode == 2, (r.returncode, r.stderr[-2000:])
+    assert "CVE-2026-114938" in r.stderr
+    assert not (tmp_path / "control" / "control.ready").exists()

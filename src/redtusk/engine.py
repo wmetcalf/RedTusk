@@ -345,6 +345,27 @@ def _force_base64_intrinsics_off(flags: list[str]) -> list[str]:
     return [*kept, _BASE64_INTRINSICS_OFF]
 
 
+# Marker a CRaC checkpoint image carries when the JVM that baked it ran with the intrinsic
+# OFF (written by the image build after the checkpoint succeeds; the worker refuses to
+# checkpoint with the intrinsic on). A restore keeps the checkpointed JVM's flags, so a
+# checkpoint without it -- one baked before the mitigation -- is never restored.
+_CRAC_BASE64_OFF_MARKER = "redtusk-base64-intrinsics-off"
+
+
+def _jvm_env(env: dict[str, str]) -> dict[str, str]:
+    """Return *env* with any ``_JAVA_OPTIONS`` forced to end in the OFF flag.
+
+    HotSpot reads ``_JAVA_OPTIONS`` AFTER the command line, so an inherited
+    ``_JAVA_OPTIONS=-XX:+UseBASE64Intrinsics`` beats the argv's trailing OFF flag. Appending
+    the OFF flag to it restores "the last occurrence is OFF". ``JAVA_TOOL_OPTIONS`` and
+    ``JDK_JAVA_OPTIONS`` are read before the command line, so the argv already wins over them.
+    """
+    java_options = env.get("_JAVA_OPTIONS")
+    if java_options is not None:
+        env["_JAVA_OPTIONS"] = f"{java_options} {_BASE64_INTRINSICS_OFF}".strip()
+    return env
+
+
 def _java_worker_argv(scratch: Path) -> list[str]:
     """Build the in-process JVM worker argv (``java ... -jar ... --run <scratch>``).
 
@@ -482,6 +503,7 @@ def _run_worker(
             # something the operator setting it on a container would ever expect.
             "REDTUSK_PREWARM": "0",
         }
+        _jvm_env(env)
 
         logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
         # Set once the JVM has exited: nothing will read the go-signal after that, and the
@@ -574,6 +596,14 @@ def _crac_restore_worker(
     re-announces ready, sees the go signal, processes one job, writes
     metadata.json, exits.
     """
+    if not (Path(checkpoint_dir) / _CRAC_BASE64_OFF_MARKER).is_file():
+        # Raise before staging anything: the caller falls back to a cold JVM, which gets the
+        # OFF flag from _java_worker_argv.
+        raise RuntimeError(
+            f"CRaC checkpoint {checkpoint_dir} has no {_CRAC_BASE64_OFF_MARKER} marker: it was "
+            "baked before the CVE-2026-114938 mitigation and would restore with the Base64 "
+            "intrinsic on; rebuild redtusk-worker:crac and redtusk-cold-worker:crac"
+        )
     input_bytes = input_path.read_bytes()
     filename_hint = input_path.name or "input"
     scratch = Path(scratch_dir)
@@ -602,10 +632,10 @@ def _crac_restore_worker(
 
     java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
     cmd = [java_bin, f"-XX:CRaCRestoreFrom={checkpoint_dir}"]
-    env = {
+    env = _jvm_env({
         **os.environ,
         "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
-    }
+    })
     logger.debug("RedTusk CRaC restore cmd: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
     if result.returncode != 0:
@@ -665,6 +695,7 @@ class RedTuskEngine:
                 # with scripts/verify_warm_tier.sh before enabling it anywhere.
                 "REDTUSK_PREWARM": os.environ.get("REDTUSK_PREWARM", "0"),
             }
+            _jvm_env(env)
             started = time.monotonic()
             # FILES, not pipes. Nothing reads this process's output until communicate() at the
             # FIRST JOB, so everything it emits before then -- boot, Tika class loading, and
