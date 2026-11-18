@@ -114,7 +114,16 @@ class Rar5ParserTest {
 
     private java.util.Map<String, String> decodeWith(Path decoder, org.apache.tika.metadata.Metadata root)
             throws Exception {
-        var seen = new java.util.LinkedHashMap<String, String>();
+        return decodeWithInto(decoder, new java.util.LinkedHashMap<>(), root);
+    }
+
+    private java.util.Map<String, String> decodeWithInto(Path decoder, java.util.Map<String, String> seen)
+            throws Exception {
+        return decodeWithInto(decoder, seen, new org.apache.tika.metadata.Metadata());
+    }
+
+    private java.util.Map<String, String> decodeWithInto(Path decoder, java.util.Map<String, String> seen,
+            org.apache.tika.metadata.Metadata root) throws Exception {
         var context = new org.apache.tika.parser.ParseContext();
         context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
             public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
@@ -179,5 +188,46 @@ class Rar5ParserTest {
         ParseResult result = runner(1024 * 1024).parse(fixture("multiple_files"), "multi.rar", "0".repeat(64));
         assertNull(result.entries().getFirst().error());
         assertEquals(5, result.entries().size(), result.entries().stream().map(EntryResult::path).toList().toString());
+    }
+
+    @Test void embeddedDecisionsAreMadeInOrderAsMembersArePublished() throws Exception {
+        // An extractor whose decision depends on what it has already parsed (an entry budget)
+        // must see each member only after the previous one was published.
+        Path decoder = fakeDecoder(THREE, "abcdefg", "exit 9");
+        var seen = new java.util.ArrayList<String>();
+        var context = new org.apache.tika.parser.ParseContext();
+        context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+            public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return seen.isEmpty(); }
+            public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml) {
+                seen.add(metadata.get(org.apache.tika.metadata.TikaCoreProperties.RESOURCE_NAME_KEY));
+            }
+        });
+        try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
+            new Rar5Parser(decoder.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+                new org.apache.tika.metadata.Metadata(), context);
+        }
+        assertEquals(java.util.List.of("a.txt"), seen);
+    }
+
+    @Test void failedWholeArchiveRunFallsBackToPerMemberDecoding() throws Exception {
+        // One corrupt member makes the single run fail; the members before it are still
+        // published, as the one-run-per-member decoder did.
+        String listing = "Path = a.txt\\nSize = 3\\nFolder = -\\n\\n"
+            + "Path = bad.bin\\nSize = 2\\nFolder = -\\n";
+        Path dir = output.resolve("fake-fail");
+        java.nio.file.Files.createDirectories(dir);
+        Path decoder = dir.resolve("decoder");
+        java.nio.file.Files.writeString(decoder, "#!/bin/sh\n"
+            + "echo \"$*\" >> '" + dir.resolve("calls.log") + "'\n"
+            + "if [ \"$1\" = l ]; then printf '" + listing + "'; exit 0; fi\n"
+            + "for last; do :; done\n"
+            + "case \"$last\" in *.rar) printf abcXY; exit 2;; a.txt) printf abc; exit 0;; esac\n"
+            + "exit 2\n");
+        assertTrue(decoder.toFile().setExecutable(true));
+        var seen = new java.util.LinkedHashMap<String, String>();
+        assertThrows(org.apache.tika.exception.TikaException.class,
+            () -> seen.putAll(decodeWithInto(decoder, seen)));
+        assertEquals(java.util.Map.of("a.txt", "abc"), seen);
     }
 }
