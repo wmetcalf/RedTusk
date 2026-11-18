@@ -429,6 +429,32 @@ def _force_base64_intrinsics_off(flags: list[str]) -> list[str]:
 # checkpoint without it -- one baked before the mitigation -- is never restored.
 _CRAC_BASE64_OFF_MARKER = "redtusk-base64-intrinsics-off"
 
+# The rmeta/output layout the worker jar writes (io.redtusk.worker.WorkerFormat.VERSION). A
+# CRaC restore resumes the jar that was checkpointed at image-build time, so the checkpoint
+# image records the format of THAT jar (``redtusk-worker --worker-format``) in this file, and a
+# checkpoint whose record is missing (baked before the engine output contract, #64) or names
+# another format is never restored. Bump both constants together whenever the worker's output
+# layout changes in a way this engine depends on.
+_WORKER_FORMAT = 2
+_CRAC_WORKER_FORMAT_MARKER = "redtusk-worker-format"
+
+
+def _check_checkpoint_worker_format(checkpoint_dir: str) -> None:
+    """Raise unless the checkpoint records this engine's worker output format."""
+    marker = Path(checkpoint_dir) / _CRAC_WORKER_FORMAT_MARKER
+    try:
+        recorded = marker.read_text(encoding="ascii", errors="replace").strip()[:32]
+    except OSError:
+        recorded = None
+    if recorded != str(_WORKER_FORMAT):
+        found = "is missing" if recorded is None else f"records format {recorded!r}"
+        raise RuntimeError(
+            f"CRaC checkpoint {checkpoint_dir}: {_CRAC_WORKER_FORMAT_MARKER} {found}, but this "
+            f"engine reads worker format {_WORKER_FORMAT}; the checkpointed worker would write "
+            "output this engine misreads. Rebuild redtusk-worker:crac and "
+            "redtusk-cold-worker:crac"
+        )
+
 
 def _jvm_env(env: dict[str, str]) -> dict[str, str]:
     """Return *env* with any ``_JAVA_OPTIONS`` forced to end in the OFF flag.
@@ -683,6 +709,7 @@ def _crac_restore_worker(
             "baked before the CVE-2026-114938 mitigation and would restore with the Base64 "
             "intrinsic on; rebuild redtusk-worker:crac and redtusk-cold-worker:crac"
         )
+    _check_checkpoint_worker_format(checkpoint_dir)
     input_bytes = input_path.read_bytes()
     filename_hint = input_path.name or "input"
     scratch = Path(scratch_dir)

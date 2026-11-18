@@ -430,6 +430,7 @@ def test_every_booting_launch_site_neutralises_java_options(
         ckpt = tmp_path / "ckpt"
         ckpt.mkdir()
         (ckpt / eng._CRAC_BASE64_OFF_MARKER).touch()
+        (ckpt / eng._CRAC_WORKER_FORMAT_MARKER).write_text(str(eng._WORKER_FORMAT))
         with pytest.raises(_LaunchedError):
             eng._crac_restore_worker(
                 inp, tmp_path / "rmeta", checkpoint_dir=str(ckpt),

@@ -25,6 +25,7 @@ import org.apache.tika.parser.ParseContext;
  *   --appcds-warmup <corpus-dir>   parse corpus files to warm parser classes (for AppCDS)
  *   --checkpoint <scratch-dir>     no-op stub (CRaC added in Plan 6)
  *   --run <scratch-dir>            production: fifo-wait → parse → write metadata.json → exit
+ *   --worker-format                print WorkerFormat.VERSION (the output layout) and exit
  *
  * Exit codes: 0=success, 1=parse error, 2=fatal
  */
@@ -35,8 +36,13 @@ public final class Main {
 
     public static void main(String[] args) {
         configureLogging();
+        if (args.length == 1 && "--worker-format".equals(args[0])) {
+            // Parses nothing: the CRaC image build records this next to the checkpoint.
+            System.out.println(WorkerFormat.VERSION);
+            return;
+        }
         if (args.length < 2) {
-            System.err.println("Usage: redtusk-worker [--appcds-warmup|--checkpoint|--run] <path>");
+            System.err.println("Usage: redtusk-worker [--appcds-warmup|--checkpoint|--run] <path> | --worker-format");
             System.exit(2);
         }
         // Before any mode runs: no input is parsed, and no CRaC checkpoint is baked, by a JVM
