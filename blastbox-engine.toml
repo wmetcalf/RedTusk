@@ -132,6 +132,12 @@ source = "envelope warnings[] code=embedded_entries_capped (one per result; coun
 description = "Pass 2 stopped writing embedded files at max_embedded_entries; later entries (for archives, possibly ones pass 1 never listed) have no declared file."
 
 [[detections]]
+code = "resource_path_collision"
+severity = "low"
+source = "envelope warnings[] code=resource_path_collision (context = the shared entry path; at most 50 per result)"
+description = "Two embedded entries normalise to one identity (e.g. 'a\\\\b' and 'a/b'); the later is kept as '<path>#N', so both are declared, but only the first maps to its pass-1 entry."
+
+[[detections]]
 code = "extracted_bytes_budget"
 severity = "medium"
 source = "envelope warnings[] code=extracted_bytes_budget (one per result; count in the message)"

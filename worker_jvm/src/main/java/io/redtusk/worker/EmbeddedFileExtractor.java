@@ -489,6 +489,9 @@ public final class EmbeddedFileExtractor {
     /** Top-level directory under the embedded root that only {@link #writeThumbnail} writes. */
     static final String THUMBNAILS_DIR = "thumbnails";
 
+    /** Per-pass cap on individual resource_path_collision warnings (a hostile archive repeats). */
+    static final int MAX_COLLISION_WARNINGS = 50;
+
     static Path resolveOutFile(Path root, String embPath, Metadata metadata) {
         String rel;
         if (embPath != null && !embPath.isEmpty()) {
@@ -570,6 +573,7 @@ public final class EmbeddedFileExtractor {
                         AtomicInteger fileCount, AtomicLong extractedBytesTotal,
                         Map<String, FileHashes> hashes,
                         long maxFileBytes, long budgetBytes, AtomicInteger budgetSkipped,
+                        AtomicInteger countSkipped,
                         List<ParseResult.WorkerWarning> warnings, String parentPath, int depth) {
             this.maxFileBytes        = maxFileBytes;
             this.budgetBytes         = budgetBytes;
@@ -658,6 +662,22 @@ public final class EmbeddedFileExtractor {
                 if (rname != null && !rname.isBlank()) {
                     String parent = embPath.substring(0, embPath.lastIndexOf('/'));
                     embPath = parent + "/" + rname;
+                }
+            }
+            if (embPath != null && hashes.containsKey(embPath)) {
+                // Two entries with one identity (e.g. "a\\b" and "a/b", or a repeated name)
+                // would share a storage path: the second write would destroy the first's bytes
+                // and its hashes would be attributed to both. Keep both, under distinct keys.
+                String original = embPath;
+                int n = 2;
+                while (hashes.containsKey(original + "#" + n)) n++;
+                embPath = original + "#" + n;
+                metadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_PATH, embPath);
+                if (warnings.stream().filter(w -> "resource_path_collision".equals(w.code())).count()
+                        < MAX_COLLISION_WARNINGS) {
+                    warnings.add(new ParseResult.WorkerWarning("resource_path_collision",
+                            "two embedded entries share the identity " + original
+                                    + "; the later one is kept as " + embPath, original));
                 }
             }
             Path outFile = EmbeddedFileExtractor.resolveOutFile(root, embPath, metadata);
@@ -757,7 +777,7 @@ public final class EmbeddedFileExtractor {
                 nested.set(Parser.class, parser);
                 nested.set(JobDescriptor.LimitsDescriptor.class,
                     new JobDescriptor.LimitsDescriptor(maxDepth, Math.max(1, maxFiles - fileCount.get()),
-                        Math.max(1, MAX_EXTRACTED_BUDGET_BYTES - extractedBytesTotal.get()), 30));
+                        Math.max(1, budgetBytes - extractedBytesTotal.get()), 30));
                 TesseractOCRConfig noOcr = new TesseractOCRConfig();
                 noOcr.setSkipOcr(true);
                 nested.set(TesseractOCRConfig.class, noOcr);

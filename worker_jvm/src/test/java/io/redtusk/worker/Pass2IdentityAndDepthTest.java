@@ -72,4 +72,18 @@ class Pass2IdentityAndDepthTest {
                 .extract(in, tmp.resolve("out2"));
         assertTrue(two.containsKey("/inner.zip/leaf.txt"), two.keySet().toString());
     }
+
+    @Test
+    void entriesSharingAnIdentityAreBothKeptAndWarned(@TempDir Path tmp) throws Exception {
+        // "a\b.txt" and "a/b.txt" normalise to one identity; without the guard the second
+        // write destroys the first's bytes.
+        File in = write(tmp, zipBytes("a\\b.txt", "first".getBytes(), "a/b.txt", "second".getBytes()));
+        var ex = new EmbeddedFileExtractor(10, 100, false);
+        Map<String, EmbeddedFileExtractor.FileHashes> hashes = ex.extract(in, tmp.resolve("out"));
+        assertTrue(hashes.containsKey("/a/b.txt"), hashes.keySet().toString());
+        assertTrue(hashes.containsKey("/a/b.txt#2"), hashes.keySet().toString());
+        assertNotEquals(hashes.get("/a/b.txt").sha256(), hashes.get("/a/b.txt#2").sha256());
+        assertTrue(ex.warnings().stream().anyMatch(w -> w.code().equals("resource_path_collision")),
+                ex.warnings().toString());
+    }
 }

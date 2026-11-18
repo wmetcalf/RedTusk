@@ -363,11 +363,13 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
     # Tika emits embedded-document completion in postorder: children can precede
     # their parents. Resolve explicit resource paths after building all nodes.
     root = nodes[0]
-    by_path = {node.embedded_path: node for node in nodes}
+    # Keyed by the FULL entry path: embedded_path is clipped to 4096, and two long paths that
+    # share a 4096-char prefix (a long-named container and its own child) would collide.
+    by_path = {str(e.get("path") or "/"): node for e, node in zip(entries, nodes, strict=True)}
     for entry, node in zip(entries[1:], nodes[1:], strict=True):
         parent_path = entry.get("parent_path")
         if not isinstance(parent_path, str) or not parent_path:
-            parent_path = node.embedded_path.rsplit("/", 1)[0] or "/"
+            parent_path = str(entry.get("path") or "/").rsplit("/", 1)[0] or "/"
         parent = by_path.get(parent_path)
         if parent is None or parent is node or parent.depth >= node.depth:
             parent = root

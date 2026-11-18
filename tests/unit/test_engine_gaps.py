@@ -403,3 +403,19 @@ def test_moved_aside_tree_is_trimmed(tmp_path: Path, monkeypatch: pytest.MonkeyP
     eng_mod._reset_rmeta_dir(rmeta_dir)
     assert not rmeta_dir.exists()
     assert [p.name for p in (tmp_path / "out").iterdir()] == [], "aside tree was not trimmed"
+
+
+
+def test_a_long_container_path_keeps_its_children() -> None:
+    from redtusk.engine import _build_tree
+
+    container = "/" + "c" * 5000
+    entries = [
+        _entry("/", None, 0, "application/zip", "aa" * 32),
+        _entry(container, "/", 1, "application/zip", "bb" * 32),
+        _entry(container + "/leaf.txt", container, 2, "text/plain", "cc" * 32),
+    ]
+    root = _build_tree(entries)
+    (node,) = [c for c in root.children if getattr(c, "embedded_path", None)]
+    assert [getattr(c, "embedded_path", "") for c in node.children
+            if getattr(c, "embedded_path", None)], "child detached to the root"
