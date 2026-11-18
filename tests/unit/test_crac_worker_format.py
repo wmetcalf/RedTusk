@@ -19,7 +19,7 @@ from redtusk import engine as eng
 
 REPO = Path(__file__).resolve().parents[2]
 DOCKER = REPO / "deploy" / "docker"
-JAVA_FORMAT = REPO / "worker_jvm" / "src" / "main" / "java" / "io" / "redtusk" / "worker" / "WorkerFormat.java"
+JAVA_FORMAT = REPO / "worker_jvm/src/main/java/io/redtusk/worker/WorkerFormat.java"
 
 
 def _checkpoint(tmp_path: Path, fmt: str | None) -> Path:
@@ -60,17 +60,17 @@ def test_restore_accepts_the_current_worker_format(
     ckpt = _checkpoint(tmp_path, f"{eng._WORKER_FORMAT}\n")
     launched: list[object] = []
 
-    class _Launched(Exception):
+    class _LaunchedError(Exception):
         pass
 
     def fake_run(*a: object, **_k: object) -> None:
         launched.append(a)
-        raise _Launched
+        raise _LaunchedError
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     inp = tmp_path / "in.txt"
     inp.write_bytes(b"x")
-    with pytest.raises(_Launched):
+    with pytest.raises(_LaunchedError):
         eng._crac_restore_worker(
             inp, tmp_path / "rmeta", checkpoint_dir=str(ckpt),
             scratch_dir=str(tmp_path / "scr"), timeout=5,
@@ -104,5 +104,6 @@ def test_crac_worker_image_records_the_format_of_the_jar_it_checkpointed() -> No
     marker = f"/app/checkpoint/{eng._CRAC_WORKER_FORMAT_MARKER}"
     assert marker in run
     # written by the checkpointed jar itself, and only once the checkpoint exists
-    assert re.search(r"-jar /app/redtusk-worker\.jar --worker-format\s*>\s*" + re.escape(marker), run)
+    jar_writes_marker = r"-jar /app/redtusk-worker\.jar --worker-format\s*>\s*" + re.escape(marker)
+    assert re.search(jar_writes_marker, run)
     assert run.index("test -s /app/checkpoint/core.img") < run.index(marker)
