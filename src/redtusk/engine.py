@@ -237,6 +237,15 @@ def _make_record(raw: dict[str, Any]) -> Record:
     return Record(fields=fields)
 
 
+# Metadata keys only the engine may set. A Tika key with one of these names is dropped.
+_ENGINE_KEY_PREFIXES: tuple[str, ...] = ("redtusk:", "redtusk_")
+_ENGINE_ROOT_KEYS: frozenset[str] = frozenset({"embedded_paths"})
+
+# redtusk:ocr carries at most this much text per node. The full text is already in the node's
+# ExtractedText child and in redtusk_rmeta; a third uncapped copy could push an OCR-heavy result
+# past blastbox's metadata size limit.
+_OCR_TEXT_CAP = 16384
+
 # Skip reasons the worker puts on (nearly) every entry: OCR is off by default and most entries
 # are not images. Reporting them would hang an empty Record on every node, so they count as
 # "nothing to say"; any other reason (a timeout, a size cap) is evidence and is kept.
@@ -268,8 +277,10 @@ def _engine_entry_fields(e: dict[str, Any]) -> dict[str, Any]:
             })
     ocr = e.get("ocr")
     if isinstance(ocr, dict) and (ocr.get("text") or ocr.get("skipped") not in _ROUTINE_SKIPS):
+        text = str(ocr.get("text") or "")
         out["redtusk:ocr"] = Record(fields={
-            "text": _coerce_metadata_value(ocr.get("text") or ""),
+            "text": text[:_OCR_TEXT_CAP],
+            "text_truncated": len(text) > _OCR_TEXT_CAP,
             "language": _coerce_metadata_value(ocr.get("language")),
             "duration_ms": _coerce_metadata_value(ocr.get("duration_ms")),
             "skipped": _coerce_metadata_value(ocr.get("skipped")),
@@ -320,13 +331,21 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
             val = e.get(scalar_key)
             if val is not None:
                 extra[scalar_key] = _coerce_metadata_value(val)
-        combined: dict[str, Any] = {**extra}
+        combined: dict[str, Any] = {}
         if isinstance(meta_raw, dict):
             # cap key COUNT (see _MAX_RECORD_KEYS); the drop is reported by detonate()
             for k, v in list(meta_raw.items())[:_MAX_RECORD_KEYS]:
-                combined[str(k)] = _coerce_metadata_value(v)
-        # Engine-derived per-entry evidence that used to survive only inside the redtusk_rmeta
-        # string. Namespaced and applied AFTER the Tika keys so a document cannot spoof them.
+                key = str(k)
+                # A document chooses its own metadata keys. Keys in the engine's namespace are
+                # dropped outright: applying the engine's fields afterwards is not enough when
+                # the engine OMITS one (no OCR text, no truncation), which would leave the
+                # document's forged value standing.
+                if key.startswith(_ENGINE_KEY_PREFIXES) or key in _ENGINE_ROOT_KEYS:
+                    continue
+                combined[key] = _coerce_metadata_value(v)
+        # The worker's own per-entry scalars (hashes, size, ...) and engine-derived evidence win
+        # over any same-named Tika key.
+        combined.update(extra)
         combined.update(_engine_entry_fields(e))
         # Clip to the contract field bounds (which RAISE, not truncate): rmeta entry path /
         # content_type / text are schema-valid at ANY length (no maxLength), so an attacker's

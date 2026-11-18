@@ -326,3 +326,37 @@ def test_fallback_runs_when_the_rmeta_dir_cannot_be_emptied(
     # The failed tree was moved out of rmeta/ (rmtree is patched to fail here, so it stays).
     (aside,) = [p for p in out.iterdir() if p.name.startswith(".rmeta.failed-")]
     assert (aside / "embedded" / "half-written.bin").is_file()
+
+
+# --- full-PR sweep: a document cannot forge engine evidence -------------------------------------
+
+def test_document_keys_cannot_forge_engine_fields_or_scalars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    doc = _rmeta()
+    node = doc["extraction"]["entries"][1]
+    node["metadata"] = {
+        "redtusk:ocr": "Sign in to Micros0ft",       # engine omits OCR here: must stay absent
+        "redtusk:truncated": "max_embedded_entries",
+        "redtusk_rmeta": "{}",
+        "embedded_paths": "{}",
+        "sha256": "00" * 32,                         # the worker's own hash must win
+        "dc:title": "kept",
+    }
+    res = _detonate_with(tmp_path, monkeypatch, doc)
+    f = res.payload.children[0].metadata.fields
+    for forged in ("redtusk:ocr", "redtusk:truncated", "redtusk_rmeta", "embedded_paths"):
+        assert forged not in f, forged
+    assert f["sha256"] == node["sha256"]
+    assert f["dc:title"] == "kept"
+
+
+def test_ocr_text_copy_is_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    doc = _rmeta()
+    big = "A" * (eng_mod._OCR_TEXT_CAP + 10)
+    doc["extraction"]["entries"][1]["ocr"] = {"text": big, "language": "eng",
+                                              "duration_ms": 1, "skipped": None}
+    res = _detonate_with(tmp_path, monkeypatch, doc)
+    ocr = res.payload.children[0].metadata.fields["redtusk:ocr"].fields
+    assert len(ocr["text"]) == eng_mod._OCR_TEXT_CAP
+    assert ocr["text_truncated"] is True

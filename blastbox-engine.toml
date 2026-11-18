@@ -70,12 +70,15 @@ description = "Raw bytes of one embedded resource (pass-1 image capture or pass-
 # The tree rebuilt from rmeta extraction.entries[] (depth-ordered, depth-stack assembly). The root
 # is the submitted file ("/", depth 0); each entry's non-empty text is an ExtractedText child.
 # Per-entry scalars (sha256, md5, sha1, size_bytes, language, error, phash, colorhash) and the
-# Tika metadata keys live in EmbeddedResource.metadata (a Record, not a child node). The root's
-# metadata also carries redtusk_rmeta, the full rmeta document as a JSON string.
-# Engine-derived per-entry evidence is on every node's metadata under a "redtusk:" namespace,
-# applied after the Tika keys so a document cannot spoof it: redtusk:parent_path,
+# Tika metadata keys live in EmbeddedResource.metadata (a Record, not a child node); the scalars
+# win over a same-named Tika key. The root's metadata also carries redtusk_rmeta, the full rmeta
+# document as a JSON string.
+# Engine-derived per-entry evidence is on every node's metadata under a "redtusk:" namespace. A
+# document cannot spoof it: Tika keys starting "redtusk:" / "redtusk_" (and embedded_paths) are
+# dropped, so an engine field that is absent is really absent. redtusk:parent_path,
 # redtusk:has_thumbnail, redtusk:thumbnail_skipped, redtusk:qr (Record of parallel lists data /
-# format / position / raw_bytes plus skipped) and redtusk:ocr (Record text / language /
+# format / position / raw_bytes plus skipped) and redtusk:ocr (Record text, at most 16384 chars
+# with text_truncated set when cut (the full text is the node's ExtractedText child) / language /
 # duration_ms / skipped), each only when there is a result or an unusual skip reason: the
 # routine reasons "disabled" and "no_images" are omitted, not attached to every node. A truncated
 # result also carries redtusk:truncated (Record reason / limit / observed) on the root.
