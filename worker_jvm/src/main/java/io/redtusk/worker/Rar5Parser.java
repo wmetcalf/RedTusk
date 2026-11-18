@@ -32,7 +32,9 @@ final class Rar5Parser implements Parser {
     });
     private final String decoder;
     Rar5Parser() { this(System.getenv().getOrDefault("REDTUSK_7ZZ", "7zz")); }
-    Rar5Parser(String decoder) { this.decoder = decoder; }
+    private final long deadlineSeconds;
+    Rar5Parser(String decoder) { this(decoder, DEADLINE_SECONDS); }
+    Rar5Parser(String decoder, long deadlineSeconds) { this.decoder = decoder; this.deadlineSeconds = deadlineSeconds; }
     @Override public Set<MediaType> getSupportedTypes(ParseContext context) {
         return Set.of(MediaType.application("x-rar-compressed"), MediaType.application("vnd.rar"));
     }
@@ -99,7 +101,11 @@ final class Rar5Parser implements Parser {
         catch (IOException e) { throw new TikaException("RAR5 decoder unavailable: 7zz could not start", e); }
         process.getOutputStream().close();
         var timedOut = new java.util.concurrent.atomic.AtomicBoolean();
-        ScheduledFuture<?> timeout = DEADLINES.schedule(() -> { timedOut.set(true); process.destroyForcibly(); },
+        // Only a decoder still running overruns the deadline: once 7zz has exited, a slow
+        // nested parse of what it already wrote is not a decoder failure.
+        ScheduledFuture<?> timeout = DEADLINES.schedule(() -> {
+                if (process.isAlive()) { timedOut.set(true); process.destroyForcibly(); }
+            },
             Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
         ByteArrayOutputStream errors = new ByteArrayOutputStream();
         Thread stderr = Thread.ofVirtual().start(() -> {
@@ -175,7 +181,8 @@ final class Rar5Parser implements Parser {
      *
      * Only for archives whose listing describes the stream exactly: every entry a regular file
      * or folder (no links or alternate streams, whose -so bytes their listed size does not
-     * describe) and every regular member carrying a CRC. Otherwise, or when the run stops
+     * describe), every regular member carrying a CRC, and the whole archive passing
+     * {@code 7zz t} (every member decodes to its listed size and CRC). Otherwise, or when the run stops
      * matching (short stream, CRC mismatch, non-zero exit), the remaining members are decoded
      * one 7zz run each, as before.
      *
@@ -187,6 +194,13 @@ final class Rar5Parser implements Parser {
             throws IOException, TikaException, SAXException {
         for (Member member : members)
             if ((member.skip() && !member.folder()) || (!member.skip() && member.crc() == null)) return 0;
+        // Splitting the -so stream by listed sizes is only sound when every member decodes to
+        // exactly its listed size and CRC: a short member shifts every later window, and an
+        // archive author can choose later header CRCs to match the shifted bytes. So the whole
+        // archive must first pass `7zz t`; otherwise one run per member, as before.
+        Run<byte[]> test = run(List.of(decoder, "t", "-spd", "-sns-", "-y", "-p-", "-bso0", "-bsp0", "--", path),
+            deadline, stdout -> stdout.readNBytes(64 * 1024));
+        if (test.exit() != 0 || !test.drained()) return 0;
         int[] next = {0};
         Run<Boolean> run = run(List.of(decoder, "x", "-so", "-spd", "-sns-", "-y", "-p-", "-bso0", "-bsp0", "--", path),
             deadline, stdout -> {
@@ -216,7 +230,7 @@ final class Rar5Parser implements Parser {
         // Each pass (and each nesting level) decodes the archive again with its own deadline, so
         // two of them must fit the engine's default 120 s job budget with room for the rest
         // of the job; a deadline overrun refuses only this archive, not the job.
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(DEADLINE_SECONDS);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(deadlineSeconds);
         String path = input.getFile().getAbsolutePath();
         byte[] listing = command(List.of(decoder, "l", "-slt", "-ba", "-sns", "-sccUTF-8", "-p-", "--", path),
             4 * 1024 * 1024, deadline);

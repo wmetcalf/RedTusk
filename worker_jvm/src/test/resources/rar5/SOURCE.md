@@ -9,3 +9,8 @@ RedTusk#67). Each holds an unlisted NTFS alternate stream (decoy bytes "harmless
 payload.exe ("MALWARE!", benign text) and a data-less symlink whose header claims payload.exe's
 size, so a whole-archive `7zz x -so` stream matches the listing's total while shifting
 payload.exe's bytes. Benign: no executable content.
+
+truncated_member_{shuffle,swap,stored}.rar: hand-built stored RAR5 (2026-11-18 review of
+RedTusk#67). A member stores fewer bytes than its listed Size, and later members' header CRCs
+are chosen to match the windows they shift into, so a whole-archive `7zz x -so` stream that is
+split by listed sizes publishes bytes under the wrong names. `7zz t` exits 2 on each. Benign.

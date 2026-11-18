@@ -153,7 +153,7 @@ class Rar5ParserTest {
         Path decoder = fakeDecoder(THREE, "abcdefg", "exit 9");
         var seen = decodeWith(decoder, new org.apache.tika.metadata.Metadata());
         assertEquals(java.util.Map.of("a.txt", "abc", "empty.txt", "", "dir/b.txt", "defg"), seen);
-        assertEquals(2, calls(decoder), "one listing + one decode, whatever the member count");
+        assertEquals(3, calls(decoder), "one listing + one test + one decode, whatever the member count");
     }
 
     @Test void streamLongerThanItsListingIsRefused() throws Exception {
@@ -234,7 +234,11 @@ class Rar5ParserTest {
     // --- a whole-archive stream must never shift a member's bytes ------------------------------
 
     private java.util.Map<String, String> decodeReal(String fixture) throws Exception {
-        var seen = new java.util.LinkedHashMap<String, String>();
+        return decodeRealInto(fixture, new java.util.LinkedHashMap<>());
+    }
+
+    private java.util.Map<String, String> decodeRealInto(String fixture, java.util.Map<String, String> seen)
+            throws Exception {
         var context = new org.apache.tika.parser.ParseContext();
         context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
             public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
@@ -287,5 +291,35 @@ class Rar5ParserTest {
         }
         assertEquals(3, spooled.size());
         assertTrue(spooled.stream().allMatch(n -> n == tmpBefore), "a whole-archive spool dir exists: " + spooled);
+    }
+
+    @Test void truncatedMemberCannotShiftLaterMembersUnderChosenCrcs() throws Exception {
+        // A short member makes `7zz x -so` keep going with later members' bytes; header CRCs
+        // the author chose let the shifted windows pass. Nothing may be published under a
+        // name whose bytes are not its own: the archive is refused, as one-run-per-member did.
+        for (String fixture : java.util.List.of("truncated_member_shuffle", "truncated_member_swap",
+                "truncated_member_stored")) {
+            var seen = new java.util.LinkedHashMap<String, String>();
+            assertThrows(org.apache.tika.exception.TikaException.class,
+                () -> seen.putAll(decodeRealInto(fixture, seen)), fixture);
+            assertFalse(seen.containsKey("readme.txt") || "harmless".equals(seen.get("payload.exe")),
+                fixture + ": " + seen);
+        }
+    }
+
+    @Test void aSlowNestedParseAfterTheLastMemberIsNotADeadlineFailure() throws Exception {
+        Path decoder = fakeDecoder("Path = a.txt\\nSize = 3\\nFolder = -\\nCRC = 352441C2\\n", "abc", "exit 9");
+        var context = new org.apache.tika.parser.ParseContext();
+        context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+            public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
+            public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml) {
+                try { Thread.sleep(1500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+        });
+        try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
+            new Rar5Parser(decoder.toString(), 1).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+                new org.apache.tika.metadata.Metadata(), context);
+        }
     }
 }

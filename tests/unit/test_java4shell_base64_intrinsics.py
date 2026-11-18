@@ -474,6 +474,8 @@ def test_stale_checkpoint_falls_back_to_a_cold_jvm(
     monkeypatch.setenv("REDTUSK_CRAC_SCRATCH", str(tmp_path / "scr"))
     monkeypatch.setattr(eng, "_run_worker", lambda i, r, *, timeout: calls.append("cold"))
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: restores.append(a))
+    # the cold jar writes this engine's format, so it may stand in (see test_crac_worker_format)
+    monkeypatch.setattr(eng, "_cold_jar_worker_format", lambda *_a: str(eng._WORKER_FORMAT))
     eng.RedTuskEngine()._produce_rmeta(inp, tmp_path / "rmeta", 5.0)
     assert restores == [], "a checkpoint without the marker must never be restored"
     assert calls == ["cold"]
