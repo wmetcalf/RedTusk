@@ -152,7 +152,7 @@ services:
       # corpus re-run then failed 7 samples here with "timed out after 120.0 seconds" that the
       # FC tier completed. Ordering that must hold: guest 240 < host worker_timeout_s 300 <
       # warm-stale cutoff 360. Raising it also widens the window a slow sample can hold a slot.
-      - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2","BLASTBOX_TIMEOUT=240"]
+      - BLASTBOX_GVISOR_EXTRA_ENV=["JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2 -XX:-UseBASE64Intrinsics","BLASTBOX_TIMEOUT=240"]
     volumes:
       # job_root (host-consistent, same path as the cold dispatcher) — read the staged input.
       - "${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs:${REDTUSK_DATA_DIR:-/var/lib/redtusk}/jobs"

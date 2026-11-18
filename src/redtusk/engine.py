@@ -80,8 +80,17 @@ _WARM_STDERR_LOG = "warm-stderr.log"
 # failure path.
 _WARM_STDERR_TAIL_BYTES = 64 * 1024
 
+# CVE-2026-114938 ("Java4Shell"): heap overflow in HotSpot's AVX-512 VBMI Base64 decode
+# intrinsic (JDK 17.0.6+ .. 27). Hostile documents reach java.util.Base64 inside the worker,
+# so the intrinsic is OFF for every worker JVM. java.util.Base64 still works (pure-Java path);
+# only the assembly stub is disabled. It is part of the default bundle (so the AOT cache and
+# the warm FC/gVisor JVMs are booted with it) AND forced onto a REDTUSK_JAVA_OPTS override --
+# an operator flag bundle must not be able to silently re-enable the vulnerable stub.
+_BASE64_INTRINSICS_OFF = "-XX:-UseBASE64Intrinsics"
+
 _DEFAULT_JVM_FLAGS: tuple[str, ...] = (
     "-XX:+UseSerialGC",
+    _BASE64_INTRINSICS_OFF,
     "-XX:TieredStopAtLevel=1",
     "-Xms800m",
     "-Xmx800m",
@@ -325,6 +334,17 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _force_base64_intrinsics_off(flags: list[str]) -> list[str]:
+    """Drop any UseBASE64Intrinsics setting from *flags* and append the OFF flag last.
+
+    HotSpot honours the LAST occurrence of a flag, so appending alone would already win;
+    stripping the others keeps the argv unambiguous to a reader of ``ps``/logs.
+    """
+    kept = [f for f in flags if not f.startswith(("-XX:+UseBASE64Intrinsics",
+                                                  "-XX:-UseBASE64Intrinsics"))]
+    return [*kept, _BASE64_INTRINSICS_OFF]
+
+
 def _java_worker_argv(scratch: Path) -> list[str]:
     """Build the in-process JVM worker argv (``java ... -jar ... --run <scratch>``).
 
@@ -336,7 +356,9 @@ def _java_worker_argv(scratch: Path) -> list[str]:
     - ``REDTUSK_AOT_CACHE``         AOT cache; only added when the file exists
     - ``REDTUSK_JAVA_LIBRARY_PATH`` native lib dir (default ``/app``)
     - ``REDTUSK_JAVA_OPTS``         full JVM-flag override (shlex-split), replacing
-                                    the default flag bundle entirely
+                                    the default flag bundle -- except
+                                    ``-XX:-UseBASE64Intrinsics`` (CVE-2026-114938),
+                                    which is always forced on
     """
     java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
     jar = os.environ.get("REDTUSK_WORKER_JAR", _DEFAULT_WORKER_JAR)
@@ -345,7 +367,7 @@ def _java_worker_argv(scratch: Path) -> list[str]:
 
     opts_override = os.environ.get("REDTUSK_JAVA_OPTS")
     if opts_override is not None:
-        jvm_flags = shlex.split(opts_override)
+        jvm_flags = _force_base64_intrinsics_off(shlex.split(opts_override))
     else:
         jvm_flags = [f"-Djava.library.path={lib_path}", *_DEFAULT_JVM_FLAGS]
         # The AOT cache is flag-sensitive and baked into the cold-worker image;

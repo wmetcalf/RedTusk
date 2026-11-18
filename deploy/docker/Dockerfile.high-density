@@ -125,6 +125,7 @@ COPY deploy/docker/appcds-warmup-corpus/ /opt/redtusk/corpus/
 # Build AppCDS archive using Azul Zulu (same JRE as runtime — guarantees checksum match).
 RUN java \
     -XX:ArchiveClassesAtExit=/opt/redtusk/redtusk.jsa \
+    -XX:-UseBASE64Intrinsics \
     -Xmx800m \
     --enable-native-access=ALL-UNNAMED \
     -Djava.library.path=/opt/redtusk \
@@ -144,6 +145,7 @@ RUN mkdir -p /opt/redtusk/checkpoint \
 RUN java \
       -Xshare:on \
       -XX:SharedArchiveFile=/opt/redtusk/redtusk.jsa \
+      -XX:-UseBASE64Intrinsics \
       -Xmx800m \
       --enable-native-access=ALL-UNNAMED \
       -Djava.library.path=/opt/redtusk \

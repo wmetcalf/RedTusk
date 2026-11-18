@@ -171,7 +171,7 @@ print(",".join(sorted(names)) or "EMPTY")' 2>/dev/null)
     echo "  checking the AOT cache maps under the production JVM flags..."
     aot_errs=$(docker run --rm --entrypoint sh "$COLD_IMAGE" -c '
         java -XX:AOTCache=/app/redtusk.aot -Djava.library.path=/app -XX:+UseSerialGC \
-             -XX:TieredStopAtLevel=1 -Xms800m -Xmx800m --enable-native-access=ALL-UNNAMED \
+             -XX:TieredStopAtLevel=1 -XX:-UseBASE64Intrinsics -Xms800m -Xmx800m --enable-native-access=ALL-UNNAMED \
              -jar /app/redtusk-worker.jar --appcds-warmup /nonexistent 2>&1 | grep -ci "error.*aot" ')
     # ...and DIE on it. This used to only echo "!!", so the one thing it checked could fail and
     # the release still walked past it.

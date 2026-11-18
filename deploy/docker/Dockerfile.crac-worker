@@ -55,6 +55,7 @@ WORKDIR /app
 # /app/checkpoint and exits. (warp may exit non-zero by design on some builds; the
 # `test` confirms the image was actually written, which is the real success gate.)
 RUN java -XX:CRaCEngine=warp -XX:CRaCCheckpointTo=/app/checkpoint \
+        -XX:-UseBASE64Intrinsics \
         --enable-native-access=ALL-UNNAMED -Djava.library.path=/app \
         -jar /app/redtusk-worker.jar --checkpoint ${REDTUSK_CRAC_SCRATCH} \
     ; test -s /app/checkpoint/core.img \

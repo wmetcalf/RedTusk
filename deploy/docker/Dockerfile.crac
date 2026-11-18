@@ -136,6 +136,7 @@ RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \
@@ -147,6 +148,7 @@ RUN java \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     # bytecode verification stays ON (removed -Xverify:none): the restored
     # worker parses hostile input, so verification must not be disabled.
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
