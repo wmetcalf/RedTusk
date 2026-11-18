@@ -32,9 +32,16 @@ final class Rar5Parser implements Parser {
     });
     private final String decoder;
     Rar5Parser() { this(System.getenv().getOrDefault("REDTUSK_7ZZ", "7zz")); }
+    /** Below this many files the per-member decode is cheap, and the single run (a `7zz t`
+     * pass plus an `x -so` pass) would decode the archive twice under one deadline. */
+    static final int SINGLE_RUN_MIN_MEMBERS = 16;
     private final long deadlineSeconds;
+    private final int singleRunMinMembers;
     Rar5Parser(String decoder) { this(decoder, DEADLINE_SECONDS); }
-    Rar5Parser(String decoder, long deadlineSeconds) { this.decoder = decoder; this.deadlineSeconds = deadlineSeconds; }
+    Rar5Parser(String decoder, long deadlineSeconds) { this(decoder, deadlineSeconds, SINGLE_RUN_MIN_MEMBERS); }
+    Rar5Parser(String decoder, long deadlineSeconds, int singleRunMinMembers) {
+        this.decoder = decoder; this.deadlineSeconds = deadlineSeconds; this.singleRunMinMembers = singleRunMinMembers;
+    }
     @Override public Set<MediaType> getSupportedTypes(ParseContext context) {
         return Set.of(MediaType.application("x-rar-compressed"), MediaType.application("vnd.rar"));
     }
@@ -203,6 +210,7 @@ final class Rar5Parser implements Parser {
                            org.apache.tika.extractor.EmbeddedDocumentExtractor extractor,
                            XHTMLContentHandler xhtml, ParseContext context)
             throws IOException, TikaException, SAXException {
+        if (members.stream().filter(m -> !m.skip()).count() < singleRunMinMembers) return 0;
         for (Member member : members)
             if ((member.skip() && !member.folder())
                     || (!member.skip() && (member.crc() == null || !member.ownData()))) return 0;

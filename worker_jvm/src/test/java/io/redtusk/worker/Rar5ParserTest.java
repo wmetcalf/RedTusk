@@ -86,7 +86,7 @@ class Rar5ParserTest {
             }
         });
         try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
-            assertThrows(org.apache.tika.exception.TikaException.class, () -> new Rar5Parser(decoder.toString()).parse(
+            assertThrows(org.apache.tika.exception.TikaException.class, () -> new Rar5Parser(decoder.toString(), Rar5Parser.DEADLINE_SECONDS, 1).parse(
                 input, new org.xml.sax.helpers.DefaultHandler(), new org.apache.tika.metadata.Metadata(), context));
         }
         assertEquals(0, count.get());
@@ -135,7 +135,7 @@ class Rar5ParserTest {
             }
         });
         try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
-            new Rar5Parser(decoder.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(), root, context);
+            new Rar5Parser(decoder.toString(), Rar5Parser.DEADLINE_SECONDS, 1).parse(input, new org.xml.sax.helpers.DefaultHandler(), root, context);
         }
         return seen;
     }
@@ -204,7 +204,7 @@ class Rar5ParserTest {
             }
         });
         try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
-            new Rar5Parser(decoder.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+            new Rar5Parser(decoder.toString(), Rar5Parser.DEADLINE_SECONDS, 1).parse(input, new org.xml.sax.helpers.DefaultHandler(),
                 new org.apache.tika.metadata.Metadata(), context);
         }
         assertEquals(java.util.List.of("a.txt"), seen);
@@ -250,7 +250,7 @@ class Rar5ParserTest {
             }
         });
         try (var input = org.apache.tika.io.TikaInputStream.get(fixture(fixture).toPath())) {
-            new Rar5Parser().parse(input, new org.xml.sax.helpers.DefaultHandler(),
+            new Rar5Parser(System.getenv().getOrDefault("REDTUSK_7ZZ", "7zz"), Rar5Parser.DEADLINE_SECONDS, 1).parse(input, new org.xml.sax.helpers.DefaultHandler(),
                 new org.apache.tika.metadata.Metadata(), context);
         }
         return seen;
@@ -286,7 +286,7 @@ class Rar5ParserTest {
             }
         });
         try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
-            new Rar5Parser(decoder.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+            new Rar5Parser(decoder.toString(), Rar5Parser.DEADLINE_SECONDS, 1).parse(input, new org.xml.sax.helpers.DefaultHandler(),
                 new org.apache.tika.metadata.Metadata(), context);
         }
         assertEquals(3, spooled.size());
@@ -318,7 +318,7 @@ class Rar5ParserTest {
             }
         });
         try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
-            new Rar5Parser(decoder.toString(), 1).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+            new Rar5Parser(decoder.toString(), 1, 1).parse(input, new org.xml.sax.helpers.DefaultHandler(),
                 new org.apache.tika.metadata.Metadata(), context);
         }
     }
@@ -359,10 +359,35 @@ class Rar5ParserTest {
             }
         });
         try (var input = org.apache.tika.io.TikaInputStream.get(fixture("multiple_files").toPath())) {
-            new Rar5Parser(shim.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+            new Rar5Parser(shim.toString(), Rar5Parser.DEADLINE_SECONDS, 1).parse(input, new org.xml.sax.helpers.DefaultHandler(),
                 new org.apache.tika.metadata.Metadata(), context);
         }
         assertEquals(4, seen.size(), seen.toString());
         assertEquals(java.util.List.of("l", "t", "x"), java.nio.file.Files.readAllLines(log));
+    }
+
+    @Test void smallArchivesKeepThePerMemberDecode() throws Exception {
+        // a `7zz t` pass plus an `x -so` pass decode the archive twice under one deadline; for a
+        // few members one run each is cheaper and keeps a large single member within budget
+        Path decoder = fakeDecoder(THREE, "abcdefg", "[ \"$last\" = a.txt ] && printf abc && exit 0; "
+            + "[ \"$last\" = empty.txt ] && exit 0; [ \"$last\" = dir/b.txt ] && printf defg && exit 0; exit 9");
+        var seen = new java.util.LinkedHashMap<String, String>();
+        var context = new org.apache.tika.parser.ParseContext();
+        context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+            public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
+            public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml)
+                    throws java.io.IOException {
+                seen.put(metadata.get(org.apache.tika.metadata.TikaCoreProperties.RESOURCE_NAME_KEY),
+                    new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+            }
+        });
+        try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
+            new Rar5Parser(decoder.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+                new org.apache.tika.metadata.Metadata(), context);
+        }
+        assertEquals(java.util.Map.of("a.txt", "abc", "empty.txt", "", "dir/b.txt", "defg"), seen);
+        assertFalse(java.nio.file.Files.readAllLines(decoder.resolveSibling("calls.log")).stream()
+            .anyMatch(line -> line.startsWith("t ")), "no whole-archive test for 3 members");
     }
 }
