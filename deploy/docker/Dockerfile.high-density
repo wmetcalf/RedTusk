@@ -48,7 +48,12 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # (wmetcalf/tika #7) + audit-hardening PRs (#8/#9/#10) + inventory regen (#11)
 # + the OCR downscale fix (#48) merged. Validated end-to-end through the RedTusk
 # worker; inventory CI green on the branch.
-ARG TIKA_FORK_SHA=1ed7b37d11c4363fdf92f62a38947918803522ed
+# Bumped 2026-11-18 to 99deda72bb: 1ed7b37 + "fix(archives): retain caller context for embedded
+# extractors" (wmetcalf/tika fix/archive-caller-context-on-pin). Replaces the git-apply'd
+# tika-archive-extractor-context.patch, which the pin gate rightly rejects. Until that branch is
+# merged into 4.0-upstream-office-links, the commit is reachable only through it (the clone below
+# fetches all heads, so the checkout works either way).
+ARG TIKA_FORK_SHA=99deda72bb09abd9998b900a0178fa685ebbf182
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
