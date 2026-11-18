@@ -439,6 +439,32 @@ _WORKER_FORMAT = 2
 _CRAC_WORKER_FORMAT_MARKER = "redtusk-worker-format"
 
 
+class _StaleWorkerFormatError(RuntimeError):
+    """A CRaC checkpoint whose worker writes another output format than this engine reads."""
+
+
+def _cold_jar_worker_format() -> str | None:
+    """Ask the jar a cold fallback would boot which output format it writes (None if unknown).
+
+    Only run when a checkpoint was refused for its format: redtusk-cold-worker:crac boots the
+    very jar that was checkpointed, so a cold fallback there would write the same stale
+    layout. A jar from before ``--worker-format`` existed exits non-zero (usage) -> None.
+    """
+    java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
+    jar = os.environ.get("REDTUSK_WORKER_JAR", _DEFAULT_WORKER_JAR)
+    try:
+        result = subprocess.run(
+            [java_bin, _BASE64_INTRINSICS_OFF, "-jar", jar, "--worker-format"],
+            capture_output=True, text=True, timeout=60, check=False,
+            env=_jvm_env(dict(os.environ)),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()[:32] or None
+
+
 def _check_checkpoint_worker_format(checkpoint_dir: str) -> None:
     """Raise unless the checkpoint records this engine's worker output format."""
     marker = Path(checkpoint_dir) / _CRAC_WORKER_FORMAT_MARKER
@@ -448,7 +474,7 @@ def _check_checkpoint_worker_format(checkpoint_dir: str) -> None:
         recorded = None
     if recorded != str(_WORKER_FORMAT):
         found = "is missing" if recorded is None else f"records format {recorded!r}"
-        raise RuntimeError(
+        raise _StaleWorkerFormatError(
             f"CRaC checkpoint {checkpoint_dir}: {_CRAC_WORKER_FORMAT_MARKER} {found}, but this "
             f"engine reads worker format {_WORKER_FORMAT}; the checkpointed worker would write "
             "output this engine misreads. Rebuild redtusk-worker:crac and "
@@ -934,6 +960,15 @@ class RedTuskEngine:
                 )
                 return
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, _StaleWorkerFormatError):
+                    cold = _cold_jar_worker_format()
+                    if cold != str(_WORKER_FORMAT):
+                        # The cold JVM would boot a jar writing a stale layout too (in
+                        # redtusk-cold-worker:crac it IS the checkpointed jar): fail closed.
+                        raise RuntimeError(
+                            f"{exc}; the cold-fallback jar reports worker format {cold!r}, "
+                            f"not {_WORKER_FORMAT}, so it cannot stand in"
+                        ) from exc
                 logger.warning("redtusk CRaC restore failed (%s); cold fallback", exc)
                 _reset_rmeta_dir(rmeta_dir)
                 _run_worker(input, rmeta_dir, timeout=timeout)

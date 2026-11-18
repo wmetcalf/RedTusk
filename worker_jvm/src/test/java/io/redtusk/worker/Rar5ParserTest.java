@@ -144,10 +144,10 @@ class Rar5ParserTest {
         return java.nio.file.Files.readAllLines(decoder.resolveSibling("calls.log")).size();
     }
 
-    private static final String THREE = "Path = a.txt\\nSize = 3\\nFolder = -\\n\\n"
+    private static final String THREE = "Path = a.txt\\nSize = 3\\nFolder = -\\nCRC = 352441C2\\n\\n"
         + "Path = dir\\nSize = 0\\nFolder = +\\n\\n"
-        + "Path = empty.txt\\nSize = 0\\nFolder = -\\n\\n"
-        + "Path = dir/b.txt\\nSize = 4\\nFolder = -\\n";
+        + "Path = empty.txt\\nSize = 0\\nFolder = -\\nCRC = 00000000\\n\\n"
+        + "Path = dir/b.txt\\nSize = 4\\nFolder = -\\nCRC = 3B6D8E59\\n";
 
     @Test void decodesEveryMemberWithOneDecoderRun() throws Exception {
         Path decoder = fakeDecoder(THREE, "abcdefg", "exit 9");
@@ -213,8 +213,8 @@ class Rar5ParserTest {
     @Test void failedWholeArchiveRunFallsBackToPerMemberDecoding() throws Exception {
         // One corrupt member makes the single run fail; the members before it are still
         // published, as the one-run-per-member decoder did.
-        String listing = "Path = a.txt\\nSize = 3\\nFolder = -\\n\\n"
-            + "Path = bad.bin\\nSize = 2\\nFolder = -\\n";
+        String listing = "Path = a.txt\\nSize = 3\\nFolder = -\\nCRC = 352441C2\\n\\n"
+            + "Path = bad.bin\\nSize = 2\\nFolder = -\\nCRC = 00000000\\n";
         Path dir = output.resolve("fake-fail");
         java.nio.file.Files.createDirectories(dir);
         Path decoder = dir.resolve("decoder");
@@ -229,5 +229,63 @@ class Rar5ParserTest {
         assertThrows(org.apache.tika.exception.TikaException.class,
             () -> seen.putAll(decodeWithInto(decoder, seen)));
         assertEquals(java.util.Map.of("a.txt", "abc"), seen);
+    }
+
+    // --- a whole-archive stream must never shift a member's bytes ------------------------------
+
+    private java.util.Map<String, String> decodeReal(String fixture) throws Exception {
+        var seen = new java.util.LinkedHashMap<String, String>();
+        var context = new org.apache.tika.parser.ParseContext();
+        context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+            public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
+            public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml)
+                    throws java.io.IOException {
+                seen.put(metadata.get(org.apache.tika.metadata.TikaCoreProperties.RESOURCE_NAME_KEY),
+                    new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+            }
+        });
+        try (var input = org.apache.tika.io.TikaInputStream.get(fixture(fixture).toPath())) {
+            new Rar5Parser().parse(input, new org.xml.sax.helpers.DefaultHandler(),
+                new org.apache.tika.metadata.Metadata(), context);
+        }
+        return seen;
+    }
+
+    @Test void unlistedAlternateStreamCannotShiftAMembersBytes() throws Exception {
+        // A decoy alternate stream (unlisted without -sns, yet written by x -so) plus a
+        // data-less symlink claiming the same size keeps the whole stream's total equal to
+        // the listing's while handing payload.exe the decoy's bytes.
+        for (String fixture : java.util.List.of("altstream_decoy_symlink", "altstream_decoy_regular")) {
+            var seen = decodeReal(fixture);
+            assertEquals("MALWARE!", seen.get("payload.exe"), fixture + ": " + seen);
+            assertFalse(seen.containsValue("harmless"), fixture + ": " + seen);
+        }
+        assertEquals("abc", decodeReal("altstream_decoy_regular").get("f1.txt"));
+    }
+
+    @Test void membersArePublishedAsTheyAreDecodedNotSpooledFirst() throws Exception {
+        // The single run must not stage the whole archive before publishing: by the time the
+        // first member is parsed, the private scratch must hold at most that member.
+        Path decoder = fakeDecoder(THREE, "abcdefg", "exit 9");
+        var tmpBefore = java.nio.file.Files.list(Path.of(System.getProperty("java.io.tmpdir")))
+            .filter(p -> p.getFileName().toString().startsWith("redtusk-rar5-")).count();
+        var context = new org.apache.tika.parser.ParseContext();
+        var spooled = new java.util.ArrayList<Long>();
+        context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+            public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
+            public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml)
+                    throws java.io.IOException {
+                spooled.add(java.nio.file.Files.list(Path.of(System.getProperty("java.io.tmpdir")))
+                    .filter(p -> p.getFileName().toString().startsWith("redtusk-rar5-")).count());
+            }
+        });
+        try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
+            new Rar5Parser(decoder.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+                new org.apache.tika.metadata.Metadata(), context);
+        }
+        assertEquals(3, spooled.size());
+        assertTrue(spooled.stream().allMatch(n -> n == tmpBefore), "a whole-archive spool dir exists: " + spooled);
     }
 }

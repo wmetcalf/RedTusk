@@ -18,9 +18,10 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /** Modern RAR decoding stays inside the existing worker sandbox. The archive is listed once
- * and decoded once (one 7zz stream split by the listed sizes); each member is bounded and
- * published only after decoder success and an exact size check. Archive paths are never
- * extracted to disk: decoded bytes are spooled to index-named files in a private scratch dir. */
+ * (alternate streams included) and, when the listing describes the decoded stream exactly,
+ * decoded once (one 7zz stream read member by member, each checked against its listed size
+ * and CRC32 before it is published); otherwise one bounded 7zz run per member. Each member is
+ * bounded, held in memory one at a time, and never extracted to disk by archive path. */
 final class Rar5Parser implements Parser {
     private static final byte[] MAGIC = {'R', 'a', 'r', '!', 0x1a, 7, 1, 0};
     private static final long MAX_BYTES = 256L * 1024 * 1024;
@@ -35,7 +36,8 @@ final class Rar5Parser implements Parser {
     @Override public Set<MediaType> getSupportedTypes(ParseContext context) {
         return Set.of(MediaType.application("x-rar-compressed"), MediaType.application("vnd.rar"));
     }
-    record Member(String path, long size, boolean skip, boolean folder) { }
+    /** crc is the listed CRC32 of the member's data, or null when the archive gives none. */
+    record Member(String path, long size, boolean skip, boolean folder, Long crc) { }
 
     static List<Member> listedEntries(String listing, int maxEntries, long budget) throws TikaException {
         List<Member> entries = new ArrayList<>();
@@ -70,13 +72,16 @@ final class Rar5Parser implements Parser {
                 || !fields.getOrDefault("Symbolic Link", "").isEmpty()
                 || !fields.getOrDefault("Hard Link", "").isEmpty()
                 || !fields.getOrDefault("Copy Link", "").isEmpty();
-            entries.add(new Member(path, size, skip, "+".equals(folder))); total += size;
+            Long crc = null;
+            String listedCrc = fields.getOrDefault("CRC", "");
+            if (listedCrc.matches("[0-9A-Fa-f]{8}")) crc = Long.parseLong(listedCrc, 16);
+            entries.add(new Member(path, size, skip, "+".equals(folder), crc)); total += size;
         }
         return entries;
     }
 
     @FunctionalInterface
-    private interface StdoutReader<T> { T read(InputStream stdout) throws IOException, TikaException; }
+    private interface StdoutReader<T> { T read(InputStream stdout) throws IOException, TikaException, SAXException; }
 
     /** What one decoder run produced: the reader's value, whether stdout ended where the reader
      * stopped (false = more output followed, so the process was killed), and the exit status. */
@@ -85,7 +90,7 @@ final class Rar5Parser implements Parser {
     /** Runs the decoder once under the shared deadline. A deadline overrun always throws; a
      * non-zero exit or undrained stdout is reported to the caller, which decides. */
     private <T> Run<T> run(List<String> args, long deadline, StdoutReader<T> reader)
-            throws IOException, TikaException {
+            throws IOException, TikaException, SAXException {
         if (System.nanoTime() >= deadline) throw new TikaException("RAR5 decoder deadline exceeded");
         ProcessBuilder builder = new ProcessBuilder(args);
         builder.environment().put("LC_ALL", "C.UTF-8");
@@ -127,68 +132,77 @@ final class Rar5Parser implements Parser {
 
     /** Captures at most cap bytes of stdout; anything more refuses the archive. */
     private byte[] command(List<String> args, int cap, long deadline) throws IOException, TikaException {
-        Run<byte[]> run = run(args, deadline, stdout -> stdout.readNBytes(cap + 1));
+        Run<byte[]> run;
+        try { run = run(args, deadline, stdout -> stdout.readNBytes(cap + 1)); }
+        catch (SAXException e) { throw new TikaException("RAR5 decoder output unreadable", e); }
         if (run.value().length > cap || !run.drained())
             throw new TikaException("RAR5 decoder exceeded its output byte budget");
         if (run.exit() != 0) throw new TikaException("RAR5 decoder refused archive: " + run.errors());
         return run.value();
     }
 
-    /** Copies exactly n bytes of in to out (null = discard); false if in ends first. */
-    private static boolean copyExactly(InputStream in, OutputStream out, long n) throws IOException {
-        byte[] block = new byte[64 * 1024];
-        while (n > 0) {
-            int r = in.read(block, 0, (int) Math.min(block.length, n));
-            if (r < 0) return false;
-            if (out != null) out.write(block, 0, r);
-            n -= r;
+    /** The per-member decode: one bounded 7zz run for this member only. */
+    private byte[] decodeMember(String path, Member member, long deadline) throws IOException, TikaException {
+        byte[] bytes = command(List.of(decoder, "x", "-so", "-spd", "-sns-", "-y", "-p-", "-bso0", "-bsp0",
+            path, "--", member.path()), (int) member.size(), deadline);
+        if (bytes.length != member.size()) throw new TikaException("RAR5 decoded member size mismatch");
+        return bytes;
+    }
+
+    /** Offers a decoded member to the extractor, asked in order right before publishing, so an
+     * extractor that counts what it has parsed (an entry budget) sees each decision after the
+     * last. */
+    private static void publish(Member member, byte[] bytes, org.apache.tika.extractor.EmbeddedDocumentExtractor extractor,
+                                XHTMLContentHandler xhtml, ParseContext context) throws IOException, SAXException {
+        Metadata child = new Metadata();
+        child.set(TikaCoreProperties.RESOURCE_NAME_KEY, member.path());
+        child.set(Metadata.CONTENT_LENGTH, Long.toString(member.size()));
+        if (!extractor.shouldParseEmbedded(child)) return;
+        try (TikaInputStream stream = TikaInputStream.get(bytes)) {
+            extractor.parseEmbedded(stream, xhtml, child, context, true);
         }
-        return true;
+    }
+
+    private static long crc32(byte[] bytes) {
+        var crc = new java.util.zip.CRC32(); crc.update(bytes); return crc.getValue();
     }
 
     /**
-     * Decodes the whole archive with ONE decoder run ({@code 7zz x -so} writes every non-folder
-     * member's data to stdout, in listing order) and splits that stream by the listed sizes
-     * into files named by member index in a private scratch directory -- never by archive
-     * paths. Nothing is published here; the caller publishes in order afterwards.
+     * Decodes and publishes the archive with ONE decoder run where that is safe: {@code 7zz x
+     * -so -sns-} writes every non-folder member's data in listing order, and each member is read
+     * by its listed size (at most 50 MiB, held in memory one at a time as before), checked
+     * against its listed CRC32, then published. Nothing is staged on disk.
      *
-     * @return one file per regular member (null for folders, links and alternate streams), or
-     *     null when the run failed or its stream did not match the listing exactly (a corrupt
-     *     member, or link entries whose -so bytes their listed size does not describe); the
-     *     caller then decodes member by member, as before, so the members ahead of a bad one
-     *     are still published. A deadline overrun throws.
+     * Only for archives whose listing describes the stream exactly: every entry a regular file
+     * or folder (no links or alternate streams, whose -so bytes their listed size does not
+     * describe) and every regular member carrying a CRC. Otherwise, or when the run stops
+     * matching (short stream, CRC mismatch, non-zero exit), the remaining members are decoded
+     * one 7zz run each, as before.
+     *
+     * @return the index of the first member NOT yet handled (members.size() when all were)
      */
-    private List<java.nio.file.Path> decodeOnce(String path, List<Member> members, long deadline,
-                                                java.nio.file.Path scratch)
-            throws IOException, TikaException {
-        List<java.nio.file.Path> files = new ArrayList<>(Collections.nCopies(members.size(), null));
-        Run<Boolean> run = run(List.of(decoder, "x", "-so", "-spd", "-y", "-p-", "-bso0", "-bsp0", "--", path),
+    private int decodeOnce(String path, List<Member> members, long deadline,
+                           org.apache.tika.extractor.EmbeddedDocumentExtractor extractor,
+                           XHTMLContentHandler xhtml, ParseContext context)
+            throws IOException, TikaException, SAXException {
+        for (Member member : members)
+            if ((member.skip() && !member.folder()) || (!member.skip() && member.crc() == null)) return 0;
+        int[] next = {0};
+        Run<Boolean> run = run(List.of(decoder, "x", "-so", "-spd", "-sns-", "-y", "-p-", "-bso0", "-bsp0", "--", path),
             deadline, stdout -> {
-                for (int i = 0; i < members.size(); i++) {
-                    Member member = members.get(i);
+                for (; next[0] < members.size(); next[0]++) {
+                    Member member = members.get(next[0]);
                     if (member.folder()) continue;
-                    if (member.skip()) {
-                        if (!copyExactly(stdout, null, member.size())) return false;
-                        continue;
-                    }
-                    java.nio.file.Path file = scratch.resolve(i + ".bin");
-                    try (OutputStream out = java.nio.file.Files.newOutputStream(file,
-                            java.nio.file.StandardOpenOption.CREATE_NEW)) {
-                        if (!copyExactly(stdout, out, member.size())) return false;
-                    }
-                    files.set(i, file);
+                    byte[] bytes = stdout.readNBytes((int) member.size());
+                    if (bytes.length != member.size() || crc32(bytes) != member.crc()) return false;
+                    publish(member, bytes, extractor, xhtml, context);
                 }
                 return true;
             });
-        return run.value() && run.drained() && run.exit() == 0 ? files : null;
-    }
-
-    private static void deleteTree(java.nio.file.Path dir) {
-        try (var walk = java.nio.file.Files.walk(dir)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
-                try { java.nio.file.Files.deleteIfExists(p); } catch (IOException ignored) { }
-            });
-        } catch (IOException ignored) { }
+        if (run.value() && run.drained() && run.exit() == 0) return members.size();
+        if (next[0] >= members.size())
+            throw new TikaException("RAR5 decoder wrote more than its member listing describes");
+        return next[0];
     }
 
     @Override public void parse(TikaInputStream input, ContentHandler handler, Metadata metadata,
@@ -204,47 +218,25 @@ final class Rar5Parser implements Parser {
         // of the job; a deadline overrun refuses only this archive, not the job.
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(DEADLINE_SECONDS);
         String path = input.getFile().getAbsolutePath();
-        byte[] listing = command(List.of(decoder, "l", "-slt", "-ba", "-sccUTF-8", "-p-", "--", path),
+        byte[] listing = command(List.of(decoder, "l", "-slt", "-ba", "-sns", "-sccUTF-8", "-p-", "--", path),
             4 * 1024 * 1024, deadline);
         List<Member> members = listedEntries(new String(listing, StandardCharsets.UTF_8), maxEntries, budget);
         metadata.set("X-RedTusk:archive-decoder", "7zip-rar5");
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context); xhtml.startDocument();
         var extractor = EmbeddedDocumentUtil.getEmbeddedDocumentExtractor(context);
-        boolean anyRegular = false;
-        for (Member member : members) {
+        for (Member member : members)
             if (member.skip()) metadata.add("X-RedTusk:archive-skipped", "non-regular entry: " + member.path());
-            else anyRegular = true;
-        }
-        if (anyRegular) {
-            java.nio.file.Path scratch = java.nio.file.Files.createTempDirectory("redtusk-rar5-");
-            try {
-                List<java.nio.file.Path> decoded = decodeOnce(path, members, deadline, scratch);
-                for (int i = 0; i < members.size(); i++) {
-                    Member member = members.get(i);
-                    if (member.skip()) continue;
-                    Metadata child = new Metadata();
-                    child.set(TikaCoreProperties.RESOURCE_NAME_KEY, member.path());
-                    child.set(Metadata.CONTENT_LENGTH, Long.toString(member.size()));
-                    // asked in order, right before publishing, so an extractor that counts
-                    // what it has parsed (an entry budget) sees each decision after the last
-                    if (!extractor.shouldParseEmbedded(child)) continue;
-                    if (decoded != null) {
-                        try (TikaInputStream stream = TikaInputStream.get(decoded.get(i))) {
-                            extractor.parseEmbedded(stream, xhtml, child, context, true);
-                        }
-                        java.nio.file.Files.deleteIfExists(decoded.get(i));
-                    } else {
-                        // the single run failed or did not match: one member per run, as before
-                        byte[] bytes = command(List.of(decoder, "x", "-so", "-spd", "-y", "-p-", "-bso0", "-bsp0",
-                            path, "--", member.path()), (int) member.size(), deadline);
-                        if (bytes.length != member.size()) throw new TikaException("RAR5 decoded member size mismatch");
-                        try (TikaInputStream stream = TikaInputStream.get(bytes)) {
-                            extractor.parseEmbedded(stream, xhtml, child, context, true);
-                        }
-                    }
-                }
-            } finally {
-                deleteTree(scratch);
+        int first = decodeOnce(path, members, deadline, extractor, xhtml, context);
+        for (int i = first; i < members.size(); i++) {
+            Member member = members.get(i);
+            if (member.skip()) continue;
+            Metadata probe = new Metadata();
+            probe.set(TikaCoreProperties.RESOURCE_NAME_KEY, member.path());
+            probe.set(Metadata.CONTENT_LENGTH, Long.toString(member.size()));
+            if (!extractor.shouldParseEmbedded(probe)) continue;
+            byte[] bytes = decodeMember(path, member, deadline);
+            try (TikaInputStream stream = TikaInputStream.get(bytes)) {
+                extractor.parseEmbedded(stream, xhtml, probe, context, true);
             }
         }
         xhtml.endDocument();

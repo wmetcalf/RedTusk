@@ -90,9 +90,53 @@ def test_stale_format_checkpoint_falls_back_to_a_cold_jvm(
     monkeypatch.setenv("REDTUSK_CRAC_SCRATCH", str(tmp_path / "scr"))
     monkeypatch.setattr(eng, "_run_worker", lambda i, r, *, timeout: calls.append("cold"))
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: restores.append(a))
+    # the cold JVM boots a jar that does write this engine's format (e.g. a fresh image whose
+    # checkpoint is stale), so falling back to it fixes the output
+    monkeypatch.setattr(eng, "_cold_jar_worker_format", lambda: str(eng._WORKER_FORMAT))
     eng.RedTuskEngine()._produce_rmeta(inp, tmp_path / "rmeta", 5.0)
     assert restores == [], "a checkpoint from another worker format must never be restored"
     assert calls == ["cold"]
+
+
+@pytest.mark.parametrize("cold_format", [None, "1", str(eng._WORKER_FORMAT + 1)])
+def test_stale_checkpoint_with_a_stale_cold_jar_fails_closed(
+    cold_format: str | None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # redtusk-cold-worker:crac boots the very jar that was checkpointed, so a cold fallback
+    # from a pre-#64 checkpoint would write the same old layout: refuse instead.
+    ckpt = _checkpoint(tmp_path, None)
+    inp = tmp_path / "in.txt"
+    inp.write_bytes(b"x")
+    calls: list[str] = []
+    monkeypatch.setenv("REDTUSK_CRAC_CHECKPOINT", str(ckpt))
+    monkeypatch.setenv("REDTUSK_CRAC_SCRATCH", str(tmp_path / "scr"))
+    monkeypatch.setattr(eng, "_run_worker", lambda i, r, *, timeout: calls.append("cold"))
+    monkeypatch.setattr(eng, "_cold_jar_worker_format", lambda: cold_format)
+    with pytest.raises(RuntimeError, match="worker format"):
+        eng.RedTuskEngine()._produce_rmeta(inp, tmp_path / "rmeta", 5.0)
+    assert calls == []
+
+
+def test_cold_jar_worker_format_asks_the_jar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="2\n", stderr="Picked up X\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("REDTUSK_WORKER_JAR", "/opt/w.jar")
+    assert eng._cold_jar_worker_format() == "2"
+    assert seen[0][-3:] == ["-jar", "/opt/w.jar", "--worker-format"]
+    assert "-XX:-UseBASE64Intrinsics" in seen[0]
+
+    def failing(argv: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 2, stdout="", stderr="Usage: ...")
+
+    monkeypatch.setattr(subprocess, "run", failing)
+    assert eng._cold_jar_worker_format() is None
 
 
 def test_crac_worker_image_records_the_format_of_the_jar_it_checkpointed() -> None:
