@@ -360,3 +360,37 @@ def test_ocr_text_copy_is_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ocr = res.payload.children[0].metadata.fields["redtusk:ocr"].fields
     assert len(ocr["text"]) == eng_mod._OCR_TEXT_CAP
     assert ocr["text_truncated"] is True
+
+
+
+def test_detonate_passes_known_embedded_to_kind_inference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A JVM older than the thumbnails_ reservation saved an entry named thumbnails/x.jpg under
+    # embedded/thumbnails/. The rmeta entry must still make it an embedded_file, not a thumbnail.
+    monkeypatch.setattr(eng_mod, "_embedded_disk_relpath", lambda p: p.lstrip("/"))
+    doc = _rmeta()
+    doc["extraction"]["entries"].append(
+        _entry("/thumbnails/old.jpg", "/", 1, "application/x-msdownload", "cd" * 32))
+    res = _detonate_with(tmp_path, monkeypatch, doc, {
+        "embedded/thumbnails/old.jpg": b"MZ\x90\x00",
+    })
+    kinds = {a.path: a.kind for a in res.artifacts}
+    assert kinds["rmeta/embedded/thumbnails/old.jpg"] == "embedded_file"
+
+
+def test_moved_aside_tree_is_trimmed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rmeta_dir = tmp_path / "out" / "rmeta"
+    (rmeta_dir / "embedded").mkdir(parents=True)
+    (rmeta_dir / "embedded" / "partial.bin").write_bytes(b"x" * 1024)
+    real_rmtree = shutil.rmtree
+
+    def rmtree_fails_on_rmeta(path: Any, *a: Any, **k: Any) -> None:
+        if Path(path) == rmeta_dir:
+            raise OSError(39, "Directory not empty", str(path))
+        real_rmtree(path, *a, **k)
+
+    monkeypatch.setattr(shutil, "rmtree", rmtree_fails_on_rmeta)
+    eng_mod._reset_rmeta_dir(rmeta_dir)
+    assert not rmeta_dir.exists()
+    assert [p.name for p in (tmp_path / "out").iterdir()] == [], "aside tree was not trimmed"

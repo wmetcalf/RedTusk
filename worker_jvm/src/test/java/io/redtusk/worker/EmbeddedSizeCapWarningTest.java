@@ -82,4 +82,39 @@ class EmbeddedSizeCapWarningTest {
         assertEquals(EmbeddedFileExtractor.MAX_FILE_BYTES, ex.maxFileBytes());
         assertEquals(EmbeddedFileExtractor.MAX_EXTRACTED_BUDGET_BYTES, ex.budgetBytes());
     }
+
+    @Test
+    void entriesSkippedByTheCountCapAreWarnedOnce(@TempDir Path tmp) throws Exception {
+        // MUTATION: drop the count-skip counter -> members past maxFiles vanish silently.
+        File in = zip(tmp, "a.txt", "10", "b.txt", "10", "c.txt", "10", "d.txt", "10");
+        var ex = new EmbeddedFileExtractor(10, 2, false, 1_000_000, 1_000_000);
+        ex.extract(in, tmp.resolve("out"));
+        List<ParseResult.WorkerWarning> ws = ex.warnings();
+        assertEquals(List.of("embedded_entries_capped"), codes(ws), ws.toString());
+        assertTrue(ws.get(0).detail().startsWith("2 embedded entries not written"), ws.toString());
+    }
+
+    @Test
+    void aPassThatStopsAtAnUnreadableMemberIsWarned(@TempDir Path tmp) throws Exception {
+        // A deflate stream whose first block uses the reserved type: the zip parser throws and
+        // pass 2 ends there, so every later member (payload.txt) goes unsaved.
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bos)) {
+            z.putNextEntry(new ZipEntry("decoy.txt"));
+            z.write("decoy decoy decoy decoy decoy".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            z.closeEntry();
+            z.putNextEntry(new ZipEntry("payload.txt"));
+            z.write("payload".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            z.closeEntry();
+        }
+        byte[] b = bos.toByteArray();
+        int dataStart = 30 + "decoy.txt".length();  // local header + name, no extra field
+        b[dataStart] = (byte) 0x07;                  // BFINAL=1, BTYPE=11 (reserved)
+        File in = tmp.resolve("in.zip").toFile();
+        Files.write(in.toPath(), b);
+        var ex = new EmbeddedFileExtractor(10, 100, false);
+        ex.extract(in, tmp.resolve("out"));
+        List<String> codes = codes(ex.warnings());
+        assertTrue(codes.contains("partial_extraction"), ex.warnings().toString());
+    }
 }

@@ -43,7 +43,7 @@ statuses = ["ok", "engine_error"]
 id = "*"
 path = "rmeta/embedded/thumbnails/*.jpg"
 kind = "thumbnail"
-max_count = 10000
+max_count = 8000
 role = "embedded_thumbnail"
 description = "256px JPEG thumbnail of an embedded image, at embedded/thumbnails/<embedded rel path>.jpg. Only when enable_thumbnails (default on)."
 
@@ -59,7 +59,7 @@ description = "Thumbnail of the submitted file itself, only when the root conten
 id = "*"
 path = "rmeta/embedded/*"
 kind = "embedded_file"
-max_count = 10000
+max_count = 8000
 max_bytes = 52428800
 role = "embedded_file"
 description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at a sanitized path mirroring the entry path. Read capped at 50 MiB per file and 256 MiB per pass. Pass 2 warns (embedded_file_truncated / extracted_bytes_budget); a pass-1 image capture cut at 50 MiB is not warned (gap pass1-image-cap-silent)."
@@ -109,13 +109,19 @@ description = "Extraction stopped at max_embedded_entries / max_recursion_depth 
 code = "partial_extraction"
 severity = "medium"
 source = "envelope warnings[] code=partial_extraction (context = entry path); root EmbeddedResource.metadata.fields.error carries the parser exception"
-description = "The parser crashed mid-document; the entries emitted before the crash were salvaged."
+description = "The parser crashed mid-document; the entries emitted before the crash were salvaged. Also raised (no context) when the embedded-file pass stops at a member a container parser cannot read: later members have no declared file."
 
 [[detections]]
 code = "embedded_file_truncated"
 severity = "low"
 source = "envelope warnings[] code=embedded_file_truncated (context = entry path)"
 description = "An embedded file was cut at the 50 MiB per-file cap; its declared bytes, hashes and size describe the truncated prefix."
+
+[[detections]]
+code = "embedded_entries_capped"
+severity = "medium"
+source = "envelope warnings[] code=embedded_entries_capped (one per result; count in the message)"
+description = "Pass 2 stopped writing embedded files at max_embedded_entries; later entries (for archives, possibly ones pass 1 never listed) have no declared file."
 
 [[detections]]
 code = "extracted_bytes_budget"
@@ -228,7 +234,7 @@ description = "detected is the root content type with confidence 1.0 on every re
 
 [[gaps]]
 id = "cr-tier-pass2-only-files"
-description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries, so a file with no rmeta entry is not declared there. With the pinned Tika, archive members (zip/7z/tar) are saved by pass 2 but get no rmeta entry, so on that tier an archive's members are missing from the declaration with no warning; cold and Firecracker are unaffected. Left: closes with wmetcalf/RedTusk#66, which gives archive members rmeta entries (archive ancestry)."
+description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries, so a file with no rmeta entry is not declared there. With the pinned Tika, archive members (zip/7z/tar) are saved by pass 2 but get no rmeta entry, so on that tier an archive's members are missing from the declaration with no warning; the same happens to a file whose pass-2 name differs from its entry path (e.g. a mail attachment named 'tools/payload.exe' has entry '/payload.exe' but is saved as tools/payload.exe). Cold and Firecracker are unaffected. Left: closes with wmetcalf/RedTusk#66, which gives archive members rmeta entries (archive ancestry)."
 
 [[gaps]]
 id = "pass1-image-cap-silent"
@@ -255,7 +261,7 @@ description = "redtusk_map_outputs keys only on the rmeta/embedded/ path prefix 
 
 [[gaps]]
 id = "loadout-caps-below-engine"
-description = "redtusk_map_outputs refuses the WHOLE result past 256 declarations, any artifact over 25 MiB (engine allows 50 MiB), 100 MiB combined, ExtractedText over 1 MiB (engine allows 10M chars), 256 text nodes, or 10000 tree nodes; the engine legitimately produces up to 10000 entries plus their text nodes and thumbnails."
+description = "redtusk_map_outputs refuses the WHOLE result past 256 declarations, any artifact over 25 MiB (engine allows 50 MiB), 100 MiB combined, ExtractedText over 1 MiB (engine allows 10M chars), 256 text nodes, or 10000 tree nodes; the engine legitimately produces up to 8000 entries plus their text nodes and thumbnails."
 
 [[gaps]]
 id = "loadout-emits-script-never-produced"
@@ -263,7 +269,7 @@ description = "Loadout's EngineManifest emits 'script' for redtusk, but redtusk_
 
 [[gaps]]
 id = "loadout-param-bounds"
-description = "Loadout's config fields allow REDTUSK_MAX_EMBEDDED_ENTRIES up to 100000 (default 1000) and depth up to 50; the engine clamps entries to [0,10000] (default 5000) and depth to [0,64] (default 10), so values above 10000 are silently clamped."
+description = "Loadout's config fields allow REDTUSK_MAX_EMBEDDED_ENTRIES up to 100000 (default 1000) and depth up to 50; the engine clamps entries to [0,8000] (default 5000; 2 artifacts per entry must fit blastbox's 16384-artifact seal) and depth to [0,64] (default 10), so values above 8000 are silently clamped."
 
 # --- Consumers ---------------------------------------------------------------------------------
 

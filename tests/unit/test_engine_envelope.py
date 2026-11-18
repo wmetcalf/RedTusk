@@ -296,7 +296,8 @@ def test_env_param_overrides_clamps_out_of_range_limits(monkeypatch: pytest.Monk
     monkeypatch.setenv("REDTUSK_MAX_EMBEDDED_ENTRIES", "999999999999")
     lim = _env_param_overrides()["limits"]
     assert 0 <= lim["max_recursion_depth"] <= 64
-    assert 0 <= lim["max_embedded_entries"] <= 10_000  # aligned to EmbeddedResource.children cap
+    # 2 artifacts per entry (bytes + thumbnail) must stay under blastbox's 16384 seal cap.
+    assert 0 <= lim["max_embedded_entries"] <= 8_000
     # a legit in-range override is preserved unchanged
     monkeypatch.setenv("REDTUSK_MAX_RECURSION_DEPTH", "20")
     monkeypatch.setenv("REDTUSK_MAX_EMBEDDED_ENTRIES", "5000")

@@ -153,10 +153,11 @@ public final class EmbeddedFileExtractor {
         AtomicInteger fileCount = new AtomicInteger(0);
         AtomicLong extractedBytesTotal = new AtomicLong(0);
         AtomicInteger budgetSkipped = new AtomicInteger(0);
+        AtomicInteger countSkipped = new AtomicInteger(0);
         context.set(EmbeddedDocumentExtractor.class,
                 new SavingExtractor(parser, embDir, maxDepth, maxFiles, enableThumbnails,
                         fileCount, extractedBytesTotal, hashes,
-                        maxFileBytes, budgetBytes, budgetSkipped, warnings));
+                        maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings));
         context.set(Parser.class, parser);
         // OCR already ran in the first pass (ParserRunner). Skip it here to avoid
         // running Tesseract a second time on every file in the extraction pass.
@@ -182,6 +183,24 @@ public final class EmbeddedFileExtractor {
             LOG.warning("EmbeddedFileExtractor: parse error on "
                     + inputFile.getName() + ": " + e.getClass().getSimpleName()
                     + ": " + e.getMessage());
+            // Pass 2 stops at the first member a container parser cannot read, so every later
+            // member goes unsaved. Say so: pass 1 may have no entry for those members at all.
+            String msg = String.valueOf(e.getMessage());
+            warnings.add(new ParseResult.WorkerWarning(
+                    "partial_extraction",
+                    ("embedded-file pass stopped after " + fileCount.get() + " file(s): "
+                            + e.getClass().getSimpleName() + ": "
+                            + msg.substring(0, Math.min(msg.length(), 500))),
+                    null));
+        }
+        int capped = countSkipped.get();
+        if (capped > 0) {
+            warnings.add(new ParseResult.WorkerWarning(
+                    "embedded_entries_capped",
+                    capped + " embedded entr" + (capped == 1 ? "y" : "ies")
+                            + " not written: the per-job limit of " + maxFiles
+                            + " embedded files was reached",
+                    null));
         }
         int skipped = budgetSkipped.get();
         if (skipped > 0) {
@@ -583,6 +602,8 @@ public final class EmbeddedFileExtractor {
         private final long maxFileBytes;
         private final long budgetBytes;
         private final AtomicInteger budgetSkipped;
+        /** Entries refused because maxFiles was reached; reported once per pass by extract(). */
+        private final AtomicInteger countSkipped;
         private final List<ParseResult.WorkerWarning> warnings;
 
         SavingExtractor(AutoDetectParser parser, Path root, int maxDepth,
@@ -590,10 +611,12 @@ public final class EmbeddedFileExtractor {
                         AtomicInteger fileCount, AtomicLong extractedBytesTotal,
                         Map<String, FileHashes> hashes,
                         long maxFileBytes, long budgetBytes, AtomicInteger budgetSkipped,
+                        AtomicInteger countSkipped,
                         List<ParseResult.WorkerWarning> warnings) {
             this.maxFileBytes        = maxFileBytes;
             this.budgetBytes         = budgetBytes;
             this.budgetSkipped       = budgetSkipped;
+            this.countSkipped        = countSkipped;
             this.warnings            = warnings;
             this.parser              = parser;
             this.root                = root;
@@ -607,7 +630,10 @@ public final class EmbeddedFileExtractor {
 
         @Override
         public boolean shouldParseEmbedded(Metadata metadata) {
-            if (fileCount.get() >= maxFiles) return false;
+            if (fileCount.get() >= maxFiles) {
+                countSkipped.incrementAndGet();
+                return false;
+            }
             String p = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
             return p == null || countSlashes(p) < maxDepth;
         }
@@ -617,7 +643,10 @@ public final class EmbeddedFileExtractor {
                                    Metadata metadata, ParseContext context, boolean outputHtml)
                 throws SAXException, IOException {
 
-            if (fileCount.get() >= maxFiles) return;
+            if (fileCount.get() >= maxFiles) {
+                countSkipped.incrementAndGet();
+                return;
+            }
             // Aggregate extracted-bytes budget — abort further extraction once a
             // zip/embed bomb has already amplified past the cap.
             if (extractedBytesTotal.get() >= budgetBytes) {
@@ -748,7 +777,7 @@ public final class EmbeddedFileExtractor {
                 nested.set(EmbeddedDocumentExtractor.class,
                         new SavingExtractor(parser, root, maxDepth, maxFiles, enableThumbnails,
                                 fileCount, extractedBytesTotal, hashes,
-                                maxFileBytes, budgetBytes, budgetSkipped, warnings));
+                                maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings));
                 nested.set(Parser.class, parser);
                 TesseractOCRConfig noOcr = new TesseractOCRConfig();
                 noOcr.setSkipOcr(true);

@@ -181,11 +181,12 @@ def _env_param_overrides() -> dict[str, Any]:
     depth = _int("REDTUSK_MAX_RECURSION_DEPTH", 0, 64)
     if depth is not None:
         limits["max_recursion_depth"] = depth
-    # Ceiling is the contract's EmbeddedResource.children cap (max_length=10000): a flat archive
-    # maps every entry as a direct child of one node, so allowing more would build a tree the
-    # host's envelope re-parse rejects. The mapper's post-construction .append doesn't re-validate,
-    # so the only place to bound it is here (and at the worker's own extraction limit).
-    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES", 0, 10_000)
+    # Ceiling: every saved entry can declare TWO artifacts (its bytes and its thumbnail), and
+    # blastbox seals at most 16384 artifacts (Envelope.artifacts), so 2 * 8000 + the root
+    # thumbnail stays sealable. (It is also below the contract's EmbeddedResource.children cap of
+    # 10000, which a flat archive would otherwise hit.) Above it, an image-heavy archive ended
+    # as engine_error with every artifact lost.
+    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES", 0, _MAX_EMBEDDED_ENTRIES)
     if entries is not None:
         limits["max_embedded_entries"] = entries
     if limits:
@@ -245,6 +246,9 @@ _ENGINE_ROOT_KEYS: frozenset[str] = frozenset({"embedded_paths"})
 # ExtractedText child and in redtusk_rmeta; a third uncapped copy could push an OCR-heavy result
 # past blastbox's metadata size limit.
 _OCR_TEXT_CAP = 16384
+
+# Upper bound for REDTUSK_MAX_EMBEDDED_ENTRIES; see _env_param_overrides.
+_MAX_EMBEDDED_ENTRIES = 8_000
 
 # Skip reasons the worker puts on (nearly) every entry: OCR is off by default and most entries
 # are not images. Reporting them would hang an empty Record on every node, so they count as
