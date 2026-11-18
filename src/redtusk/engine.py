@@ -1152,6 +1152,8 @@ class RedTuskEngine:
             "rmeta/embedded/" + layout(str(e.get("path") or ""))
             for e in entries if str(e.get("path") or "").lstrip("/")
             for layout in (_embedded_storage_relpath, _embedded_disk_relpath)
+            if not (layout is _embedded_disk_relpath
+                    and _embedded_disk_relpath(str(e.get("path") or "")).startswith("objects/"))
         )
         artifacts: list[DeclaredArtifact] = []
         used_ids: set[str] = set()
@@ -1167,7 +1169,7 @@ class RedTuskEngine:
                 ep = entry.get("path") or ""
                 if not ep.lstrip("/"):
                     continue
-                for relative in (_embedded_storage_relpath(ep), _embedded_disk_relpath(ep)):
+                for relative in _legacy_layouts(ep):
                     candidate = "rmeta/embedded/" + relative
                     if candidate in declared_paths:
                         entry_paths[ep] = candidate
@@ -1236,6 +1238,15 @@ def _sanitize_embedded_component(part: str) -> str:
     return cleaned if cleaned not in ("", ".", "..") else "_"
 
 
+def _legacy_layouts(entry_path: str) -> tuple[str, ...]:
+    """Storage paths to try for an entry: the current object layout, then the sanitized-name
+    layout of earlier workers -- unless that legacy path itself lies under objects/, where it
+    could only alias ANOTHER entry's object (an entry named objects/<sha>/content)."""
+    legacy = _embedded_disk_relpath(entry_path)
+    current = _embedded_storage_relpath(entry_path)
+    return (current,) if legacy.startswith("objects/") else (current, legacy)
+
+
 def _embedded_storage_relpath(entry_path: str) -> str:
     """Current JVM layout: stable bounded paths independent of resource names."""
     digest = hashlib.sha256(entry_path.lstrip("/").encode("utf-8")).hexdigest()
@@ -1292,7 +1303,7 @@ def _reconstruct_rmeta_artifact_paths(
         # Current workers separate resource provenance from filesystem layout
         # (objects/<sha256(path)>/content); earlier workers used sanitized names. Both are
         # read, so a result from either worker is declared.
-        for rel in (_embedded_storage_relpath(ep), _embedded_disk_relpath(ep)):
+        for rel in _legacy_layouts(ep):
             cands.append(emb_root / rel)
             if e.get("has_thumbnail"):
                 # EmbeddedFileExtractor.writeThumbnail: embedded/thumbnails/<embedded rel>.jpg

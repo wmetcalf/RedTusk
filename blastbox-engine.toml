@@ -248,11 +248,23 @@ description = "detected is the root content type with confidence 1.0 on every re
 
 [[gaps]]
 id = "cr-tier-pass2-only-files"
-description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries (both storage layouts). Archive members now have rmeta entries, so they are covered. A file whose pass-2 name differs from its pass-1 entry path is not: e.g. a mail attachment named 'tools/payload.exe' has entry '/payload.exe' but pass 2 stores it under the identity '/tools/payload.exe'. On that tier it is missing from the declaration with no warning, and embedded_paths does not map it on any tier. Cold and Firecracker declare it. Left: unifying the pass-1 and pass-2 identity for renamed attachments needs a pass-1 change."
+description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries (both storage layouts), so only files with an rmeta entry are declared there; cold and Firecracker declare every file. Pass 2 now derives each entry's identity exactly as pass 1 does (container path + normalised resource name) and both passes use the job's limits, so archive members, renamed attachments and nested-container members are covered. Files pass 2 still writes with no matching entry: a later duplicate identity kept as '<path>#N' (warning resource_path_collision), and members of a container pass 1 gave up on mid-parse (a timeout-salvaged draft). Left: these need entry-id (not path) keyed storage."
 
 [[gaps]]
 id = "pass1-image-cap-silent"
 description = "Pass 1 (Pass1ImageCapture) buffers an image at most 50 MiB and saves that prefix with the prefix's hashes, but emits no embedded_file_truncated warning; that matters only where pass 2 never reaches the entry (e.g. an image inside a PDF inside an Office file). Left: adding a pass-1 warning needs the probe-one-more-byte change pass 2 got; deferred as a small follow-up."
+
+[[gaps]]
+id = "duplicate-member-attribution"
+description = "Main merges pass-2 hashes onto pass-1 entries by path. Two members with the same identity (a repeated zip name, or a top-level 'a.zip/b.txt' next to a.zip containing b.txt) are both kept on disk (the later as '<path>#N', warning resource_path_collision), but both pass-1 entries report the FIRST member's sha256/size. Left: keying storage and the merge by EMBEDDED_ID_PATH instead of path is a worker-format change for the owner."
+
+[[gaps]]
+id = "rar5-per-member-decoder"
+description = "Rar5Parser runs one bounded 7zz process per member (no archive-controlled filesystem writes), which is O(N^2) on many-member or solid archives. Each parse has a 40 s deadline and the archive is decoded by pass 1 and again by pass 2, so a large benign RAR5 can be refused (root error 'RAR5 decoder deadline exceeded') rather than time out the whole job. Left: a single-stream decoder (e.g. 7zz -so of all members into a bounded PAX stream) is a design decision."
+
+[[gaps]]
+id = "rar5-fail-closed-archive"
+description = "Rar5Parser refuses the WHOLE archive when any member is over 50 MiB, encrypted or split, has a control-character or duplicate name, or the listing exceeds the entry/byte budget; no member is extracted and the root carries the error. ZipParser instead records the odd member and continues (and pass 2 truncates an over-cap member with embedded_file_truncated), so a padded payload in a RAR5 hides its siblings where the same zip would not. Left: per-member skip versus fail-closed is an owner policy decision."
 
 # Loadout-side mismatches (consumer = backend/loadout/engines.py in loadout_handoff_package).
 # Left here for the Loadout side to close; nothing in this engine causes them.

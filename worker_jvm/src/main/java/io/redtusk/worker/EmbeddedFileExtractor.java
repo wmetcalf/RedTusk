@@ -80,6 +80,41 @@ public final class EmbeddedFileExtractor {
         this(maxDepth, maxFiles, enableThumbnails, MAX_FILE_BYTES, MAX_EXTRACTED_BUDGET_BYTES);
     }
 
+    /**
+     * The job's limits, given to every pass-2 parse context exactly as pass 1 gets them, so
+     * Rar5Parser's all-or-nothing entry/byte checks agree between the passes (otherwise pass 1
+     * can refuse an archive whose members pass 2 then saves, or the reverse). Null in tests:
+     * then a descriptor is built from this extractor's own caps.
+     */
+    private JobDescriptor.LimitsDescriptor jobLimits;
+
+    /** Use the job's limits for every pass-2 parse context (see {@link #jobLimits}). */
+    public EmbeddedFileExtractor useJobLimits(JobDescriptor.LimitsDescriptor limits) {
+        this.jobLimits = limits;
+        return this;
+    }
+
+    private JobDescriptor.LimitsDescriptor limitsForContext() {
+        return jobLimits != null ? jobLimits
+                : new JobDescriptor.LimitsDescriptor(maxDepth, maxFiles, budgetBytes, 30);
+    }
+
+    /**
+     * The per-format configs pass 1 uses (PDF inline-image cap, Office, mail), set on EVERY
+     * pass-2 context: the top-level one AND each nested container re-parse. A nested context
+     * without them parsed a PDF inside a zip with an unbounded inline-image engine.
+     */
+    static void applySharedConfig(ParseContext context) {
+        context.set(PDFParserConfig.class, ParserRunner.newPdfConfig());
+        context.set(OfficeParserConfig.class, ParserRunner.newOfficeConfig());
+        RFC822Parser.Config mailCfg = new RFC822Parser.Config();
+        mailCfg.setExtractAllAlternatives(true);
+        context.set(RFC822Parser.Config.class, mailCfg);
+        TesseractOCRConfig noOcr = new TesseractOCRConfig();
+        noOcr.setSkipOcr(true);
+        context.set(TesseractOCRConfig.class, noOcr);
+    }
+
     /** Test seam: the production caps are the 3-arg constructor's. */
     EmbeddedFileExtractor(int maxDepth, int maxFiles, boolean enableThumbnails,
                           long maxFileBytes, long budgetBytes) {
@@ -169,13 +204,8 @@ public final class EmbeddedFileExtractor {
         // the same two lines. The old comment here said it carried the same config; it did not.
         // Pass 1 gained the inline-image cap and this did not, so a capped first pass was
         // followed by an UNBOUNDED second pass over the same document.
-        context.set(PDFParserConfig.class, ParserRunner.newPdfConfig());
-        // Shared with pass 1, same reasoning as the PDF config above.
-        OfficeParserConfig officeCfg = ParserRunner.newOfficeConfig();
-        context.set(OfficeParserConfig.class, officeCfg);
-        RFC822Parser.Config mailCfg = new RFC822Parser.Config();
-        mailCfg.setExtractAllAlternatives(true);
-        context.set(RFC822Parser.Config.class, mailCfg);
+        applySharedConfig(context);
+        context.set(JobDescriptor.LimitsDescriptor.class, limitsForContext());
 
         try (TikaInputStream tis = TikaInputStream.get(inputFile.toPath())) {
             parser.parse(tis, new DefaultHandler(), new Metadata(), context);
@@ -527,6 +557,8 @@ public final class EmbeddedFileExtractor {
                 enableImageHashingIfAvailable(aip);
             else if (p instanceof org.apache.tika.parser.CompositeParser cp)
                 queue.addAll(cp.getParsers().values());
+            else if (p instanceof org.apache.tika.parser.ParserDecorator pd)
+                queue.add(pd.getWrappedParser());
         }
     }
 
@@ -611,19 +643,17 @@ public final class EmbeddedFileExtractor {
                 countSkipped.incrementAndGet();
                 return;
             }
-            String declared = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
-            if (declared == null || declared.isBlank()) {
-                String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-                if (name == null || name.isBlank()) return;
-                declared = parentPath + "/" + ResourcePaths.normalizeName(name);
-            } else {
-                // Same identity transformation as ResourcePaths.resolve (pass 1), so Main can
-                // merge this entry's saved bytes and hashes onto the pass-1 entry by path.
-                declared = "/" + ResourcePaths.normalizeName(declared);
-                if (!parentPath.isEmpty() && !declared.startsWith(parentPath + "/")) {
-                    declared = parentPath + declared;
-                }
-            }
+            // The SAME identity ResourcePaths.resolve gives the entry in pass 1: the container's
+            // path + "/" + the normalised resource name (RESOURCE_NAME_KEY, else INTERNAL_PATH,
+            // else the last segment of the parser's path). Main merges pass-2 bytes and hashes
+            // onto pass-1 entries by this path, and the stored object is keyed by it.
+            String raw = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
+            String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+            if (name == null || name.isBlank()) name = metadata.get(TikaCoreProperties.INTERNAL_PATH);
+            if ((name == null || name.isBlank()) && raw != null && !raw.isBlank())
+                name = raw.substring(raw.lastIndexOf('/') + 1);
+            if (name == null || name.isBlank()) return;
+            String declared = parentPath + "/" + ResourcePaths.normalizeName(name);
             metadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_PATH, declared);
             if (depth > maxDepth) return;
             // Aggregate extracted-bytes budget — abort further extraction once a
@@ -655,15 +685,7 @@ public final class EmbeddedFileExtractor {
                 return;
             }
 
-            // Determine output path — prefer RESOURCE_NAME_KEY over synthetic embedded-N paths.
             String embPath = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
-            if (embPath != null && embPath.matches(".*/embedded-\\d+(\\..*)?$")) {
-                String rname = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-                if (rname != null && !rname.isBlank()) {
-                    String parent = embPath.substring(0, embPath.lastIndexOf('/'));
-                    embPath = parent + "/" + rname;
-                }
-            }
             if (embPath != null && hashes.containsKey(embPath)) {
                 // Two entries with one identity (e.g. "a\\b" and "a/b", or a repeated name)
                 // would share a storage path: the second write would destroy the first's bytes
@@ -775,12 +797,18 @@ public final class EmbeddedFileExtractor {
                                 maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings,
                                 hashKey, depth + 1));
                 nested.set(Parser.class, parser);
-                nested.set(JobDescriptor.LimitsDescriptor.class,
-                    new JobDescriptor.LimitsDescriptor(maxDepth, Math.max(1, maxFiles - fileCount.get()),
-                        Math.max(1, budgetBytes - extractedBytesTotal.get()), 30));
-                TesseractOCRConfig noOcr = new TesseractOCRConfig();
-                noOcr.setSkipOcr(true);
-                nested.set(TesseractOCRConfig.class, noOcr);
+                // Same per-format configs and job limits as pass 1 and the top-level pass-2
+                // context. The file count and byte budget are still enforced across nesting by
+                // the shared fileCount / extractedBytesTotal counters.
+                applySharedConfig(nested);
+                JobDescriptor.LimitsDescriptor nestedLimits =
+                        context.get(JobDescriptor.LimitsDescriptor.class);
+                if (nestedLimits == null) {
+                    nestedLimits = new JobDescriptor.LimitsDescriptor(maxDepth, maxFiles, budgetBytes, 30);
+                }
+                nested.set(JobDescriptor.LimitsDescriptor.class, nestedLimits);
+                nested.set(org.apache.tika.config.EmbeddedLimits.class,
+                        new org.apache.tika.config.EmbeddedLimits(maxDepth, false, maxFiles, false));
                 try (TikaInputStream tis = TikaInputStream.get(bytes)) {
                     parser.parse(tis, new DefaultHandler(), new Metadata(), nested);
                 } catch (Exception e) {

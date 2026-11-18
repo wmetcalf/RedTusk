@@ -20,7 +20,10 @@ final class ResourcePaths {
      * pass 2 (EmbeddedFileExtractor.SavingExtractor): backslashes become '/', leading '/' go.
      */
     static String normalizeName(String name) {
-        return name.replace('\\', '/').replaceFirst("^/+", "");
+        String n = name.replace('\\', '/').replaceFirst("^/+", "");
+        // A name made only of separators must not take its container's identity (or the
+        // root's "/"): it would merge its hashes onto that entry.
+        return n.isEmpty() ? "_" : n;
     }
 
     static String captureKey(Metadata metadata) {
@@ -40,7 +43,9 @@ final class ResourcePaths {
         for (Metadata metadata : ordered) {
             String raw = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
             String id = metadata.get(TikaCoreProperties.EMBEDDED_ID_PATH);
-            if (raw == null || raw.isEmpty() || raw.equals("/")) {
+            // Only the submitted file itself (no embedded id) is the root. A member whose path
+            // or name collapses to "/" (e.g. a member named "\\") is still a member.
+            if (id == null && (raw == null || raw.isEmpty() || raw.equals("/"))) {
                 result.put(metadata, new Resource("/", null, 0));
                 continue;
             }
@@ -48,7 +53,9 @@ final class ResourcePaths {
             Resource parent = parentSeparator <= 0 ? null : byId.get(id.substring(0, parentSeparator));
             String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
             if (name == null || name.isBlank()) name = metadata.get(TikaCoreProperties.INTERNAL_PATH);
-            if (name == null || name.isBlank()) name = raw.substring(raw.lastIndexOf('/') + 1);
+            if ((name == null || name.isBlank()) && raw != null)
+                name = raw.substring(raw.lastIndexOf('/') + 1);
+            if (name == null) name = "";
             name = normalizeName(name);
             String parentPath = parent == null ? "/" : parent.path();
             String path = (parentPath.equals("/") ? "" : parentPath) + "/" + name;

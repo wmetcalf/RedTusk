@@ -24,6 +24,7 @@ final class Rar5Parser implements Parser {
     private static final byte[] MAGIC = {'R', 'a', 'r', '!', 0x1a, 7, 1, 0};
     private static final long MAX_BYTES = 256L * 1024 * 1024;
     private static final int MAX_MEMBER_BYTES = 50 * 1024 * 1024;
+    static final long DEADLINE_SECONDS = 40;
     private static final ScheduledExecutorService DEADLINES = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "rar5-deadline"); t.setDaemon(true); return t;
     });
@@ -116,7 +117,10 @@ final class Rar5Parser implements Parser {
         var limits = context.get(JobDescriptor.LimitsDescriptor.class);
         long budget = limits == null ? MAX_BYTES : Math.min(MAX_BYTES, Math.max(1, limits.maxExtractedBytes()));
         int maxEntries = limits == null ? 5000 : Math.max(1, limits.maxEmbeddedEntries());
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        // Each pass (and each nesting level) decodes the archive again with its own deadline, so
+        // two of them must fit the engine's default 120 s job budget with room for the rest
+        // of the job; a deadline overrun refuses only this archive, not the job.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(DEADLINE_SECONDS);
         String path = input.getFile().getAbsolutePath();
         byte[] listing = command(List.of(decoder, "l", "-slt", "-ba", "-sccUTF-8", "-p-", "--", path),
             4 * 1024 * 1024, deadline);

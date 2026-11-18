@@ -1,5 +1,8 @@
 # RAR5 and nested resource verification
 
+> **Superseded decoder (2026-11-18):** the live runs below used the earlier libarchive `bsdtar` PAX-stream decoder. The branch now decodes RAR5 with a pinned static `7zz` (one bounded `7zz x -so` per member). The 7zz path has local and unit-test evidence only; re-run the live table before relying on it for 7zz.
+
+
 The worker recognizes RAR5 and converts its entries to a bounded PAX stream with
 libarchive `bsdtar`, inside the existing disposable worker. It does not extract
 untrusted paths to a host directory. Entry count, expanded bytes and subprocess

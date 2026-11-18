@@ -1252,6 +1252,9 @@ public final class ParserRunner {
                 jsp.setExtractScripts(true);
             } else if (p instanceof CompositeParser cp) {
                 queue.addAll(cp.getParsers().values());
+            } else if (p instanceof org.apache.tika.parser.ParserDecorator pd) {
+                // setParsers() wraps every entry in a type-filtering ParserDecorator.
+                queue.add(pd.getWrappedParser());
             }
         }
     }
@@ -1267,6 +1270,9 @@ public final class ParserRunner {
                 enableImageHashingIfAvailable(aip);
             } else if (p instanceof CompositeParser cp) {
                 queue.addAll(cp.getParsers().values());
+            } else if (p instanceof org.apache.tika.parser.ParserDecorator pd) {
+                // setParsers() wraps every entry in a type-filtering ParserDecorator.
+                queue.add(pd.getWrappedParser());
             }
         }
     }

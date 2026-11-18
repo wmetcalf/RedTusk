@@ -69,8 +69,9 @@ def test_java_opts_override_without_the_flag_gets_it(monkeypatch: pytest.MonkeyP
 # --- static launch-path inventory -----------------------------------------------------------
 #
 # Every ``java`` launch in the Dockerfiles, the deploy scripts and the guest init scripts is
-# found by TOKEN (any token whose basename is ``java``, so wrappers like ``exec``/``setpriv``/
-# ``timeout``/``sh -c``, absolute paths and ``$JAVA_HOME/bin/java`` are all seen), and the
+# found in COMMAND POSITION (past shell keywords, VAR= prefixes and wrappers such as
+# ``exec``/``setpriv``/``timeout``/``sudo -u``/``gosu``; ``sh -c`` strings are parsed
+# recursively; absolute paths and ``$JAVA_HOME/bin/java`` count), and the
 # check is POSITIONAL: only the JVM options before ``-jar``/the main class count (Main ignores
 # extra program args, so a flag after ``-jar x.jar`` does nothing), and the LAST
 # UseBASE64Intrinsics option there must be the OFF flag (HotSpot honours the last one).
@@ -170,22 +171,40 @@ _WRAPPERS = frozenset({"exec", "env", "timeout", "setpriv", "nice", "nohup", "su
                        "gosu", "chroot", "stdbuf", "taskset", "ionice", "time", "command"})
 
 
+_KEYWORDS = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!", "{", "(",
+                       "time"})
+# Wrapper options that take a value as the next token.
+_WRAPPER_ARG_OPTS = frozenset({"-u", "-g", "-s", "-k", "-n", "--signal", "--kill-after", "-C"})
+# Wrappers whose first non-option argument is a user/group, not the program.
+_USER_WRAPPERS = frozenset({"su-exec", "gosu", "chpst"})
+
+
 def _command_start(toks: list[str]) -> int:
-    """Index of the program a command runs: past VAR=val prefixes and wrapper commands (with
-    their options and numeric arguments). Only a ``java`` there is a launch, so a path that
-    merely ends in /java (``ln -s ... /usr/local/bin/java``) is not."""
+    """Index of the program a command runs: past shell keywords, VAR=val prefixes and wrapper
+    commands (with their options, option values, numeric arguments and, for su-exec/gosu, the
+    user). Only a ``java`` there is a launch, so a path that merely ends in /java
+    (``ln -s ... /usr/local/bin/java``) is not."""
     i = 0
     while i < len(toks):
         tok = toks[i]
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
+        if tok in _KEYWORDS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
             i += 1
-        elif tok in _WRAPPERS:
+        elif tok in _WRAPPERS or tok in _USER_WRAPPERS:
+            wrapper = tok
             i += 1
-            while i < len(toks) and (toks[i].startswith("-") or toks[i].isdigit()
-                                     or re.match(r"^\d+[smhd]?$", toks[i])):
-                i += 1
+            while i < len(toks):
+                t = toks[i]
+                if t in _WRAPPER_ARG_OPTS:
+                    i += 2
+                elif t.startswith("-") or re.match(r"^\d+(\.\d+)?[smhd]?$", t):
+                    i += 1
+                else:
+                    break
+            if wrapper in _USER_WRAPPERS and i < len(toks):
+                i += 1  # the user[:group]
         else:
             return i
+    return i
     return i
 
 
@@ -259,6 +278,13 @@ class _Text:
         "RUN sh -c 'java -XX:+UseBASE64Intrinsics -jar /app/w.jar --run /s; echo done'",
         "RUN sh -c 'true && java -jar /app/w.jar --run /s'",
         "RUN true; java -jar /app/w.jar --run /s",
+        "RUN if [ -f /app/w.jar ]; then java -jar /app/w.jar --run /s; fi",
+        "RUN for f in a; do java -jar /app/w.jar --run /s; done",
+        "RUN su-exec redtusk java -jar /app/w.jar --run /s",
+        "RUN gosu redtusk:redtusk java -jar /app/w.jar --run /s",
+        "RUN sudo -u redtusk java -jar /app/w.jar --run /s",
+        "RUN timeout -s KILL 60 java -jar /app/w.jar --run /s",
+        "RUN ! java -jar /app/w.jar --run /s",
     ],
 )
 def test_inventory_catches_unflagged_launch_shapes(dockerfile: str) -> None:

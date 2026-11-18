@@ -419,3 +419,12 @@ def test_a_long_container_path_keeps_its_children() -> None:
     (node,) = [c for c in root.children if getattr(c, "embedded_path", None)]
     assert [getattr(c, "embedded_path", "") for c in node.children
             if getattr(c, "embedded_path", None)], "child detached to the root"
+
+
+def test_legacy_layout_cannot_alias_another_entrys_object() -> None:
+    from redtusk.engine import _legacy_layouts
+
+    victim = _embedded_storage_relpath("/victim.exe")
+    # An entry NAMED like another entry's object must not fall back onto that object.
+    assert _legacy_layouts("/" + victim) == (_embedded_storage_relpath("/" + victim),)
+    assert _legacy_layouts("/plain.txt") == (_embedded_storage_relpath("/plain.txt"), "plain.txt")
