@@ -1148,12 +1148,11 @@ class RedTuskEngine:
         # when a JVM is killed between write and rename); never evidence, never declared.
         rel_paths = [p for p in rel_paths
                      if p not in ("rmeta/metadata.json", "rmeta/" + _DRAFT_TMP_NAME)]
+        taken = _current_objects(entries)
         known_embedded = frozenset(
-            "rmeta/embedded/" + layout(str(e.get("path") or ""))
+            "rmeta/embedded/" + rel
             for e in entries if str(e.get("path") or "").lstrip("/")
-            for layout in (_embedded_storage_relpath, _embedded_disk_relpath)
-            if not (layout is _embedded_disk_relpath
-                    and _embedded_disk_relpath(str(e.get("path") or "")).startswith("objects/"))
+            for rel in _legacy_layouts(str(e.get("path") or ""), taken)
         )
         artifacts: list[DeclaredArtifact] = []
         used_ids: set[str] = set()
@@ -1169,7 +1168,7 @@ class RedTuskEngine:
                 ep = entry.get("path") or ""
                 if not ep.lstrip("/"):
                     continue
-                for relative in _legacy_layouts(ep):
+                for relative in _legacy_layouts(ep, taken):
                     candidate = "rmeta/embedded/" + relative
                     if candidate in declared_paths:
                         entry_paths[ep] = candidate
@@ -1238,13 +1237,19 @@ def _sanitize_embedded_component(part: str) -> str:
     return cleaned if cleaned not in ("", ".", "..") else "_"
 
 
-def _legacy_layouts(entry_path: str) -> tuple[str, ...]:
+def _legacy_layouts(entry_path: str, taken: frozenset[str] = frozenset()) -> tuple[str, ...]:
     """Storage paths to try for an entry: the current object layout, then the sanitized-name
-    layout of earlier workers -- unless that legacy path itself lies under objects/, where it
-    could only alias ANOTHER entry's object (an entry named objects/<sha>/content)."""
+    layout of earlier workers -- unless that legacy path is some entry's CURRENT object
+    (*taken*), which an entry named objects/<sha>/content would otherwise alias."""
     legacy = _embedded_disk_relpath(entry_path)
     current = _embedded_storage_relpath(entry_path)
-    return (current,) if legacy.startswith("objects/") else (current, legacy)
+    return (current,) if legacy in taken else (current, legacy)
+
+
+def _current_objects(entries: list[dict[str, Any]]) -> frozenset[str]:
+    """Every entry's current-layout storage path (see _legacy_layouts)."""
+    return frozenset(_embedded_storage_relpath(str(e.get("path") or ""))
+                     for e in entries if str(e.get("path") or "").lstrip("/"))
 
 
 def _embedded_storage_relpath(entry_path: str) -> str:
@@ -1292,6 +1297,7 @@ def _reconstruct_rmeta_artifact_paths(
     if (rmeta_dir / "metadata.json").is_file():
         paths.add("rmeta/metadata.json")
     emb_root = rmeta_dir / "embedded"
+    taken = _current_objects(entries)
     cands: list[Path] = []
     for e in entries:
         ep = e.get("path") or ""
@@ -1303,7 +1309,7 @@ def _reconstruct_rmeta_artifact_paths(
         # Current workers separate resource provenance from filesystem layout
         # (objects/<sha256(path)>/content); earlier workers used sanitized names. Both are
         # read, so a result from either worker is declared.
-        for rel in _legacy_layouts(ep):
+        for rel in _legacy_layouts(ep, taken):
             cands.append(emb_root / rel)
             if e.get("has_thumbnail"):
                 # EmbeddedFileExtractor.writeThumbnail: embedded/thumbnails/<embedded rel>.jpg

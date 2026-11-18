@@ -422,9 +422,14 @@ def test_a_long_container_path_keeps_its_children() -> None:
 
 
 def test_legacy_layout_cannot_alias_another_entrys_object() -> None:
-    from redtusk.engine import _legacy_layouts
+    from redtusk.engine import _current_objects, _legacy_layouts
 
     victim = _embedded_storage_relpath("/victim.exe")
-    # An entry NAMED like another entry's object must not fall back onto that object.
-    assert _legacy_layouts("/" + victim) == (_embedded_storage_relpath("/" + victim),)
-    assert _legacy_layouts("/plain.txt") == (_embedded_storage_relpath("/plain.txt"), "plain.txt")
+    taken = _current_objects([{"path": "/victim.exe"}, {"path": "/" + victim}])
+    # An entry NAMED like another entry's object must not fall back onto that object...
+    assert _legacy_layouts("/" + victim, taken) == (_embedded_storage_relpath("/" + victim),)
+    # ...but a legacy objects/... name that is nobody's object keeps its legacy candidate.
+    other = "/objects/" + "0" * 64 + "/content"
+    assert _legacy_layouts(other, taken)[1] == other.lstrip("/")
+    assert _legacy_layouts("/plain.txt", taken) == (
+        _embedded_storage_relpath("/plain.txt"), "plain.txt")
