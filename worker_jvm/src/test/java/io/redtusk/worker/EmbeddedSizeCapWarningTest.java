@@ -53,7 +53,9 @@ class EmbeddedSizeCapWarningTest {
         List<ParseResult.WorkerWarning> ws = ex.warnings();
         assertEquals(List.of("embedded_file_truncated"), codes(ws), ws.toString());
         assertTrue(ws.get(0).entryPath().endsWith("big.txt"), ws.toString());
-        assertEquals(1000, Files.size(tmp.resolve("out/embedded/big.txt")));
+        Path embedded = tmp.resolve("out/embedded");
+        assertEquals(1000, Files.size(EmbeddedFileExtractor.resolveOutFile(
+                embedded, "/big.txt", new org.apache.tika.metadata.Metadata())));
     }
 
     @Test

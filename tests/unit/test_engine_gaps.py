@@ -19,6 +19,7 @@ from redtusk import engine as eng_mod
 from redtusk.engine import (
     RedTuskEngine,
     _embedded_disk_relpath,
+    _embedded_storage_relpath,
     _infer_artifact_kind,
     _reconstruct_rmeta_artifact_paths,
 )
@@ -241,15 +242,23 @@ def test_warm_crash_fallback_starts_cold_from_a_clean_rmeta_dir(
 
 # --- review round 1: the thumbnails/ namespace belongs to the worker -----------------------------
 
+def test_current_layout_golden_path_matches_the_jvm() -> None:
+    # Pinned on both sides (ThumbnailNamespaceTest.goldenPathsMatchThePythonMirror): every entry
+    # is stored at objects/<sha256(entry path)>/content, never under thumbnails/.
+    assert _embedded_storage_relpath("/thumbnails/evil.jpg") == (
+        "objects/33feaa5d1557bc9a620b2000117b736fd3ee79120dd0d258cae4639ec2f83e8f/content")
+
+
 def test_an_entry_named_thumbnails_never_lands_in_the_thumbnail_dir() -> None:
+    # The previous sanitized-name layout, still read for results from older workers.
     # EmbeddedFileExtractor.resolveOutFile renames a top-level "thumbnails" component, so an
     # archive member cannot be declared as (or overwrite) a thumbnail. This mirrors it.
     for entry in ("/thumbnails/evil.jpg", "/thumbnails/pic.png.jpg", "/thumbnails"):
         disk = _embedded_disk_relpath(entry)
         assert not disk.startswith("thumbnails/") and disk != "thumbnails", disk
         assert disk.startswith("thumbnails_"), disk
-    # Golden values from the JVM's EmbeddedFileExtractor.resolveOutFile (also pinned by
-    # ThumbnailNamespaceTest): the rename is lossy, so the final component carries the hash tag.
+    # Golden values from the sanitized-name JVM layout (RedTusk #64): the rename is lossy, so
+    # the final component carries the hash tag.
     assert _embedded_disk_relpath("/thumbnails/evil.jpg") == "thumbnails_/evil_33feaa5d1557bc9a.jpg"
     assert _embedded_disk_relpath("/thumbnails/pic.png") == "thumbnails_/pic_9edc501bb0b9b528.png"
     assert _embedded_disk_relpath("/thumbnails") == "thumbnails__abfbce806c67c03d"

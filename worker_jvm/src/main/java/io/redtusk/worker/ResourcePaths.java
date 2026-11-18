@@ -15,6 +15,14 @@ final class ResourcePaths {
 
     private ResourcePaths() { }
 
+    /**
+     * The one identity transformation for a resource name, shared by pass 1 (resolve) and
+     * pass 2 (EmbeddedFileExtractor.SavingExtractor): backslashes become '/', leading '/' go.
+     */
+    static String normalizeName(String name) {
+        return name.replace('\\', '/').replaceFirst("^/+", "");
+    }
+
     static String captureKey(Metadata metadata) {
         String id = metadata.get(TikaCoreProperties.EMBEDDED_ID_PATH);
         return id == null ? metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH) : "id:" + id;
@@ -41,7 +49,7 @@ final class ResourcePaths {
             String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
             if (name == null || name.isBlank()) name = metadata.get(TikaCoreProperties.INTERNAL_PATH);
             if (name == null || name.isBlank()) name = raw.substring(raw.lastIndexOf('/') + 1);
-            name = name.replace('\\', '/').replaceFirst("^/+", "");
+            name = normalizeName(name);
             String parentPath = parent == null ? "/" : parent.path();
             String path = (parentPath.equals("/") ? "" : parentPath) + "/" + name;
             Resource resource = new Resource(path, parentPath, parent == null ? 1 : parent.depth() + 1);

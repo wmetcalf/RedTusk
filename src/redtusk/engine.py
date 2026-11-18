@@ -1147,8 +1147,9 @@ class RedTuskEngine:
         rel_paths = [p for p in rel_paths
                      if p not in ("rmeta/metadata.json", "rmeta/" + _DRAFT_TMP_NAME)]
         known_embedded = frozenset(
-            "rmeta/embedded/" + _embedded_disk_relpath(str(e.get("path") or ""))
+            "rmeta/embedded/" + layout(str(e.get("path") or ""))
             for e in entries if str(e.get("path") or "").lstrip("/")
+            for layout in (_embedded_storage_relpath, _embedded_disk_relpath)
         )
         artifacts: list[DeclaredArtifact] = []
         used_ids: set[str] = set()
@@ -1337,10 +1338,11 @@ def _infer_artifact_kind(rel_path: str, known_embedded: frozenset[str] = frozens
     ``rmeta/thumbnail.jpg`` is the root thumbnail; ``rmeta/embedded/thumbnails/*.jpg`` are entry
     thumbnails; everything else under ``rmeta/embedded/`` is an embedded file -- including one
     whose own name ends .jpg or .txt. The worker never writes an embedded file under
-    ``embedded/thumbnails/``: an entry whose top-level name is ``thumbnails`` is saved as
-    ``thumbnails_/...`` (EmbeddedFileExtractor.resolveOutFile, mirrored by
-    _embedded_disk_relpath). *known_embedded* (the rmeta entries' on-disk paths) is a second
-    guard for the same thing.
+    ``embedded/thumbnails/``: current workers store every entry at
+    ``embedded/objects/<sha256(path)>/content`` (EmbeddedFileExtractor.resolveOutFile, mirrored
+    by _embedded_storage_relpath), and the previous sanitized-name layout saved a top-level
+    ``thumbnails`` entry as ``thumbnails_/...`` (_embedded_disk_relpath). *known_embedded* (the
+    rmeta entries' paths in both layouts) is a second guard for the same thing.
     """
     if rel_path in known_embedded:
         return "embedded_file"

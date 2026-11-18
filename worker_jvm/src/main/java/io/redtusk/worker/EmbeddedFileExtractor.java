@@ -157,7 +157,7 @@ public final class EmbeddedFileExtractor {
         context.set(EmbeddedDocumentExtractor.class,
                 new SavingExtractor(parser, embDir, maxDepth, maxFiles, enableThumbnails,
                         fileCount, extractedBytesTotal, hashes,
-                        maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings, ""));
+                        maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings, "", 1));
         context.set(Parser.class, parser);
         // OCR already ran in the first pass (ParserRunner). Skip it here to avoid
         // running Tesseract a second time on every file in the extraction pass.
@@ -542,6 +542,13 @@ public final class EmbeddedFileExtractor {
     private static final class SavingExtractor implements EmbeddedDocumentExtractor {
 
         private final String parentPath;
+        /**
+         * Container depth of the entries this extractor receives: 1 for the submitted file's
+         * own members, +1 per nested container this pass recursed into. Directory components
+         * inside an archive member's name ("documents/report.txt") are NOT containers, so
+         * depth is tracked here rather than by counting slashes in provenance names.
+         */
+        private final int depth;
         private final AutoDetectParser parser;
         private final Path root;
         private final int maxDepth;
@@ -563,14 +570,14 @@ public final class EmbeddedFileExtractor {
                         AtomicInteger fileCount, AtomicLong extractedBytesTotal,
                         Map<String, FileHashes> hashes,
                         long maxFileBytes, long budgetBytes, AtomicInteger budgetSkipped,
-                        AtomicInteger countSkipped,
-                        List<ParseResult.WorkerWarning> warnings, String parentPath) {
+                        List<ParseResult.WorkerWarning> warnings, String parentPath, int depth) {
             this.maxFileBytes        = maxFileBytes;
             this.budgetBytes         = budgetBytes;
             this.budgetSkipped       = budgetSkipped;
             this.countSkipped        = countSkipped;
             this.warnings            = warnings;
             this.parentPath          = parentPath;
+            this.depth               = depth;
             this.parser              = parser;
             this.root                = root;
             this.maxDepth            = maxDepth;
@@ -588,7 +595,7 @@ public final class EmbeddedFileExtractor {
                 return false;
             }
             String p = metadata.get(TikaCoreProperties.EMBEDDED_RESOURCE_PATH);
-            return p == null || countSlashes(p) < maxDepth;
+            return depth <= maxDepth;
         }
 
         @Override
@@ -604,12 +611,17 @@ public final class EmbeddedFileExtractor {
             if (declared == null || declared.isBlank()) {
                 String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
                 if (name == null || name.isBlank()) return;
-                declared = parentPath + "/" + name.replaceFirst("^/+", "");
-            } else if (!parentPath.isEmpty() && !declared.startsWith(parentPath + "/")) {
-                declared = parentPath + "/" + declared.replaceFirst("^/+", "");
+                declared = parentPath + "/" + ResourcePaths.normalizeName(name);
+            } else {
+                // Same identity transformation as ResourcePaths.resolve (pass 1), so Main can
+                // merge this entry's saved bytes and hashes onto the pass-1 entry by path.
+                declared = "/" + ResourcePaths.normalizeName(declared);
+                if (!parentPath.isEmpty() && !declared.startsWith(parentPath + "/")) {
+                    declared = parentPath + declared;
+                }
             }
             metadata.set(TikaCoreProperties.EMBEDDED_RESOURCE_PATH, declared);
-            if (countSlashes(declared) > maxDepth) return;
+            if (depth > maxDepth) return;
             // Aggregate extracted-bytes budget — abort further extraction once a
             // zip/embed bomb has already amplified past the cap.
             if (extractedBytesTotal.get() >= budgetBytes) {
@@ -734,13 +746,14 @@ public final class EmbeddedFileExtractor {
             }
 
             // Recurse into nested embedded content
-            if (embPath != null && countSlashes(embPath) < maxDepth - 1) {
+            if (embPath != null && depth < maxDepth) {
                 ParseContext nested = new ParseContext();
                 ParserRunner.hardenXmlParsing(nested);
                 nested.set(EmbeddedDocumentExtractor.class,
                         new SavingExtractor(parser, root, maxDepth, maxFiles, enableThumbnails,
                                 fileCount, extractedBytesTotal, hashes,
-                                maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings, hashKey));
+                                maxFileBytes, budgetBytes, budgetSkipped, countSkipped, warnings,
+                                hashKey, depth + 1));
                 nested.set(Parser.class, parser);
                 nested.set(JobDescriptor.LimitsDescriptor.class,
                     new JobDescriptor.LimitsDescriptor(maxDepth, Math.max(1, maxFiles - fileCount.get()),
@@ -754,13 +767,6 @@ public final class EmbeddedFileExtractor {
                     // non-fatal — nested parse errors are common for binary blobs
                 }
             }
-        }
-
-        private static int countSlashes(String s) {
-            if (s == null || s.isEmpty() || s.equals("/")) return 0;
-            int n = 0;
-            for (char c : s.toCharArray()) if (c == '/') n++;
-            return n;
         }
 
         private static boolean isGenericType(String ct) {

@@ -31,11 +31,13 @@ statuses = ["ok", "engine_error"]
 # collisions get a "_N" suffix, so ids are matched with "*".
 # Kind comes from _infer_artifact_kind(path, entries): the file's ROLE in the layout, never its
 # name. rmeta/thumbnail.jpg and rmeta/embedded/thumbnails/*.jpg are "thumbnail"; everything else
-# under rmeta/embedded/ is "embedded_file". The worker reserves embedded/thumbnails/ for
-# thumbnails: an entry whose own top-level name is "thumbnails" is saved under "thumbnails_/"
-# (with the lossy-name hash tag), so no entry can be declared, or overwritten, as a thumbnail.
-# On a gVisor C/R-restored worker with a stale directory view the set is rebuilt from the rmeta
-# entries, so it covers only files that have an rmeta entry (see gap cr-tier-pass2-only-files).
+# under rmeta/embedded/ is "embedded_file". Every embedded entry is stored at
+# rmeta/embedded/objects/<sha256(entry path without the leading "/")>/content, so resource names
+# never become filesystem structure and no entry can land in (or overwrite) embedded/thumbnails/,
+# which only writeThumbnail uses. Results from earlier workers used sanitized-name paths; the
+# engine still reads those. The root's embedded_paths field (a JSON object string) maps each
+# entry path to its declared file. On a gVisor C/R-restored worker with a stale directory view
+# the set is rebuilt from the rmeta entries, which include archive members, so it matches cold.
 # fnmatch "*" crosses "/". The checker matches a family on id, path AND kind, so the thumbnail
 # family never claims an embedded_file; listing the specific families first keeps it readable.
 
@@ -68,7 +70,7 @@ kind = "embedded_file"
 max_count = 16000
 max_bytes = 52428800
 role = "embedded_file"
-description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at a sanitized path mirroring the entry path. Read capped at 50 MiB per file and 256 MiB per pass. Pass 2 warns (embedded_file_truncated / extracted_bytes_budget); a pass-1 image capture cut at 50 MiB is not warned (gap pass1-image-cap-silent)."
+description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at objects/<sha256(entry path)>/content (earlier workers: a sanitized path mirroring the entry path). Read capped at 50 MiB per file and 256 MiB per pass. Pass 2 warns (embedded_file_truncated / extracted_bytes_budget); a pass-1 image capture cut at 50 MiB is not warned (gap pass1-image-cap-silent)."
 
 # --- Payload -----------------------------------------------------------------------------------
 
@@ -240,7 +242,7 @@ description = "detected is the root content type with confidence 1.0 on every re
 
 [[gaps]]
 id = "cr-tier-pass2-only-files"
-description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries, so a file with no rmeta entry is not declared there. With the pinned Tika, archive members (zip/7z/tar) are saved by pass 2 but get no rmeta entry, so on that tier an archive's members are missing from the declaration with no warning; the same happens to a file whose pass-2 name differs from its entry path (e.g. a mail attachment named 'tools/payload.exe' has entry '/payload.exe' but is saved as tools/payload.exe). Cold and Firecracker are unaffected. Left: closes with wmetcalf/RedTusk#66, which gives archive members rmeta entries (archive ancestry)."
+description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries (both storage layouts). Archive members now have rmeta entries, so they are covered. A file whose pass-2 name differs from its pass-1 entry path is not: e.g. a mail attachment named 'tools/payload.exe' has entry '/payload.exe' but pass 2 stores it under the identity '/tools/payload.exe'. On that tier it is missing from the declaration with no warning, and embedded_paths does not map it on any tier. Cold and Firecracker declare it. Left: unifying the pass-1 and pass-2 identity for renamed attachments needs a pass-1 change."
 
 [[gaps]]
 id = "pass1-image-cap-silent"
@@ -250,8 +252,8 @@ description = "Pass 1 (Pass1ImageCapture) buffers an image at most 50 MiB and sa
 # Left here for the Loadout side to close; nothing in this engine causes them.
 
 [[gaps]]
-id = "loadout-embedded-paths-absent"
-description = "redtusk_map_outputs reads payload.metadata.fields.embedded_paths to map entries to declared files; this engine never emits it (wmetcalf/RedTusk#66, the RAR5 / archive-ancestry work, adds it), so the mapper always falls back to rmeta/embedded/<path> and unique-sha256 correlation, which misses lossy-sanitized names."
+id = "loadout-embedded-paths-unread"
+description = "The engine now emits payload.metadata.fields.embedded_paths (a JSON object string: entry path -> declared rmeta/embedded/objects/<sha256>/content). redtusk_map_outputs must parse it as JSON and must stop falling back to rmeta/embedded/<entry path>, which no longer exists for current workers; until it does, entry-to-file mapping relies on unique-sha256 correlation."
 
 [[gaps]]
 id = "loadout-envelope-drops-findings"

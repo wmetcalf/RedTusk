@@ -153,12 +153,40 @@ def _java_launches(command: str | list[str]) -> list[list[str]]:
         groups = _commands(command)
     out: list[list[str]] = []
     for toks in groups:
-        for i, tok in enumerate(toks):
-            if _is_java(tok):
-                out.append(_jvm_options(toks[i + 1:]))
-            elif tok in ("-c",) and i + 1 < len(toks) and i > 0 and toks[i - 1].endswith("sh"):
-                out.extend(_java_launches(toks[i + 1]))
+        i = _command_start(toks)
+        if i < len(toks) and _is_java(toks[i]):
+            out.append(_jvm_options(toks[i + 1:]))
+        elif i < len(toks) and toks[i].rsplit("/", 1)[-1] in _SHELLS:
+            for j in range(i + 1, len(toks) - 1):
+                if toks[j] == "-c":
+                    out.extend(_java_launches(toks[j + 1]))
+                    break
     return out
+
+
+_SHELLS = frozenset({"sh", "bash", "dash"})
+# Commands that run their argument as a program; their own options are skipped.
+_WRAPPERS = frozenset({"exec", "env", "timeout", "setpriv", "nice", "nohup", "sudo", "su-exec",
+                       "gosu", "chroot", "stdbuf", "taskset", "ionice", "time", "command"})
+
+
+def _command_start(toks: list[str]) -> int:
+    """Index of the program a command runs: past VAR=val prefixes and wrapper commands (with
+    their options and numeric arguments). Only a ``java`` there is a launch, so a path that
+    merely ends in /java (``ln -s ... /usr/local/bin/java``) is not."""
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
+            i += 1
+        elif tok in _WRAPPERS:
+            i += 1
+            while i < len(toks) and (toks[i].startswith("-") or toks[i].isdigit()
+                                     or re.match(r"^\d+[smhd]?$", toks[i])):
+                i += 1
+        else:
+            return i
+    return i
 
 
 def _is_restore_only(opts: list[str]) -> bool:
@@ -201,7 +229,9 @@ def _script_launches(path: Path) -> list[list[str]]:
     code = "\n".join(
         ln for ln in path.read_text().splitlines() if not ln.lstrip().startswith("#")
     )
-    return _java_launches(re.sub(r"\\\n\s*", " ", code))
+    joined = re.sub(r"\\\n\s*", " ", code)
+    # One shell command per line (continuations already joined).
+    return [o for line in joined.splitlines() for o in _java_launches(line)]
 
 
 class _Text:

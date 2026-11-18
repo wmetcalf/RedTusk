@@ -114,8 +114,11 @@ def test_ok_result_always_carries_redtusk_rmeta(tmp_path: Path,
 
     real_json = json
 
-    def _boom(*a: Any, **k: Any) -> str:
-        raise TypeError("not serializable")
+    def _boom(obj: Any, *a: Any, **k: Any) -> str:
+        # Only the rmeta document fails; other dumps (e.g. embedded_paths) behave normally.
+        if isinstance(obj, dict) and "extraction" in obj:
+            raise TypeError("not serializable")
+        return real_json.dumps(obj, *a, **k)
 
     monkeypatch.setattr(eng, "json", types.SimpleNamespace(loads=real_json.loads, dumps=_boom))
     res = _detonate(tmp_path, monkeypatch)
