@@ -43,7 +43,10 @@ statuses = ["ok", "engine_error"]
 id = "*"
 path = "rmeta/embedded/thumbnails/*.jpg"
 kind = "thumbnail"
-max_count = 8000
+# 2 per entry: when pass 1 (image capture) and pass 2 name the same entry differently, both
+# copies are saved (gap cr-tier-pass2-only-files; #66 unifies the identity). Entries are clamped
+# to 8000, so 2 x 8000 per family; the sealable total (16384) is the binding limit.
+max_count = 16000
 role = "embedded_thumbnail"
 description = "256px JPEG thumbnail of an embedded image, at embedded/thumbnails/<embedded rel path>.jpg. Only when enable_thumbnails (default on)."
 
@@ -59,7 +62,10 @@ description = "Thumbnail of the submitted file itself, only when the root conten
 id = "*"
 path = "rmeta/embedded/*"
 kind = "embedded_file"
-max_count = 8000
+# 2 per entry: when pass 1 (image capture) and pass 2 name the same entry differently, both
+# copies are saved (gap cr-tier-pass2-only-files; #66 unifies the identity). Entries are clamped
+# to 8000, so 2 x 8000 per family; the sealable total (16384) is the binding limit.
+max_count = 16000
 max_bytes = 52428800
 role = "embedded_file"
 description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at a sanitized path mirroring the entry path. Read capped at 50 MiB per file and 256 MiB per pass. Pass 2 warns (embedded_file_truncated / extracted_bytes_budget); a pass-1 image capture cut at 50 MiB is not warned (gap pass1-image-cap-silent)."
