@@ -91,8 +91,11 @@ description = "In-flight draft-snapshot temp file left by a warm or CRaC JVM tha
 # metadata also carries redtusk_rmeta, the full rmeta document as a JSON string.
 root = "embedded_resource"
 node_types = ["embedded_resource", "extracted_text"]
-# required_root_fields / schema_version are not set: the root is not a Record (see gap
-# contract-cannot-require-rmeta-field).
+# Checked on the root EmbeddedResource's metadata Record (ok results only). size_bytes: the rmeta
+# schema requires an integer size_bytes on the root entry and _build_tree copies it whenever it is
+# not None. redtusk_rmeta: see gap contract-cannot-require-rmeta-field for why the fail-open
+# omission branch is unreachable. No schema_version: neither field carries one.
+required_root_fields = ["size_bytes", "redtusk_rmeta"]
 
 # --- Findings a consumer is expected to turn into detections -----------------------------------
 # RedTusk is an extractor. Its findings are (a) two envelope warnings with stable codes and
@@ -186,7 +189,7 @@ description = "QR decodes, OCR results, parent_path, has_thumbnail/thumbnail_ski
 
 [[gaps]]
 id = "contract-cannot-require-rmeta-field"
-description = "redtusk_rmeta lives at payload.metadata.fields (root is EmbeddedResource, not a Record). The checker's required_root_fields only applies to Record roots, so its presence is not machine-checked; it is also silently omitted if json.dumps fails."
+description = "redtusk_rmeta is required (checked on the root's metadata fields), but its value is unchecked: a JSON string with no schema version. detonate() still has a fail-open branch that omits it when json.dumps raises TypeError/ValueError; that branch is unreachable today (the input is json.loads output, so no cycles or non-str keys; default=str; allow_nan stays True). A RecursionError propagates as engine_error, not an ok result without the field. Other root fields (sha256 may be null, Tika keys vary by format) cannot be required."
 
 [[gaps]]
 id = "exploitclass-free-text"
