@@ -48,4 +48,18 @@ class SharedParserConfigTest {
         assertEquals("/_", resolved.get(member).path());
         assertEquals(1, resolved.get(member).depth());
     }
+
+    @Test
+    void aDraftWithoutItsContainerKeepsTheProvenancePath() {
+        // Flushed before archive.zip's own metadata arrived (postorder).
+        Metadata root = new Metadata();
+        Metadata child = new Metadata();
+        child.set(TikaCoreProperties.EMBEDDED_ID_PATH, "/1/1");
+        child.set(TikaCoreProperties.EMBEDDED_RESOURCE_PATH, "/archive.zip/payload.exe");
+        child.set(TikaCoreProperties.RESOURCE_NAME_KEY, "payload.exe");
+        var r = ResourcePaths.resolve(List.of(root, child)).get(child);
+        assertEquals("/archive.zip/payload.exe", r.path());
+        assertEquals("/archive.zip", r.parent());
+        assertEquals(2, r.depth());
+    }
 }

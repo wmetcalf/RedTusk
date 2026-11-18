@@ -51,6 +51,20 @@ final class ResourcePaths {
             }
             int parentSeparator = id == null ? -1 : id.lastIndexOf('/');
             Resource parent = parentSeparator <= 0 ? null : byId.get(id.substring(0, parentSeparator));
+            if (parent == null && parentSeparator > 0 && raw != null && raw.startsWith("/")) {
+                // The container's own metadata is not in the list yet: a draft snapshot flushed
+                // while the container is still being parsed (its metadata arrives postorder).
+                // Keep the wrapper's full provenance path instead of collapsing the member to
+                // the top level; the final result, which has every container, never takes this.
+                String path = "/" + normalizeName(raw);
+                String parentPath = path.substring(0, path.lastIndexOf('/'));
+                if (parentPath.isEmpty()) parentPath = "/";
+                int depth = (int) path.chars().filter(c -> c == '/').count();
+                Resource pending = new Resource(path, parentPath, depth);
+                result.put(metadata, pending);
+                if (id != null) byId.put(id, pending);
+                continue;
+            }
             String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
             if (name == null || name.isBlank()) name = metadata.get(TikaCoreProperties.INTERNAL_PATH);
             if ((name == null || name.isBlank()) && raw != null)

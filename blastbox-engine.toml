@@ -248,7 +248,7 @@ description = "detected is the root content type with confidence 1.0 on every re
 
 [[gaps]]
 id = "cr-tier-pass2-only-files"
-description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries (both storage layouts), so only files with an rmeta entry are declared there; cold and Firecracker declare every file. Pass 2 now derives each entry's identity exactly as pass 1 does (container path + normalised resource name) and both passes use the job's limits, so archive members, renamed attachments and nested-container members are covered. Files pass 2 still writes with no matching entry: a later duplicate identity kept as '<path>#N' (warning resource_path_collision), and members of a container pass 1 gave up on mid-parse (a timeout-salvaged draft). Left: these need entry-id (not path) keyed storage."
+description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries (both storage layouts), so only files with an rmeta entry are declared there; cold and Firecracker declare every file. Pass 2 now derives each entry's identity exactly as pass 1 does (container path + normalised resource name) and both passes use the job's limits, so archive members, renamed attachments and nested-container members are covered. Files pass 2 still writes with no matching entry: a later duplicate identity kept as '<path>#N' (warning resource_path_collision), and, in a timeout-salvaged draft, members whose container never finished (their provenance path is kept, but the container has no entry). Left: these need entry-id (not path) keyed storage."
 
 [[gaps]]
 id = "pass1-image-cap-silent"
