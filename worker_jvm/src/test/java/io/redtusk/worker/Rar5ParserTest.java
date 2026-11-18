@@ -91,4 +91,93 @@ class Rar5ParserTest {
         }
         assertEquals(0, count.get());
     }
+
+    // --- one decoder process per archive, not one per member ---------------------------------
+
+    /** A fake 7zz: "l" prints LISTING; "x" of the whole archive prints STREAM; "x" of one member
+     * (the archive path followed by "-- <name>") prints that member's bytes from MEMBERS. Every
+     * invocation is appended to calls.log. */
+    private Path fakeDecoder(String listing, String stream, String members) throws Exception {
+        Path dir = output.resolve("fake-" + System.nanoTime());
+        java.nio.file.Files.createDirectories(dir);
+        Path log = dir.resolve("calls.log");
+        Path decoder = dir.resolve("decoder");
+        java.nio.file.Files.writeString(decoder, "#!/bin/sh\n"
+            + "echo \"$*\" >> '" + log + "'\n"
+            + "if [ \"$1\" = l ]; then printf '" + listing + "'; exit 0; fi\n"
+            + "for last; do :; done\n"
+            + "case \"$last\" in *.rar) printf '" + stream + "'; exit 0;; esac\n"
+            + members + "\n");
+        assertTrue(decoder.toFile().setExecutable(true));
+        return decoder;
+    }
+
+    private java.util.Map<String, String> decodeWith(Path decoder, org.apache.tika.metadata.Metadata root)
+            throws Exception {
+        var seen = new java.util.LinkedHashMap<String, String>();
+        var context = new org.apache.tika.parser.ParseContext();
+        context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+            public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
+            public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml)
+                    throws java.io.IOException {
+                seen.put(metadata.get(org.apache.tika.metadata.TikaCoreProperties.RESOURCE_NAME_KEY),
+                    new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+            }
+        });
+        try (var input = org.apache.tika.io.TikaInputStream.get(fixture("stored").toPath())) {
+            new Rar5Parser(decoder.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(), root, context);
+        }
+        return seen;
+    }
+
+    private static long calls(Path decoder) throws Exception {
+        return java.nio.file.Files.readAllLines(decoder.resolveSibling("calls.log")).size();
+    }
+
+    private static final String THREE = "Path = a.txt\\nSize = 3\\nFolder = -\\n\\n"
+        + "Path = dir\\nSize = 0\\nFolder = +\\n\\n"
+        + "Path = empty.txt\\nSize = 0\\nFolder = -\\n\\n"
+        + "Path = dir/b.txt\\nSize = 4\\nFolder = -\\n";
+
+    @Test void decodesEveryMemberWithOneDecoderRun() throws Exception {
+        Path decoder = fakeDecoder(THREE, "abcdefg", "exit 9");
+        var seen = decodeWith(decoder, new org.apache.tika.metadata.Metadata());
+        assertEquals(java.util.Map.of("a.txt", "abc", "empty.txt", "", "dir/b.txt", "defg"), seen);
+        assertEquals(2, calls(decoder), "one listing + one decode, whatever the member count");
+    }
+
+    @Test void streamLongerThanItsListingIsRefused() throws Exception {
+        Path decoder = fakeDecoder(THREE, "abcdefgX", "exit 9");
+        var seen = new java.util.LinkedHashMap<String, String>();
+        assertThrows(org.apache.tika.exception.TikaException.class,
+            () -> seen.putAll(decodeWith(decoder, new org.apache.tika.metadata.Metadata())));
+        assertTrue(seen.isEmpty());
+    }
+
+    @Test void streamShorterThanItsListingIsRefusedBeforeAnythingIsPublished() throws Exception {
+        Path decoder = fakeDecoder(THREE, "abcdef", "exit 9");
+        var seen = new java.util.LinkedHashMap<String, String>();
+        assertThrows(org.apache.tika.exception.TikaException.class,
+            () -> seen.putAll(decodeWith(decoder, new org.apache.tika.metadata.Metadata())));
+        assertTrue(seen.isEmpty());
+    }
+
+    @Test void archiveWithLinksFallsBackToPerMemberDecoding() throws Exception {
+        // 7zz writes a link's target into the -so stream, so a link-bearing archive's stream
+        // need not match its listing; the legacy one-member-at-a-time path still extracts it.
+        String listing = "Path = a.txt\\nSize = 3\\nFolder = -\\n\\n"
+            + "Path = link\\nSize = 0\\nFolder = -\\nSymbolic Link = a.txt\\n";
+        Path decoder = fakeDecoder(listing, "abca.txt", "[ \"$last\" = a.txt ] && printf abc && exit 0; exit 9");
+        var root = new org.apache.tika.metadata.Metadata();
+        var seen = decodeWith(decoder, root);
+        assertEquals(java.util.Map.of("a.txt", "abc"), seen);
+        assertTrue(String.join("|", root.getValues("X-RedTusk:archive-skipped")).contains("link"));
+    }
+
+    @Test void realMultiMemberArchiveDecodesEveryMember() throws Exception {
+        ParseResult result = runner(1024 * 1024).parse(fixture("multiple_files"), "multi.rar", "0".repeat(64));
+        assertNull(result.entries().getFirst().error());
+        assertEquals(5, result.entries().size(), result.entries().stream().map(EntryResult::path).toList().toString());
+    }
 }
