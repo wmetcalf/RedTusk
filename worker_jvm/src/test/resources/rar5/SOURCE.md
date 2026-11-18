@@ -14,3 +14,8 @@ truncated_member_{shuffle,swap,stored}.rar: hand-built stored RAR5 (2026-11-18 r
 RedTusk#67). A member stores fewer bytes than its listed Size, and later members' header CRCs
 are chosen to match the windows they shift into, so a whole-archive `7zz x -so` stream that is
 split by listed sizes publishes bytes under the wrong names. `7zz t` exits 2 on each. Benign.
+
+emptylink_*.rar: hand-built RAR5 (2026-11-18 final review of RedTusk#67). An entry listed as a
+regular file (empty link values) that is really a data-less hard link / file copy / symlink
+(redirect record with an empty target, redirect type 0, or Unix symlink mode) passes `7zz t`
+but writes 0 bytes under `x -so`; with CRC32-forged later members the stream shifts. Benign.

@@ -1,6 +1,6 @@
 # RAR5 and nested resource verification
 
-> **Superseded decoder (2026-11-18):** the live runs below used the earlier libarchive `bsdtar` PAX-stream decoder. The branch now decodes RAR5 with a pinned static `7zz`: one bounded `7zz x -so` of the whole archive, split by the listed member sizes (if that run fails or does not match, it falls back to one run per member). The 7zz path has local and unit-test evidence only; re-run the live table before relying on it for 7zz.
+> **Superseded decoder (2026-11-18):** the live runs below used the earlier libarchive `bsdtar` PAX-stream decoder. The branch now decodes RAR5 with a pinned static `7zz`: one bounded `7zz x -so` of the whole archive, split by the listed member sizes and checked per member against the listed CRC32, used only when every entry is a plain file or folder carrying its own data and `7zz t` passes (otherwise, or if the run stops matching, one run per member). The 7zz path has local and unit-test evidence only; re-run the live table before relying on it for 7zz.
 
 
 The worker recognizes RAR5 and converts its entries to a bounded PAX stream with

@@ -38,8 +38,12 @@ final class Rar5Parser implements Parser {
     @Override public Set<MediaType> getSupportedTypes(ParseContext context) {
         return Set.of(MediaType.application("x-rar-compressed"), MediaType.application("vnd.rar"));
     }
-    /** crc is the listed CRC32 of the member's data, or null when the archive gives none. */
-    record Member(String path, long size, boolean skip, boolean folder, Long crc) { }
+    /** crc is the listed CRC32 of the member's data, or null when the archive gives none.
+     * ownData: the entry's -so bytes provably come from its own data area: it carries data
+     * whenever it has a size (Packed Size > 0 or Size = 0) and nothing marks it a link (no
+     * "Link" characteristic, no Unix symlink mode). A data-less link listed with empty link
+     * values passes `7zz t` yet writes 0 bytes under `x -so`. */
+    record Member(String path, long size, boolean skip, boolean folder, Long crc, boolean ownData) { }
 
     static List<Member> listedEntries(String listing, int maxEntries, long budget) throws TikaException {
         List<Member> entries = new ArrayList<>();
@@ -77,7 +81,13 @@ final class Rar5Parser implements Parser {
             Long crc = null;
             String listedCrc = fields.getOrDefault("CRC", "");
             if (listedCrc.matches("[0-9A-Fa-f]{8}")) crc = Long.parseLong(listedCrc, 16);
-            entries.add(new Member(path, size, skip, "+".equals(folder), crc)); total += size;
+            long packed = -1;
+            try { packed = Long.parseLong(fields.getOrDefault("Packed Size", "").strip()); }
+            catch (NumberFormatException ignored) { }
+            boolean linkish = fields.getOrDefault("Characteristics", "").contains("Link")
+                || fields.getOrDefault("Attributes", "").strip().startsWith("l");
+            boolean ownData = !linkish && (size == 0 || packed > 0);
+            entries.add(new Member(path, size, skip, "+".equals(folder), crc, ownData)); total += size;
         }
         return entries;
     }
@@ -181,7 +191,8 @@ final class Rar5Parser implements Parser {
      *
      * Only for archives whose listing describes the stream exactly: every entry a regular file
      * or folder (no links or alternate streams, whose -so bytes their listed size does not
-     * describe), every regular member carrying a CRC, and the whole archive passing
+     * describe), every regular member carrying a CRC and its own data (see Member.ownData),
+     * and the whole archive passing
      * {@code 7zz t} (every member decodes to its listed size and CRC). Otherwise, or when the run stops
      * matching (short stream, CRC mismatch, non-zero exit), the remaining members are decoded
      * one 7zz run each, as before.
@@ -193,7 +204,8 @@ final class Rar5Parser implements Parser {
                            XHTMLContentHandler xhtml, ParseContext context)
             throws IOException, TikaException, SAXException {
         for (Member member : members)
-            if ((member.skip() && !member.folder()) || (!member.skip() && member.crc() == null)) return 0;
+            if ((member.skip() && !member.folder())
+                    || (!member.skip() && (member.crc() == null || !member.ownData()))) return 0;
         // Splitting the -so stream by listed sizes is only sound when every member decodes to
         // exactly its listed size and CRC: a short member shifts every later window, and an
         // archive author can choose later header CRCs to match the shifted bytes. So the whole

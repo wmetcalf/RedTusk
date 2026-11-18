@@ -144,10 +144,10 @@ class Rar5ParserTest {
         return java.nio.file.Files.readAllLines(decoder.resolveSibling("calls.log")).size();
     }
 
-    private static final String THREE = "Path = a.txt\\nSize = 3\\nFolder = -\\nCRC = 352441C2\\n\\n"
+    private static final String THREE = "Path = a.txt\\nSize = 3\\nPacked Size = 3\\nFolder = -\\nCRC = 352441C2\\n\\n"
         + "Path = dir\\nSize = 0\\nFolder = +\\n\\n"
-        + "Path = empty.txt\\nSize = 0\\nFolder = -\\nCRC = 00000000\\n\\n"
-        + "Path = dir/b.txt\\nSize = 4\\nFolder = -\\nCRC = 3B6D8E59\\n";
+        + "Path = empty.txt\\nSize = 0\\nPacked Size = 0\\nFolder = -\\nCRC = 00000000\\n\\n"
+        + "Path = dir/b.txt\\nSize = 4\\nPacked Size = 4\\nFolder = -\\nCRC = 3B6D8E59\\n";
 
     @Test void decodesEveryMemberWithOneDecoderRun() throws Exception {
         Path decoder = fakeDecoder(THREE, "abcdefg", "exit 9");
@@ -213,8 +213,8 @@ class Rar5ParserTest {
     @Test void failedWholeArchiveRunFallsBackToPerMemberDecoding() throws Exception {
         // One corrupt member makes the single run fail; the members before it are still
         // published, as the one-run-per-member decoder did.
-        String listing = "Path = a.txt\\nSize = 3\\nFolder = -\\nCRC = 352441C2\\n\\n"
-            + "Path = bad.bin\\nSize = 2\\nFolder = -\\nCRC = 00000000\\n";
+        String listing = "Path = a.txt\\nSize = 3\\nPacked Size = 3\\nFolder = -\\nCRC = 352441C2\\n\\n"
+            + "Path = bad.bin\\nSize = 2\\nPacked Size = 2\\nFolder = -\\nCRC = 00000000\\n";
         Path dir = output.resolve("fake-fail");
         java.nio.file.Files.createDirectories(dir);
         Path decoder = dir.resolve("decoder");
@@ -308,7 +308,7 @@ class Rar5ParserTest {
     }
 
     @Test void aSlowNestedParseAfterTheLastMemberIsNotADeadlineFailure() throws Exception {
-        Path decoder = fakeDecoder("Path = a.txt\\nSize = 3\\nFolder = -\\nCRC = 352441C2\\n", "abc", "exit 9");
+        Path decoder = fakeDecoder("Path = a.txt\\nSize = 3\\nPacked Size = 3\\nFolder = -\\nCRC = 352441C2\\n", "abc", "exit 9");
         var context = new org.apache.tika.parser.ParseContext();
         context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
             public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
@@ -321,5 +321,48 @@ class Rar5ParserTest {
             new Rar5Parser(decoder.toString(), 1).parse(input, new org.xml.sax.helpers.DefaultHandler(),
                 new org.apache.tika.metadata.Metadata(), context);
         }
+    }
+
+    @Test void dataLessLinkListedAsAFileCannotShiftTheStream() throws Exception {
+        // Each passes `7zz t`, yet its entry writes nothing under `x -so`. Whatever is decided,
+        // the payload's bytes may only ever appear under payload.exe.
+        for (String fixture : java.util.List.of("emptylink_hard_hide", "emptylink_copy_hide",
+                "emptylink_symlink_mode_hide", "emptylink_symlink_empty_hide", "emptylink_redir0_hide",
+                "emptylink_hard_split", "emptylink_copy_split")) {
+            var seen = new java.util.LinkedHashMap<String, String>();
+            try { decodeRealInto(fixture, seen); }
+            catch (org.apache.tika.exception.TikaException refused) { /* refused, as origin/main */ }
+            for (var e : seen.entrySet()) {
+                boolean carriesPayload = e.getValue().contains("MALWARE");
+                assertEquals(e.getKey().equals("payload.exe") && carriesPayload || !carriesPayload, true,
+                    fixture + ": " + seen);
+            }
+            if (seen.containsKey("payload.exe"))
+                assertTrue(seen.get("payload.exe").startsWith("MALWARE"), fixture + ": " + seen);
+        }
+    }
+
+    @Test void realMultiMemberArchiveTakesTheSingleRun() throws Exception {
+        Path dir = output.resolve("shim");
+        java.nio.file.Files.createDirectories(dir);
+        Path log = dir.resolve("calls.log");
+        Path shim = dir.resolve("7zz");
+        java.nio.file.Files.writeString(shim, "#!/bin/sh\necho \"$1\" >> '" + log + "'\nexec 7zz \"$@\"\n");
+        assertTrue(shim.toFile().setExecutable(true));
+        var seen = new java.util.ArrayList<String>();
+        var context = new org.apache.tika.parser.ParseContext();
+        context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+            public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
+            public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml) {
+                seen.add(metadata.get(org.apache.tika.metadata.TikaCoreProperties.RESOURCE_NAME_KEY));
+            }
+        });
+        try (var input = org.apache.tika.io.TikaInputStream.get(fixture("multiple_files").toPath())) {
+            new Rar5Parser(shim.toString()).parse(input, new org.xml.sax.helpers.DefaultHandler(),
+                new org.apache.tika.metadata.Metadata(), context);
+        }
+        assertEquals(4, seen.size(), seen.toString());
+        assertEquals(java.util.List.of("l", "t", "x"), java.nio.file.Files.readAllLines(log));
     }
 }
