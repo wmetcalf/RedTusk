@@ -263,7 +263,9 @@ class Rar5ParserTest {
         for (String fixture : java.util.List.of("altstream_decoy_symlink", "altstream_decoy_regular")) {
             var seen = decodeReal(fixture);
             assertEquals("MALWARE!", seen.get("payload.exe"), fixture + ": " + seen);
-            assertFalse(seen.containsValue("harmless"), fixture + ": " + seen);
+            // the decoy's bytes may appear only under the decoy stream's own name
+            assertTrue(seen.entrySet().stream().filter(e -> e.getValue().equals("harmless"))
+                .allMatch(e -> e.getKey().endsWith(":decoy")), fixture + ": " + seen);
         }
         assertEquals("abc", decodeReal("altstream_decoy_regular").get("f1.txt"));
     }
@@ -389,5 +391,33 @@ class Rar5ParserTest {
         assertEquals(java.util.Map.of("a.txt", "abc", "empty.txt", "", "dir/b.txt", "defg"), seen);
         assertFalse(java.nio.file.Files.readAllLines(decoder.resolveSibling("calls.log")).stream()
             .anyMatch(line -> line.startsWith("t ")), "no whole-archive test for 3 members");
+    }
+
+    @Test void alternateStreamsAreExtractedNotDropped() throws Exception {
+        // CVE-2025-8088 shape: the payload rides in NTFS alternate streams. Each stream is
+        // published as its own member (named file:stream); the host file keeps its own bytes.
+        for (String fixture : java.util.List.of("ads_payload_file", "ads_payload_dir", "ads_payload_file_16")) {
+            for (Rar5Parser parser : java.util.List.of(new Rar5Parser(),
+                    new Rar5Parser(System.getenv().getOrDefault("REDTUSK_7ZZ", "7zz"), Rar5Parser.DEADLINE_SECONDS, 1))) {
+                var seen = new java.util.LinkedHashMap<String, String>();
+                var context = new org.apache.tika.parser.ParseContext();
+                context.set(org.apache.tika.extractor.EmbeddedDocumentExtractor.class, new org.apache.tika.extractor.EmbeddedDocumentExtractor() {
+                    public boolean shouldParseEmbedded(org.apache.tika.metadata.Metadata metadata) { return true; }
+                    public void parseEmbedded(org.apache.tika.io.TikaInputStream stream, org.xml.sax.ContentHandler handler,
+                        org.apache.tika.metadata.Metadata metadata, org.apache.tika.parser.ParseContext ctx, boolean outputHtml)
+                            throws java.io.IOException {
+                        seen.put(metadata.get(org.apache.tika.metadata.TikaCoreProperties.RESOURCE_NAME_KEY),
+                            new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                });
+                try (var input = org.apache.tika.io.TikaInputStream.get(fixture(fixture).toPath())) {
+                    parser.parse(input, new org.xml.sax.helpers.DefaultHandler(), new org.apache.tika.metadata.Metadata(), context);
+                }
+                assertTrue(seen.entrySet().stream().anyMatch(e -> e.getKey().contains(":")
+                    && e.getValue().contains("MALWARE-ADS-PAYLOAD")), fixture + ": " + seen.keySet());
+                assertFalse(seen.entrySet().stream().anyMatch(e -> !e.getKey().contains(":")
+                    && e.getValue().contains("MALWARE-ADS-PAYLOAD")), fixture + ": " + seen.keySet());
+            }
+        }
     }
 }

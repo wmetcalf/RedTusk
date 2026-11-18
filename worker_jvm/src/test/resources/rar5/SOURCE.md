@@ -19,3 +19,8 @@ emptylink_*.rar: hand-built RAR5 (2026-11-18 final review of RedTusk#67). An ent
 regular file (empty link values) that is really a data-less hard link / file copy / symlink
 (redirect record with an empty target, redirect type 0, or Unix symlink mode) passes `7zz t`
 but writes 0 bytes under `x -so`; with CRC32-forged later members the stream shifts. Benign.
+
+ads_payload_{file,dir,file_16}.rar: hand-built RAR5 (2026-11-18 review of RedTusk#67) in the
+CVE-2025-8088 shape: NTFS alternate streams (one with a traversal name) carrying a benign
+"MALWARE-ADS-PAYLOAD" string, attached to a file or a folder (16-member variant to reach the
+single-run threshold).

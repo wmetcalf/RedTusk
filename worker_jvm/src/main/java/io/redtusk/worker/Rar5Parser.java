@@ -18,10 +18,14 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /** Modern RAR decoding stays inside the existing worker sandbox. The archive is listed once
- * (alternate streams included) and, when the listing describes the decoded stream exactly,
- * decoded once (one 7zz stream read member by member, each checked against its listed size
- * and CRC32 before it is published); otherwise one bounded 7zz run per member. Each member is
- * bounded, held in memory one at a time, and never extracted to disk by archive path. */
+ * (NTFS alternate streams included; each is a member of its own, named "file:stream"). An
+ * archive of at least SINGLE_RUN_MIN_MEMBERS files whose listing describes the decoded stream
+ * exactly (plain files and folders carrying their own data, every file with a CRC, no
+ * alternate streams) and which passes `7zz t` is decoded once: one 7zz stream read member by
+ * member, each checked against its listed size and CRC32 before it is published. Otherwise,
+ * and for the rest of an archive whose single run stops matching, one bounded 7zz run per
+ * member. Each member is bounded, held in memory one at a time, and never extracted to disk
+ * by archive path. */
 final class Rar5Parser implements Parser {
     private static final byte[] MAGIC = {'R', 'a', 'r', '!', 0x1a, 7, 1, 0};
     private static final long MAX_BYTES = 256L * 1024 * 1024;
@@ -50,7 +54,8 @@ final class Rar5Parser implements Parser {
      * whenever it has a size (Packed Size > 0 or Size = 0) and nothing marks it a link (no
      * "Link" characteristic, no Unix symlink mode). A data-less link listed with empty link
      * values passes `7zz t` yet writes 0 bytes under `x -so`. */
-    record Member(String path, long size, boolean skip, boolean folder, Long crc, boolean ownData) { }
+    record Member(String path, long size, boolean skip, boolean folder, Long crc, boolean ownData,
+                  boolean altStream) { }
 
     static List<Member> listedEntries(String listing, int maxEntries, long budget) throws TikaException {
         List<Member> entries = new ArrayList<>();
@@ -81,7 +86,10 @@ final class Rar5Parser implements Parser {
             if ("+".equals(fields.get("Encrypted"))) throw new TikaException("RAR5 encrypted member requires a password");
             if ("+".equals(fields.get("Split Before")) || "+".equals(fields.get("Split After")))
                 throw new TikaException("RAR5 split member is incomplete");
-            boolean skip = "+".equals(folder) || "+".equals(fields.get("Alternate Stream"))
+            // An NTFS alternate stream is a member of its own (named "file:stream"), decoded by
+            // name with -sns: it is where a CVE-2025-8088-style payload rides.
+            boolean altStream = "+".equals(fields.get("Alternate Stream"));
+            boolean skip = "+".equals(folder)
                 || !fields.getOrDefault("Symbolic Link", "").isEmpty()
                 || !fields.getOrDefault("Hard Link", "").isEmpty()
                 || !fields.getOrDefault("Copy Link", "").isEmpty();
@@ -94,7 +102,7 @@ final class Rar5Parser implements Parser {
             boolean linkish = fields.getOrDefault("Characteristics", "").contains("Link")
                 || fields.getOrDefault("Attributes", "").strip().startsWith("l");
             boolean ownData = !linkish && (size == 0 || packed > 0);
-            entries.add(new Member(path, size, skip, "+".equals(folder), crc, ownData)); total += size;
+            entries.add(new Member(path, size, skip, "+".equals(folder), crc, ownData, altStream)); total += size;
         }
         return entries;
     }
@@ -166,8 +174,9 @@ final class Rar5Parser implements Parser {
 
     /** The per-member decode: one bounded 7zz run for this member only. */
     private byte[] decodeMember(String path, Member member, long deadline) throws IOException, TikaException {
-        byte[] bytes = command(List.of(decoder, "x", "-so", "-spd", "-sns-", "-y", "-p-", "-bso0", "-bsp0",
-            path, "--", member.path()), (int) member.size(), deadline);
+        // -sns- for a file (its streams are members of their own), -sns to name a stream
+        byte[] bytes = command(List.of(decoder, "x", "-so", "-spd", member.altStream() ? "-sns" : "-sns-", "-y",
+            "-p-", "-bso0", "-bsp0", path, "--", member.path()), (int) member.size(), deadline);
         if (bytes.length != member.size()) throw new TikaException("RAR5 decoded member size mismatch");
         return bytes;
     }
@@ -212,7 +221,7 @@ final class Rar5Parser implements Parser {
             throws IOException, TikaException, SAXException {
         if (members.stream().filter(m -> !m.skip()).count() < singleRunMinMembers) return 0;
         for (Member member : members)
-            if ((member.skip() && !member.folder())
+            if ((member.skip() && !member.folder()) || member.altStream()
                     || (!member.skip() && (member.crc() == null || !member.ownData()))) return 0;
         // Splitting the -so stream by listed sizes is only sound when every member decodes to
         // exactly its listed size and CRC: a short member shifts every later window, and an
