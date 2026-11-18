@@ -178,10 +178,13 @@ final class Rar5Parser implements Parser {
             // 7zz lists a stream as "host:stream", but for some stored names (no leading ':',
             // or a '/') its name filter does not select the stream by that path and selects
             // whatever lies under "host:stream/" instead. Accept the bytes only if the same
-            // filter lists exactly this one stream.
+            // filter lists exactly this one stream. Sound only because listedEntries refuses an
+            // archive that lists any path twice: a second item listed under this very path
+            // (another stored spelling of the stream, or a ':'-named host) would pass this
+            // check while x writes ITS bytes. Keep that refusal if duplicates are ever allowed.
             byte[] listed = command(List.of(decoder, "l", "-slt", "-ba", "-sns", "-spd", "-sccUTF-8", "-p-",
                 path, "--", member.path()), 1024 * 1024, deadline);
-            List<Member> selected = listedEntries(new String(listed, StandardCharsets.UTF_8), 2, Long.MAX_VALUE);
+            List<Member> selected = listedEntries(new String(listed, StandardCharsets.UTF_8), Integer.MAX_VALUE, Long.MAX_VALUE);
             if (selected.size() != 1 || !selected.get(0).altStream() || !selected.get(0).path().equals(member.path())
                     || selected.get(0).size() != member.size())
                 throw new TikaException("RAR5 alternate stream cannot be selected by its name: " + member.path());
