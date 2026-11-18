@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -236,3 +237,84 @@ def test_warm_crash_fallback_starts_cold_from_a_clean_rmeta_dir(
     eng = _engine_with_warm(tmp_path, _CrashingWarm(timeout=False, returncode=1), started=True)
     eng._produce_rmeta(src, rmeta_dir, timeout=30.0)
     assert seen == [[]], f"cold fallback saw the crashed warm JVM's files: {seen}"
+
+
+# --- review round 1: the thumbnails/ namespace belongs to the worker -----------------------------
+
+def test_an_entry_named_thumbnails_never_lands_in_the_thumbnail_dir() -> None:
+    # EmbeddedFileExtractor.resolveOutFile renames a top-level "thumbnails" component, so an
+    # archive member cannot be declared as (or overwrite) a thumbnail. This mirrors it.
+    for entry in ("/thumbnails/evil.jpg", "/thumbnails/pic.png.jpg", "/thumbnails"):
+        disk = _embedded_disk_relpath(entry)
+        assert not disk.startswith("thumbnails/") and disk != "thumbnails", disk
+        assert disk.startswith("thumbnails_"), disk
+    # Deeper "thumbnails" components are ordinary directories.
+    assert _embedded_disk_relpath("/a/thumbnails/x.jpg") == "a/thumbnails/x.jpg"
+
+
+def test_detonate_declares_a_member_named_thumbnails_as_an_embedded_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    doc = _rmeta()
+    doc["extraction"]["entries"].append(
+        _entry("/thumbnails/evil.jpg", "/", 1, "application/x-msdownload", "ab" * 32))
+    disk = "embedded/" + _embedded_disk_relpath("/thumbnails/evil.jpg")
+    res = _detonate_with(tmp_path, monkeypatch, doc, {
+        disk: b"MZ\x90\x00",
+        "embedded/image3.jpeg": b"\xff\xd8jpeg",
+        "embedded/thumbnails/image3.jpeg.jpg": b"\xff\xd8thumb",
+    })
+    kinds = {a.path: a.kind for a in res.artifacts}
+    assert kinds["rmeta/" + disk] == "embedded_file"
+    assert kinds["rmeta/embedded/thumbnails/image3.jpeg.jpg"] == "thumbnail"
+    assert [p for p, k in kinds.items() if k == "thumbnail"] == [
+        "rmeta/embedded/thumbnails/image3.jpeg.jpg"]
+
+
+# --- review round 1: routine OCR / QR skips are not attached to every node ----------------------
+
+def test_routine_ocr_and_qr_skips_are_omitted(tmp_path: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    doc = _rmeta()
+    for e in doc["extraction"]["entries"]:
+        e["ocr"] = {"text": "", "language": None, "duration_ms": 0, "skipped": "disabled"}
+        e["qr"] = {"codes": [], "skipped": "no_images"}
+    doc["extraction"]["entries"][1]["ocr"]["skipped"] = "timeout_budget"
+    res = _detonate_with(tmp_path, monkeypatch, doc)
+    root = res.payload.metadata.fields
+    assert "redtusk:ocr" not in root and "redtusk:qr" not in root
+    node = res.payload.children[0].metadata.fields
+    # An unusual skip reason is evidence, so it is kept.
+    assert node["redtusk:ocr"].fields["skipped"] == "timeout_budget"
+    assert "redtusk:qr" not in node
+
+
+# --- review round 1: a reset that cannot list the directory still lets the fallback run ---------
+
+def test_fallback_runs_when_the_rmeta_dir_cannot_be_emptied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    rmeta_dir = out / "rmeta"
+
+    def failed_crac(inp: Path, rmeta: Path, **_: Any) -> None:
+        (rmeta / "embedded").mkdir(parents=True, exist_ok=True)
+        (rmeta / "embedded" / "half-written.bin").write_bytes(b"partial")
+        raise RuntimeError("restore failed mid-job")
+
+    def stale_view_rmtree(path: Any, *a: Any, **k: Any) -> None:
+        raise OSError(39, "Directory not empty", str(path))
+
+    seen: list[list[str]] = []
+    monkeypatch.setattr(eng_mod, "_crac_restore_worker", failed_crac)
+    monkeypatch.setattr(shutil, "rmtree", stale_view_rmtree)
+    monkeypatch.setattr(
+        eng_mod, "_run_worker",
+        lambda i, r, *, timeout: seen.append(
+            sorted(p.name for p in r.rglob("*")) if r.exists() else []),
+    )
+    monkeypatch.setenv("REDTUSK_CRAC_CHECKPOINT", "/ckpt")
+    RedTuskEngine()._produce_rmeta(Path("in"), rmeta_dir, 10.0)
+    assert seen == [[]], f"cold fallback did not run on a clean rmeta dir: {seen}"
+    (aside,) = [p for p in out.iterdir() if p.name.startswith(".rmeta.failed-")]
+    assert (aside / "embedded" / "half-written.bin").is_file()

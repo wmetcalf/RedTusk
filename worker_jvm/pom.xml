@@ -125,6 +125,8 @@
               <rules>
                 <requireEnvironmentVariable>
                   <variableName>REDTUSK_PINNED_TIKA</variableName>
+                  <!-- Defined is not enough: REDTUSK_PINNED_TIKA=0 or an empty export must fail. -->
+                  <regex>1</regex>
                   <message>worker_jvm must be built against the PINNED Tika fork, not whatever ~/.m2 holds. Use scripts/worker_build.sh package|test (builds inside the pinned tika-build stage). Override with -Dredtusk.allowHostTika=true only if you know your ~/.m2 matches TIKA_FORK_SHA.</message>
                 </requireEnvironmentVariable>
               </rules>

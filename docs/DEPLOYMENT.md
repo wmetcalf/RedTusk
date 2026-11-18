@@ -217,7 +217,7 @@ setting it only in `.env` does nothing, and setting it with `docker exec` does n
 
 ### 3. RedTusk engine bump — Java worker (`worker_jvm/`)
 
-1. `mvn -f worker_jvm/pom.xml package` → `redtusk-worker.jar`.
+1. `scripts/worker_build.sh package` → `worker_jvm/target/redtusk-worker.jar`. It builds inside the pinned `tika-build` stage; a plain `mvn` now fails the `REDTUSK_PINNED_TIKA` enforcer.
 2. Rebuild the **image**, which regenerates the AOT cache from the new jar
    (`Dockerfile.localtika`: `AOTMode=record` → `AOTMode=create`). Do not hand-copy the jar.
 3. Rebuild the FC rootfs, then the pool base.

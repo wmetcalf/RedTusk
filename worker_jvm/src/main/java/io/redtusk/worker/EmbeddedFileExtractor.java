@@ -431,7 +431,7 @@ public final class EmbeddedFileExtractor {
 
             // Mirror the relative path under thumbnails/, append .jpg
             Path rel = root.relativize(originalFile);
-            Path thumbPath = root.resolve("thumbnails").resolve(rel + ".jpg");
+            Path thumbPath = root.resolve(THUMBNAILS_DIR).resolve(rel + ".jpg");
             Files.createDirectories(thumbPath.getParent());
 
             // Write JPEG at configured quality
@@ -467,6 +467,9 @@ public final class EmbeddedFileExtractor {
      * (Pass1ImageCapture) writes to the same paths Pass 2 would use, keeping the
      * thumbnail artifact tree consistent regardless of which pass produced the file.
      */
+    /** Top-level directory under the embedded root that only {@link #writeThumbnail} writes. */
+    static final String THUMBNAILS_DIR = "thumbnails";
+
     static Path resolveOutFile(Path root, String embPath, Metadata metadata) {
         String rel;
         if (embPath != null && !embPath.isEmpty()) {
@@ -483,6 +486,11 @@ public final class EmbeddedFileExtractor {
             String original = parts[idx];
             String part = original.replaceAll("[^a-zA-Z0-9._+\\- ]", "_").trim();
             if (part.isEmpty() || part.equals(".") || part.equals("..")) part = "_";
+            // root/thumbnails/ belongs to writeThumbnail. An entry whose own top-level name is
+            // "thumbnails" would otherwise land there: it could be declared a thumbnail, have
+            // its bytes overwritten by another entry's thumbnail, or (as a plain file) stop the
+            // thumbnails directory from being created. Reserve the name like any lossy rename.
+            if (idx == 0 && part.equals(THUMBNAILS_DIR)) part = THUMBNAILS_DIR + "_";
             // Sanitization is lossy when it changed the component — distinct
             // raw names (e.g. "résumé.doc" vs "resume_.doc", or "a/b" vs "a_b")
             // can collapse to the same sanitized path and silently overwrite

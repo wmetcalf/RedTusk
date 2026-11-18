@@ -31,10 +31,13 @@ statuses = ["ok", "engine_error"]
 # collisions get a "_N" suffix, so ids are matched with "*".
 # Kind comes from _infer_artifact_kind(path, entries): the file's ROLE in the layout, never its
 # name. rmeta/thumbnail.jpg and rmeta/embedded/thumbnails/*.jpg are "thumbnail"; everything else
-# under rmeta/embedded/ is "embedded_file", including an entry whose own path is under
-# thumbnails/ (the rmeta entries disambiguate). On a gVisor C/R-restored worker with a stale
-# directory view the same set, thumbnails included, is rebuilt from the rmeta entries.
-# fnmatch "*" crosses "/", and families are matched in order, so the specific ones come first.
+# under rmeta/embedded/ is "embedded_file". The worker reserves embedded/thumbnails/ for
+# thumbnails: an entry whose own top-level name is "thumbnails" is saved under "thumbnails_/"
+# (with the lossy-name hash tag), so no entry can be declared, or overwritten, as a thumbnail.
+# On a gVisor C/R-restored worker with a stale directory view the set is rebuilt from the rmeta
+# entries, so it covers only files that have an rmeta entry (see gap cr-tier-pass2-only-files).
+# fnmatch "*" crosses "/". The checker matches a family on id, path AND kind, so the thumbnail
+# family never claims an embedded_file; listing the specific families first keeps it readable.
 
 [[artifacts]]
 id = "*"
@@ -59,7 +62,7 @@ kind = "embedded_file"
 max_count = 10000
 max_bytes = 52428800
 role = "embedded_file"
-description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at a sanitized path mirroring the entry path. Read capped at 50 MiB per file (warning embedded_file_truncated) and 256 MiB per pass (warning extracted_bytes_budget)."
+description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at a sanitized path mirroring the entry path. Read capped at 50 MiB per file and 256 MiB per pass. Pass 2 warns (embedded_file_truncated / extracted_bytes_budget); a pass-1 image capture cut at 50 MiB is not warned (gap pass1-image-cap-silent)."
 
 # --- Payload -----------------------------------------------------------------------------------
 
@@ -72,11 +75,13 @@ description = "Raw bytes of one embedded resource (pass-1 image capture or pass-
 # Engine-derived per-entry evidence is on every node's metadata under a "redtusk:" namespace,
 # applied after the Tika keys so a document cannot spoof it: redtusk:parent_path,
 # redtusk:has_thumbnail, redtusk:thumbnail_skipped, redtusk:qr (Record of parallel lists data /
-# format / position / raw_bytes plus skipped; only when there are codes or a skip reason) and
-# redtusk:ocr (Record text / language / duration_ms / skipped; only when non-empty). A truncated
+# format / position / raw_bytes plus skipped) and redtusk:ocr (Record text / language /
+# duration_ms / skipped), each only when there is a result or an unusual skip reason: the
+# routine reasons "disabled" and "no_images" are omitted, not attached to every node. A truncated
 # result also carries redtusk:truncated (Record reason / limit / observed) on the root.
 root = "embedded_resource"
-node_types = ["embedded_resource", "extracted_text"]
+# "record" is the metadata Record (and the redtusk:* Records nested in it), not a child node.
+node_types = ["embedded_resource", "extracted_text", "record"]
 # Checked on the root EmbeddedResource's metadata Record (ok results only). size_bytes: the rmeta
 # schema requires an integer size_bytes on the root entry and _build_tree copies it whenever it is
 # not None. redtusk_rmeta: detonate() sets it unconditionally on every ok result; if the rmeta
@@ -184,8 +189,14 @@ description = "Legacy XLS4 / XLM macro sheets present."
 [[detections]]
 code = "msoffice:xlsx:has-xlm-macros"
 severity = "medium"
-source = "any EmbeddedResource.metadata.fields['msoffice:xlsx:has-xlm-macros'] (and msoffice:xlsb:has-xlm-macros for XLSB)"
-description = "XLM macro sheets present in an OOXML / XLSB workbook."
+source = "any EmbeddedResource.metadata.fields['msoffice:xlsx:has-xlm-macros']"
+description = "XLM macro sheets present in an OOXML (XLSX/XLSM) workbook."
+
+[[detections]]
+code = "msoffice:xlsb:has-xlm-macros"
+severity = "medium"
+source = "any EmbeddedResource.metadata.fields['msoffice:xlsb:has-xlm-macros']"
+description = "XLM macro sheets present in a binary (XLSB) workbook; set by the Tika fork's XSSFBExcelExtractorDecorator."
 
 [[detections]]
 code = "qr_code"
@@ -211,6 +222,14 @@ description = "Every finding except the warnings is a Tika metadata key mixed in
 [[gaps]]
 id = "detected-is-root-mime"
 description = "detected is the root content type with confidence 1.0 on every result; it is identification, not a verdict, and says nothing about the findings. Left: that is blastbox's meaning of Detection (file identification); turning it into a verdict is an owner/blastbox decision, not an engine defect."
+
+[[gaps]]
+id = "cr-tier-pass2-only-files"
+description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries, so a file with no rmeta entry is not declared there. With the pinned Tika, archive members (zip/7z/tar) are saved by pass 2 but get no rmeta entry, so on that tier an archive's members are missing from the declaration with no warning; cold and Firecracker are unaffected. Left: closes with wmetcalf/RedTusk#66, which gives archive members rmeta entries (archive ancestry)."
+
+[[gaps]]
+id = "pass1-image-cap-silent"
+description = "Pass 1 (Pass1ImageCapture) buffers an image at most 50 MiB and saves that prefix with the prefix's hashes, but emits no embedded_file_truncated warning; that matters only where pass 2 never reaches the entry (e.g. an image inside a PDF inside an Office file). Left: adding a pass-1 warning needs the probe-one-more-byte change pass 2 got; deferred as a small follow-up."
 
 # Loadout-side mismatches (consumer = backend/loadout/engines.py in loadout_handoff_package).
 # Left here for the Loadout side to close; nothing in this engine causes them.

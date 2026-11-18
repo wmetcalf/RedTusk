@@ -34,6 +34,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -236,6 +237,12 @@ def _make_record(raw: dict[str, Any]) -> Record:
     return Record(fields=fields)
 
 
+# Skip reasons the worker puts on (nearly) every entry: OCR is off by default and most entries
+# are not images. Reporting them would hang an empty Record on every node, so they count as
+# "nothing to say"; any other reason (a timeout, a size cap) is evidence and is kept.
+_ROUTINE_SKIPS: frozenset[str | None] = frozenset({None, "disabled", "no_images"})
+
+
 def _engine_entry_fields(e: dict[str, Any]) -> dict[str, Any]:
     """The rmeta entry's own (non-Tika) evidence as ``redtusk:*`` Record fields.
 
@@ -251,7 +258,7 @@ def _engine_entry_fields(e: dict[str, Any]) -> dict[str, Any]:
     qr = e.get("qr")
     if isinstance(qr, dict):
         codes = [c for c in (qr.get("codes") or []) if isinstance(c, dict)]
-        if codes or qr.get("skipped") is not None:
+        if codes or qr.get("skipped") not in _ROUTINE_SKIPS:
             out["redtusk:qr"] = Record(fields={
                 "data": [_coerce_metadata_value(c.get("data")) for c in codes],
                 "format": [_coerce_metadata_value(c.get("format")) for c in codes],
@@ -260,7 +267,7 @@ def _engine_entry_fields(e: dict[str, Any]) -> dict[str, Any]:
                 "skipped": _coerce_metadata_value(qr.get("skipped")),
             })
     ocr = e.get("ocr")
-    if isinstance(ocr, dict) and (ocr.get("text") or ocr.get("skipped") is not None):
+    if isinstance(ocr, dict) and (ocr.get("text") or ocr.get("skipped") not in _ROUTINE_SKIPS):
         out["redtusk:ocr"] = Record(fields={
             "text": _coerce_metadata_value(ocr.get("text") or ""),
             "language": _coerce_metadata_value(ocr.get("language")),
@@ -371,10 +378,21 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
 def _reset_rmeta_dir(rmeta_dir: Path) -> None:
     """Empty *rmeta_dir* before a cold fallback, so the failed attempt's partial files (embedded
     bytes, a draft temp) are not declared next to the cold result as if the cold JVM wrote them."""
-    if rmeta_dir.is_symlink() or rmeta_dir.is_file():
-        rmeta_dir.unlink()
-    elif rmeta_dir.exists():
-        shutil.rmtree(rmeta_dir)
+    try:
+        if rmeta_dir.is_symlink() or rmeta_dir.is_file():
+            rmeta_dir.unlink()
+        elif rmeta_dir.exists():
+            shutil.rmtree(rmeta_dir)
+        return
+    except OSError as exc:
+        # The fallback must still run. A gVisor C/R-restored process can have a stale
+        # directory view (see detonate()), so rmtree may not see the files a crashed warm JVM
+        # wrote and fail with ENOTEMPTY. Move the whole directory aside instead: rename
+        # needs no listing, and only rmeta/ is ever declared.
+        aside = rmeta_dir.with_name(f".{rmeta_dir.name}.failed-{uuid.uuid4().hex[:12]}")
+        logger.warning("redtusk: could not empty %s before cold fallback (%s); moving it to %s",
+                       rmeta_dir, exc, aside.name)
+        rmeta_dir.rename(aside)
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -1204,6 +1222,9 @@ def _embedded_disk_relpath(entry_path: str) -> str:
     lossy = False
     for i, original in enumerate(parts):
         part = _sanitize_embedded_component(original)
+        if i == 0 and part == "thumbnails":
+            # EmbeddedFileExtractor.resolveOutFile reserves embedded/thumbnails/ for thumbnails.
+            part = "thumbnails_"
         if part != original:
             lossy = True
         if lossy and i == len(parts) - 1:
@@ -1281,8 +1302,11 @@ def _infer_artifact_kind(rel_path: str, known_embedded: frozenset[str] = frozens
 
     ``rmeta/thumbnail.jpg`` is the root thumbnail; ``rmeta/embedded/thumbnails/*.jpg`` are entry
     thumbnails; everything else under ``rmeta/embedded/`` is an embedded file -- including one
-    whose own name ends .jpg or .txt, and an archive member that really is called
-    ``thumbnails/x.jpg`` (*known_embedded*: the on-disk paths of the rmeta entries).
+    whose own name ends .jpg or .txt. The worker never writes an embedded file under
+    ``embedded/thumbnails/``: an entry whose top-level name is ``thumbnails`` is saved as
+    ``thumbnails_/...`` (EmbeddedFileExtractor.resolveOutFile, mirrored by
+    _embedded_disk_relpath). *known_embedded* (the rmeta entries' on-disk paths) is a second
+    guard for the same thing.
     """
     if rel_path in known_embedded:
         return "embedded_file"
