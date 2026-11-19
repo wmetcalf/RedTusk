@@ -188,6 +188,8 @@ def test_stale_view_reconstruction_declares_thumbnails(tmp_path: Path) -> None:
 def test_crac_fallback_starts_cold_from_a_clean_rmeta_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # the cold jar writes this engine's format, so it may stand in for the checkpoint
+    monkeypatch.setattr(eng_mod, "_cold_jar_worker_format", lambda *_a: str(eng_mod._WORKER_FORMAT))
     rmeta_dir = tmp_path / "rmeta"
 
     def failed_crac(inp: Path, rmeta: Path, **_: Any) -> None:
@@ -308,6 +310,8 @@ def test_routine_ocr_and_qr_skips_are_omitted(tmp_path: Path,
 def test_fallback_runs_when_the_rmeta_dir_cannot_be_emptied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # the cold jar writes this engine's format, so it may stand in for the checkpoint
+    monkeypatch.setattr(eng_mod, "_cold_jar_worker_format", lambda *_a: str(eng_mod._WORKER_FORMAT))
     out = tmp_path / "out"
     rmeta_dir = out / "rmeta"
 

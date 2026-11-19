@@ -20,6 +20,8 @@ from redtusk.engine import RedTuskEngine
 
 def test_crac_env_routes_to_crac_then_falls_back_to_cold(monkeypatch: pytest.MonkeyPatch,
                                                          tmp_path: Path) -> None:
+    # the cold jar writes this engine's format, so it may stand in for the checkpoint
+    monkeypatch.setattr(eng_mod, "_cold_jar_worker_format", lambda *_a: str(eng_mod._WORKER_FORMAT))
     calls: list[tuple[Any, ...]] = []
 
     def fake_crac(inp: Path, rmeta: Path, *, checkpoint_dir: Path,
