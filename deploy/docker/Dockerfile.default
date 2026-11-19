@@ -69,7 +69,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # tika-archive-extractor-context.patch, which the pin gate rightly rejects. Until that branch is
 # merged into 4.0-upstream-office-links, the commit is reachable only through it (the clone below
 # fetches all heads, so the checkout works either way).
-ARG TIKA_FORK_SHA=99deda72bb09abd9998b900a0178fa685ebbf182
+ARG TIKA_FORK_SHA=af39b2d88a4c108858b1f1d8317c681f96143b23
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
