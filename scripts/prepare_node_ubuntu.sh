@@ -121,26 +121,519 @@ _aws_creds_home() {
     echo "${AWS_CREDS_HOME:-$home}"
 }
 
+# The credentials directory every consumer must agree on: what compose resolves,
+# else the home copy as a fallback GUESS. Returns 1 when it is the guess, so a
+# caller can say NOT CONFIRMED rather than diagnose a directory it invented.
+#
+# One function because the divergences keep coming from having several: the
+# readability probes were redirected here while `_aws_sts_ok` still read the
+# home copy, and then both were fixed while the provisioning gate below still
+# read `~/.aws/credentials` and reported a correctly mounted copy as absent
+# (codex, three rounds apart).
+_aws_creds_effective_dir() {
+    local dir; dir="$(_aws_creds_dir)"
+    if [ -n "$dir" ]; then printf '%s' "$dir"; return 0; fi
+    printf '%s' "$(_aws_creds_home)/.aws"; return 1
+}
+
 _aws_sts_ok() {
-    # `aws sts get-caller-identity` against the DEPLOY user's credentials.
-    local home; home="$(_aws_creds_home)"
-    AWS_SHARED_CREDENTIALS_FILE="$home/.aws/credentials" \
-    AWS_CONFIG_FILE="$home/.aws/config" \
+    # Against the credentials the overlay will MOUNT, not the ones convention says
+    # are there. Redirecting only the readability probes to _aws_creds_dir left this
+    # validating the home copy: a stale mounted copy read as valid because the home
+    # one passed, and a good mounted copy read as invalid because the home one did
+    # not (codex). Same divergence as the probes, one layer along.
+    local dir; dir="$(_aws_creds_effective_dir)" || true
+    AWS_SHARED_CREDENTIALS_FILE="$dir/credentials" \
+    AWS_CONFIG_FILE="$dir/config" \
     aws sts get-caller-identity >/dev/null 2>&1
+}
+
+# Can the uid the dispatcher runs as actually READ this file? Asked of the OS, as
+# that uid, rather than computed from the mode bits -- the answer depends on every
+# parent directory as well as the file, and re-deriving that here would be a second,
+# worse implementation of the kernel.
+#
+# Returns 0 readable, 1 NOT readable, 2 could-not-test. The three are different
+# answers and collapsing the last two is how this check goes wrong in the other
+# direction -- reporting a working setup as broken.
+#
+# The probe echoes YES/NO from inside the target uid rather than relying on the
+# outer command`s exit status: `sudo -u "#10001"` fails with `unknown user #10001`
+# on a host with no passwd entry for that uid, which is EVERY host here (the user
+# exists only inside the image). Reading that failure as "cannot read" was wrong
+# and would have convicted correctly-provisioned nodes. Measured on toolz2.
+#
+# setpriv takes raw uids and needs no passwd entry, which is exactly this case.
+_aws_readable_by_uid() {
+    local uid="$1" gid="$2" file="$3" out=""
+    # An UNKNOWN id is not a licence to probe under something else: `setpriv`
+    # decides readability from exactly these two numbers, so guessing either
+    # produces a confident answer to the wrong question. Untestable is the
+    # honest result, and the caller reports that as NOT CONFIRMED (codex).
+    [ -n "$uid" ] && [ -n "$gid" ] || return 2
+    # `$SUDO -n ...` is WRONG when already root: the documented invocation is
+    # `sudo scripts/prepare_node_ubuntu.sh`, so SUDO is "" and the command began
+    # with `-n`, which is not a program. Every probe then returned unknown and the
+    # check reported NOT CHECKED on the primary deployment path -- inert exactly
+    # where it matters (codex). Root runs the tool directly.
+    if [ "$(id -u)" = 0 ]; then
+        set -- ""            # no prefix
+    elif command -v sudo >/dev/null; then
+        set -- "sudo -n"
+    else
+        return 2
+    fi
+    local pre="$1"
+    # Probed from INSIDE the directory, on a relative name. Docker bind-mounts the
+    # `.aws` directory itself at /aws, so the container never traverses the deploy
+    # user`s home -- testing the absolute host path required that traversal and
+    # reported a WORKING configuration as UNUSABLE whenever the home denied it
+    # (codex). The `cd` happens before the privilege drop, exactly as the mount does.
+    local dir base
+    dir="$(dirname "$file")"; base="$(basename "$file")"
+    if command -v setpriv >/dev/null; then
+        # With the CAPABILITIES the dispatcher has, which is none: the burst
+        # service sets `cap_drop: ALL` and `no-new-privileges:true`. Keeping the
+        # host root`s capabilities answers a question the container never asks --
+        # CAP_DAC_OVERRIDE bypasses the mode bits, so once an image resolved to
+        # uid 0 the probe reported the deploy user`s 0600 credentials as readable
+        # while the capability-less container gets EACCES (codex). Measured on
+        # toolz2 against a 0600 file owned by the deploy user:
+        #
+        #     root, capabilities intact  -> YES     (the bug)
+        #     root, bounding set emptied -> NO
+        #
+        # For a NON-root uid the exec drops capabilities anyway; the flags are
+        # harmless there and keep one code path.
+        out="$(cd "$dir" 2>/dev/null && $pre setpriv --reuid="$uid" --regid="$gid" --clear-groups \
+                 --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+                 --securebits=+noroot,+noroot_locked --nnp \
+                 sh -c 'test -r "$1" && echo YES || echo NO' _ "$base" 2>/dev/null)"
+    fi
+    # `su` is NOT a fallback for uid 0: it cannot drop capabilities, so it would
+    # reproduce exactly the false YES above. Untestable is the honest answer.
+    if [ -z "$out" ] && [ "$uid" != 0 ]; then
+        out="$(cd "$dir" 2>/dev/null && $pre su -s /bin/sh -c 'test -r "$0" && echo YES || echo NO' "#$uid" "$base" 2>/dev/null)"
+    fi
+    case "$out" in
+        YES) return 0 ;;
+        NO)  return 1 ;;
+        *)   return 2 ;;   # neither could run: unknown, not "broken"
+    esac
+}
+
+# The directory the overlay will actually MOUNT at /aws. Once an operator follows
+# the copy remediation and sets AWS_CREDS_DIR=/etc/redtusk/aws, checking ~/.aws
+# reports on files the dispatcher never sees -- valid while the mounted copy is
+# missing or unreadable, or UNUSABLE despite a correctly secured one (codex).
+# The check has to follow the configuration, not the convention.
+# The directory the overlay will actually MOUNT at /aws, ASKED OF COMPOSE.
+#
+# Compose owns three rules here -- environment precedence over .env, ${VAR}
+# interpolation, and relative sources resolved against the project directory --
+# and my hand-rolled version of them grew a bug per round, ending with an `eval`
+# that executed command substitution from .env as root. Reimplementing a
+# resolver is how that happens; asking the tool that owns it is not.
+#
+# Placeholders are supplied for the OTHER required variables so a half-configured
+# node still resolves. They cannot affect this value, and this check exists
+# precisely for nodes whose .env is not finished.
+#
+# HOME is the DEPLOY USER`s, not the caller`s: `AWS_CREDS_DIR=${HOME}/.aws` is a
+# supported .env value, the documented invocation is `sudo ...` where HOME is
+# /root, and the deployment itself is run by the deploy user. Interpolating the
+# caller`s HOME resolved a different directory than the one that gets mounted --
+# the same reason _aws_creds_home exists at all (codex).
+#
+# If compose cannot be asked, the answer is UNKNOWN -- the same discipline the
+# readability probe uses. Guessing is what produced the bugs.
+# AWS_CREDS_DIR exported in the ENVIRONMENT beats .env for compose, so the check
+# has to resolve with the same override the deployment launches with. Under the
+# documented `sudo scripts/prepare_node_ubuntu.sh` invocation sudo resets the
+# environment -- measured on toolz2:
+#
+#     under sudo:    AWS_CREDS_DIR=[<stripped>]
+#     under sudo -E: AWS_CREDS_DIR=[/etc/redtusk/aws]
+#
+# so an override the deploy user exports is invisible to the root-run check, and
+# the check then validated the .env path while the stack ran on another (codex).
+#
+# Precedence mirrors what compose itself sees:
+#   1. this process`s own environment -- a root export, or `sudo -E`
+#   2. the deploy user`s LOGIN environment, where a persistent export lives; it
+#      is the same value their own `docker compose up` would carry
+#
+# An export made only in a one-off interactive shell is observable to no other
+# process, by anyone; that boundary is stated in the burst notes rather than
+# guessed at here.
+# What the DEPLOY USER's environment says about a compose variable.
+#
+# An exported value beats .env for compose, and the documented `sudo
+# scripts/prepare_node_ubuntu.sh` invocation resets the environment -- measured
+# on toolz2:
+#
+#     under sudo:    AWS_CREDS_DIR=[<stripped>]
+#     under sudo -E: AWS_CREDS_DIR=[/etc/redtusk/aws]
+#
+# so an override the deploy user exports is invisible to the root-run check,
+# which then resolves the .env value while the stack runs on another (codex).
+# Every compose variable this script resolves has that problem, so this is one
+# function taking the NAME rather than a copy per variable -- the second copy is
+# where they start to diverge.
+#
+# Precedence mirrors what compose itself sees:
+#   1. this process`s own environment -- a root export, or `sudo -E`
+#   2. the deploy user`s LOGIN environment, where a persistent export lives; it
+#      is the same value their own `docker compose up` would carry
+#
+# SET-BUT-EMPTY is a third state and must not be flattened into "unset": the
+# overlay mounts `${AWS_CREDS_DIR:?...}`, so an empty value makes compose REJECT
+# the stack while .env would have launched it. Presence is the RETURN STATUS;
+# the value is the output and may legitimately be empty.
+#
+# An export made only in a one-off interactive shell is observable to no other
+# process, by anyone; that boundary is stated in the burst notes.
+_login_env_override() {
+    local name="$1" out=""
+    # `eval` on a NAME this script chooses, never on a value from .env or from
+    # the deploy user -- expanding a value here is how an earlier version of
+    # this code came to run command substitution from .env as root.
+    case "$name" in
+        *[!A-Z_0-9]*|"") return 1 ;;
+    esac
+    eval "out=\${$name+set}"
+    if [ -n "$out" ]; then eval "printf '%s' \"\$$name\""; return 0; fi
+    [ "$(id -u)" = 0 ] || return 1
+    [ -n "${DEPLOY_USER:-}" ] && [ "$DEPLOY_USER" != root ] || return 1
+    have timeout && have sudo || return 1
+    # A LOGIN shell is what carries a persistent export, and a login shell is
+    # also what prints motd banners and profile chatter -- onto the same stdout.
+    # So the value is emitted after a sentinel and read back from the LAST one:
+    # taking the whole output turned an `echo "welcome"` in .profile into part
+    # of the credentials path. `S` marks presence.
+    out="$(timeout 10 sudo -n -u "$DEPLOY_USER" -i sh -c \
+              'printf "\n__RT_ENV__%s%s" "${'"$name"'+S}" "${'"$name"'-}"' 2>/dev/null)" || return 1
+    case "$out" in
+        *__RT_ENV__S*) printf '%s' "${out##*__RT_ENV__S}"; return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_aws_creds_env_override() { _login_env_override AWS_CREDS_DIR; }
+
+_aws_creds_dir() {
+    local out="" override=""
+    set -- HOME="$(_aws_creds_home)" \
+           POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder
+    # Forwarded whenever it is SET, empty included -- see _aws_creds_env_override.
+    # `if` and not `&&`: under `set -e` the assignment carries the lookup`s status.
+    if override="$(_aws_creds_env_override)"; then
+        set -- "$@" AWS_CREDS_DIR="$override"
+    fi
+    if have docker && have python3; then
+        out="$(cd "$REPO_ROOT/deploy/docker" 2>/dev/null &&
+               env "$@" \
+               docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml \
+                              config --format json 2>/dev/null |
+               python3 -c 'import json,sys
+try: c = json.load(sys.stdin)
+except Exception: raise SystemExit
+for m in c.get("services", {}).get("dispatcher-aws-burst", {}).get("volumes", []):
+    if m.get("target") == "/aws":
+        print(m.get("source", "")); break' 2>/dev/null)"
+    fi
+    printf '%s' "$out"
+}
+
+# WHICH image the burst dispatcher will run. `REDTUSK_IMAGE` is documented as a
+# per-host `deploy/docker/.env` value, and .env is compose`s to read -- it is not
+# exported into this script, so reading the environment alone inspects
+# `redtusk:dev` while the node launches something else (codex). Same rule as the
+# credentials directory: ask compose, do not reimplement its precedence.
+_dispatcher_image() {
+    local out="" override=""
+    if have docker && have python3; then
+        # An ABSOLUTE placeholder: compose reads a bare name as a NAMED VOLUME
+        # and rejects the whole project ("refers to undefined volume
+        # placeholder"), which would make the image unreadable on every node
+        # whose .env does not set AWS_CREDS_DIR -- i.e. exactly the ones being
+        # provisioned. The image must be readable independently of it.
+        set -- HOME="$(_aws_creds_home)" \
+               POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder \
+               AWS_CREDS_DIR=/nonexistent-placeholder
+        # The deploy user`s REDTUSK_IMAGE beats .env for compose exactly as
+        # AWS_CREDS_DIR does, and `sudo` strips it just the same (codex).
+        if override="$(_login_env_override REDTUSK_IMAGE)"; then
+            set -- "$@" REDTUSK_IMAGE="$override"
+        fi
+        out="$(cd "$REPO_ROOT/deploy/docker" 2>/dev/null &&
+               env "$@" \
+               docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml \
+                              config --format json 2>/dev/null |
+               python3 -c 'import json,sys
+try: c = json.load(sys.stdin)
+except Exception: raise SystemExit
+print(c.get("services", {}).get("dispatcher-aws-burst", {}).get("image", ""))' 2>/dev/null)"
+    fi
+    if [ -n "$out" ]; then printf '%s' "$out"; else printf '%s' "${REDTUSK_IMAGE:-redtusk:dev}"; fi
+}
+
+# The uid AND GID the DISPATCHER actually runs as, from ONE source so they
+# cannot come from different ones: an image declaring `10001:20000` gives a
+# probe run under gid 10001 the wrong answer about group-readable credentials,
+# in both directions (codex).
+#
+# Sources, most authoritative first, because two review rounds pulled in
+# opposite directions and both were right:
+#
+#   1. the IMAGE that will run -- `${REDTUSK_IMAGE}` selects it and compose
+#      knows which, so the repository`s Dockerfile is not necessarily it. When
+#      the image is present, its own config is the answer and an operator`s
+#      stale REDTUSK_WORKER_UID cannot move the probe off it.
+#   2. REDTUSK_WORKER_UID/GID -- the operator telling us what we cannot look up.
+#      This is the only source when provisioning runs before the image exists,
+#      which is the normal order on a fresh node.
+#   3. the repository`s Dockerfile.host, then 10001:10001.
+#
+# Probing the wrong uid reports credentials as readable by a user the dispatcher
+# never becomes; ignoring the override chowns the node share to a uid a custom
+# dispatcher image cannot write, silently disabling node sizing.
+#
+# Prints `uid gid`.
+_dispatcher_user() {
+    local image="" user="" u="" g=""
+    # Resolved ONCE per run into REDTUSK_IMAGE_RESOLVED (asking compose costs a
+    # measurable fraction of a second, and the notes below interpolate this
+    # eight times).
+    image="${REDTUSK_IMAGE_RESOLVED:-${REDTUSK_IMAGE:-redtusk:dev}}"
+    if have docker; then
+        # NOT piped into `head`: the exit status of a pipeline is the LAST
+        # command`s, so `| head -1` made a failed inspection look identical to a
+        # successful one, and the two mean opposite things here.
+        if user="$(docker image inspect --format '{{.Config.User}}' "$image" 2>/dev/null)"; then
+            user="${user%%
+*}"
+            # An image with NO `USER` directive runs as 0:0. That is an
+            # authoritative answer, not a missing one -- falling through to the
+            # override or the repository`s 10001 tested the wrong identity and
+            # chowned the mode-2770 node share away from the root dispatcher
+            # that has to write it (codex).
+            if [ -z "$user" ]; then echo "0 0"; return; fi
+                u="${user%%:*}"
+            case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
+            # A NAME resolves against the IMAGE`s own passwd/group, not this host`s,
+            # so it cannot be resolved from out here at all. An explicit
+            # REDTUSK_WORKER_UID/GID is the operator supplying what cannot be looked
+            # up; without one the id is UNKNOWN and every consumer declines.
+            #
+            # This branch RETURNS either way. Falling through to the repository`s
+            # Dockerfile treated 10001 as authoritative for an image that is not
+            # built from it -- probing the wrong uid, and chowning the node share
+            # away from the dispatcher that has to write it (codex).
+            case "$u" in *[!0-9]*) u="${REDTUSK_WORKER_UID:-}" ;; esac
+            case "$u" in *[!0-9]*) u="" ;; esac
+            case "$g" in ""|*[!0-9]*) g="${REDTUSK_WORKER_GID:-}" ;; esac
+            case "$g" in *[!0-9]*) g="" ;; esac
+            echo "$u $g"; return
+        fi
+        # inspect FAILED -- the image is not present yet, which is the normal
+        # state while provisioning. Nothing was learned, so fall through.
+    fi
+    if [ -n "${REDTUSK_WORKER_UID:-}" ]; then
+        echo "$REDTUSK_WORKER_UID ${REDTUSK_WORKER_GID:-$REDTUSK_WORKER_UID}"; return
+    fi
+    user="$(sed -n 's/^USER[[:space:]]\+\([0-9:]\+\).*/\1/p' \
+                "$REPO_ROOT/deploy/docker/Dockerfile.host" 2>/dev/null | tail -1)"
+    u="${user%%:*}"
+    case "$user" in *:*) g="${user#*:}" ;; *) g="" ;; esac
+    case "$u" in ""|*[!0-9]*) u="" ;; esac
+    case "$g" in ""|*[!0-9]*) g="${REDTUSK_WORKER_GID:-}" ;; esac
+    case "$g" in *[!0-9]*) g="" ;; esac
+    if [ -n "$u" ]; then echo "$u $g"; return; fi
+    echo "10001 10001"
+}
+
+_dispatcher_uid() { _dispatcher_user | cut -d" " -f1; }
+_dispatcher_gid() { _dispatcher_user | cut -d" " -f2; }
+
+# EVERY symlink traversed while resolving the file -- at ANY path component, not
+# only the last -- must be RELATIVE and must stay inside the mounted directory.
+# A bind mount does not rewrite link text and mounts nothing but AWS_CREDS_DIR,
+# so a link that is absolute, or that leaves the directory even momentarily,
+# names a path the container does not have; every host-side check follows it
+# happily and reports valid.
+#
+# Four review rounds each found one instance of that single rule -- the final
+# component absolute, a later hop in the chain absolute, a hop escaping the
+# directory, and a symlinked DIRECTORY component (`credentials -> current/actual`
+# with `current -> <mount>/sub`). It is stated once here rather than patched a
+# fifth time (codex).
+#
+# Prints `<kind>TAB<link>TAB<target>` and returns 1 when the path is hazardous.
+_aws_link_hazard() {
+    local f="$1" mount="$2"
+    local rest prefix comp raw steps=0
+    case "$f" in
+        "$mount"/*) rest="${f#"$mount"/}" ;;
+        # Not under the mount at all -- a different failure, and the caller`s own
+        # containment check is what reports it.
+        *) return 0 ;;
+    esac
+    prefix="$mount"
+    # One component at a time, the way the kernel resolves a path. When a
+    # component turns out to be a link, its target is pushed back onto what is
+    # left to walk, so the target`s OWN components are examined too -- that is
+    # the whole difference between this and checking a chain of whole paths, and
+    # it is what `credentials -> current/actual` needs.
+    while [ -n "$rest" ]; do
+        steps=$((steps + 1))
+        if [ "$steps" -gt 80 ]; then
+            printf 'loop\t%s\t' "$prefix"; return 1
+        fi
+        comp="${rest%%/*}"
+        case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
+        case "$comp" in
+            ""|".") continue ;;
+            "..")
+                prefix="$(dirname "$prefix")"
+                # A hop out of the mounted directory dangles inside the container
+                # even if a later component comes back: only $mountdir is mounted.
+                case "$prefix" in
+                    "$mount"|"$mount"/*) ;;
+                    *) printf 'escape\t%s\t%s' "$f" "$prefix"; return 1 ;;
+                esac
+                continue ;;
+        esac
+        prefix="$prefix/$comp"
+        if [ -L "$prefix" ]; then
+            raw="$(readlink "$prefix" 2>/dev/null)" || return 0
+            case "$raw" in
+                /*) printf 'absolute\t%s\t%s' "$prefix" "$raw"; return 1 ;;
+            esac
+            prefix="$(dirname "$prefix")"
+            rest="${raw}${rest:+/$rest}"
+        fi
+    done
+    return 0
 }
 
 _aws_creds_status() {
     local home creds
     home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
-    creds="$home/.aws/credentials"
+    local mountdir unresolved=""
+    if ! mountdir="$(_aws_creds_effective_dir)"; then unresolved=1; fi
+    # Docker resolves the bind SOURCE, so a symlinked AWS_CREDS_DIR
+    # (/home/deploy/.aws -> /etc/redtusk/aws, a common layout) exposes the
+    # RESOLVED directory at /aws. Comparing paths against the lexical one then
+    # reported an ordinary regular file as a symlink escaping the mount -- a
+    # false UNUSABLE on a working node, which is the worse direction (codex).
+    local canon=""
+    if canon="$(readlink -f "$mountdir" 2>/dev/null)" && [ -n "$canon" ]; then
+        mountdir="$canon"
+    fi
+    creds="$mountdir/credentials"
     have aws || { echo "n/a (no aws cli)"; return; }
-    [ -f "$creds" ] || { echo "absent — place $creds"; return; }
-    if _aws_sts_ok; then
-        echo "valid (sts ok, $creds)"
+    # When compose could not be asked, $mountdir is a GUESS at the home copy --
+    # so "absent" and "invalid" below would be diagnoses of a directory that is
+    # not necessarily the one mounted. A populated /etc/redtusk/aws named in
+    # .env was reported as `absent — place ~/.aws/credentials`, which sends the
+    # operator to create a SECOND copy in the wrong place (codex). The
+    # conclusion is deferred until the mount source is actually known.
+    if [ ! -f "$creds" ]; then
+        if [ -n "$unresolved" ]; then
+            echo "UNKNOWN — compose could not resolve the mounted directory (needs docker + python3 on PATH), and the fallback guess $creds is absent. Resolve the mount, or read AWS_CREDS_DIR out of deploy/docker/.env yourself, before treating this as missing."
+        else
+            echo "absent — place $creds"
+        fi
+        return
+    fi
+    if ! _aws_sts_ok; then
+        if [ -n "$unresolved" ]; then
+            echo "UNKNOWN — 'aws sts get-caller-identity' failed against the fallback guess $creds, but compose could not resolve the mounted directory, so these may not be the credentials the burst tier uses."
+        else
+            echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
+        fi
+        return
+    fi
+    # `aws sts` above ran as the DEPLOY user (or root). The dispatcher does not:
+    # Dockerfile.host runs it as UID $(_dispatcher_uid), and a normal
+    # ~/.aws is 0700/0600 owned by the deploy user, so mounting it read-only still
+    # leaves that process unable to read a byte. The tier then fails closed and stays
+    # on the local tiers, which is silent -- and this line used to say "valid".
+    #
+    # Same class as the node-share directory above, which had to be owned by the
+    # worker uid for exactly this reason.
+    # The overlay sets AWS_CONFIG_FILE=/aws/config as well, and a role profile does
+    # not resolve without it -- so an unreadable config fails the tier just as an
+    # unreadable credentials file does. Absent is fine (a plain key profile needs
+    # no config); present-but-unreadable is not.
+    local wuid wgid conf bad="" unknown=""
+    # ONE call: uid and gid must describe the same dispatcher.
+    wuid="$(_dispatcher_user)"; wgid="${wuid#* }"; wuid="${wuid%% *}"
+    conf="$mountdir/config"
+    _aws_readable_by_uid "$wuid" "$wgid" "$creds"
+    case "$?" in 1) bad="$creds" ;; 2) unknown=1 ;; esac
+    if [ -z "$bad" ] && [ -f "$conf" ]; then
+        _aws_readable_by_uid "$wuid" "$wgid" "$conf"
+        case "$?" in 1) bad="$conf" ;; 2) unknown=1 ;; esac
+    fi
+    # Every link on the path to the file, at every component -- see
+    # _aws_link_hazard for why this is one rule and not four.
+    local f hz kind link tgt target
+    for f in "$creds" "$conf"; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        # `if` and not `&&`: under `set -e` the assignment carries the function`s
+        # status, and a hazardous path would exit the script instead of reporting.
+        if hz="$(_aws_link_hazard "$f" "$mountdir")"; then :; else
+            IFS="$(printf '\t')" read -r kind link tgt <<< "$hz"
+            case "$kind" in
+                absolute) echo "UNUSABLE — resolving $f traverses $link, an ABSOLUTE symlink to $tgt. A bind mount does not rewrite link text, so inside the container that link still names $tgt, which is not mounted. Every link on the path has to be relative and stay inside $mountdir, or copy the file in." ;;
+                escape)   echo "UNUSABLE — resolving $f leaves $mountdir (it reaches $tgt). The overlay mounts $mountdir alone, so that path does not exist inside the container, even if a later component comes back. Copy the file in, or point AWS_CREDS_DIR at the directory that holds the real one." ;;
+                *)        echo "UNUSABLE — resolving $f loops through symlinks, or passes through more than 80 path components; point $mountdir at real files." ;;
+            esac
+            return
+        fi
+        # The backstop, and the only check when realpath is unavailable: wherever
+        # the chain ends up, it has to be inside the mounted directory.
+        target="$(readlink -f "$f" 2>/dev/null)" || continue
+        case "$target" in
+            "$mountdir"/*) ;;
+            *) echo "UNUSABLE — $f is a symlink to $target, outside the directory the overlay mounts ($mountdir); it will dangle inside the container. Copy the file in, or point AWS_CREDS_DIR at the directory that holds the real one."
+               return ;;
+        esac
+    done
+    # An UNRESOLVED mount makes every verdict below a verdict about the FALLBACK
+    # GUESS, including an unreadable one -- the configured directory may be a
+    # dispatcher-owned copy that was never examined, while the home copy exists,
+    # passes sts and is unreadable. Reporting that as definitively UNUSABLE
+    # convicts a node on credentials that may not be mounted at all (codex), so
+    # `unresolved` is tested BEFORE `bad` rather than folded into `unknown`
+    # underneath it.
+    if [ -n "$unresolved" ]; then
+        if [ -n "$bad" ]; then
+            echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, so this is the fallback guess, and uid $wuid cannot read $bad there. If that IS the mounted directory the burst tier will fail closed — resolve the mount to be sure. See the burst notes below.)"
+        elif [ -z "$wgid" ]; then
+            echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, and the dispatcher image declares no numeric group for uid $wuid either. Set REDTUSK_WORKER_GID to the group it runs as.)"
+        else
+            echo "valid (sts ok, $creds; NOT CONFIRMED — compose could not resolve the mount, so uid $wuid was tested against the fallback guess)"
+        fi
+    elif [ -n "$bad" ]; then
+        echo "UNUSABLE — $creds passes sts as $(id -un) but uid $wuid (the dispatcher) cannot read $bad; the burst tier will fail closed. See the burst notes below."
+    elif [ -n "$unknown" ]; then
+        if [ -z "$wgid" ]; then
+            # Naming the reason, because this one is fixable in one line and the
+            # generic wording sends the operator looking at compose instead.
+            echo "valid (sts ok, $creds; NOT CONFIRMED — the dispatcher image declares no numeric group for uid $wuid, so group-readability cannot be tested. Set REDTUSK_WORKER_GID to the group it runs as.)"
+        else
+            echo "valid (sts ok, $creds; NOT CONFIRMED — uid $wuid could not be tested)"
+        fi
     else
-        echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
+        echo "valid (sts ok, $creds; readable by uid $wuid)"
     fi
 }
+
+# One compose call, before anything interpolates the dispatcher uid.
+REDTUSK_IMAGE_RESOLVED="$(_dispatcher_image)"
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
     log "--check: reporting current state, changing nothing"
@@ -290,8 +783,9 @@ if [ "$AWS_BURST" -eq 1 ]; then
     fi
     # Provision-time entitlement check — friendlier than discovering it at first burst
     # (the runtime ALSO fails closed on this). Warn, don't die: creds may be placed later.
-    if [ ! -r "${AWS_CREDS_HOME:-/home/$DEPLOY_USER}/.aws/credentials" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
-        warn "no AWS credentials yet — place ~/.aws/credentials on this node, then re-run --check"
+    _creds_dir="$(_aws_creds_effective_dir)" || true
+    if [ ! -r "$_creds_dir/credentials" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+        warn "no AWS credentials yet — place $_creds_dir/credentials on this node, then re-run --check"
     elif _aws_sts_ok; then
         log "aws entitlement OK (sts get-caller-identity passed)"
     else
@@ -302,8 +796,12 @@ fi
 # ── 7. standard dirs (owned by the deploy user/group) ──────────────────────
 log "creating standard dirs"
 DGRP=$(id -gn "$DEPLOY_USER")
-# The uid the api/dispatcher/worker containers run as (see Dockerfile.host).
-REDTUSK_WORKER_UID=${REDTUSK_WORKER_UID:-10001}
+# The uid the api/dispatcher/worker containers run as. REDTUSK_WORKER_UID stays
+# an operator override here: ${REDTUSK_IMAGE} can select a dispatcher image that
+# runs as another uid, and a share this uid cannot write silently disables node
+# sizing. _dispatcher_uid honours the override too, and prefers the image`s own
+# config when that image is present to be asked (codex).
+REDTUSK_WORKER_UID=$(_dispatcher_uid)
 # The FC dispatcher runs in a container with ${REDTUSK_FC_DIR} bind-mounted at
 # /var/lib/blastbox-fc, and reads BLASTBOX_FC_BIN=/var/lib/blastbox-fc/firecracker
 # from there -- /usr/local/bin on the host is not visible to it. Installing only
@@ -331,7 +829,14 @@ stage_firecracker_asset
 # balancer and nothing says so. setgid keeps the deploy group on new files, so
 # an operator can still read the view.
 $SUDO mkdir -p "$NODE_SHARE_DIR"
-$SUDO chown "$REDTUSK_WORKER_UID:$DGRP" "$NODE_SHARE_DIR"
+if [ -n "$REDTUSK_WORKER_UID" ]; then
+    $SUDO chown "$REDTUSK_WORKER_UID:$DGRP" "$NODE_SHARE_DIR"
+else
+    # Guessing here is worse than skipping: chowning to the wrong uid leaves the
+    # real dispatcher unable to write a mode-2770 share, and node sizing then
+    # fails silently. The directory keeps whatever owner it has.
+    warn "the dispatcher image declares a NAMED user, which cannot be resolved from outside it — $NODE_SHARE_DIR was NOT chowned. Set REDTUSK_WORKER_UID to the uid it runs as and re-run."
+fi
 $SUDO chmod 2770 "$NODE_SHARE_DIR"
 
 # ── 8. host tuning (JVM + many microVMs) ───────────────────────────────────
@@ -422,6 +927,28 @@ AWS burst tier (this is the control-plane node):
   2. Add this line to deploy/docker/.env -- the overlay mounts the directory and
      REQUIRES the variable, so 'docker compose up' aborts without it:
        AWS_CREDS_DIR=$(_aws_creds_home)/.aws
+     The dispatcher runs as UID $(_dispatcher_uid) and a normal ~/.aws is
+     0700/0600, so mounting it is not enough -- that uid must be able to READ it.
+     The 'aws creds' line above says UNUSABLE when it cannot. Either give that uid a
+     copy it owns (this script never writes credentials itself):
+       sudo install -d -m 0500 -o $(_dispatcher_uid) /etc/redtusk/aws
+       sudo install -m 0400 -o $(_dispatcher_uid) $(_aws_creds_home)/.aws/credentials /etc/redtusk/aws/
+       [ -f $(_aws_creds_home)/.aws/config ] && sudo install -m 0400 -o $(_dispatcher_uid) $(_aws_creds_home)/.aws/config /etc/redtusk/aws/
+       AWS_CREDS_DIR=/etc/redtusk/aws
+     or grant it narrow access to the existing one (needs the acl package; the
+     HOME directory is deliberately NOT widened -- the overlay bind-mounts .aws
+     itself, so the container never traverses it):
+       sudo setfacl -m u:$(_dispatcher_uid):x $(_aws_creds_home)/.aws
+       sudo setfacl -m u:$(_dispatcher_uid):r $(_aws_creds_home)/.aws/credentials
+       [ -f $(_aws_creds_home)/.aws/config ] && sudo setfacl -m u:$(_dispatcher_uid):r $(_aws_creds_home)/.aws/config
+     Whichever you choose, put AWS_CREDS_DIR in deploy/docker/.env. Compose gives an
+     EXPORTED value precedence over the file, and --check honours the same order --
+     this shell's value first, then the deploy user's login environment. A value
+     exported in a one-off interactive shell is visible to no other process, so
+     --check cannot see it and neither can a stack launched from another terminal.
+     Symlinks: whatever AWS_CREDS_DIR names is bind-mounted ALONE and a bind mount
+     does not rewrite link text, so every link on the path to the credentials must
+     be relative and stay inside that directory. --check says UNUSABLE otherwise.
   3. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
   4. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:
