@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "prepare_node_ubuntu.sh"
 DOCKER_DIR = REPO_ROOT / "deploy" / "docker"
 
-HELPERS = ("_aws_creds_home", "_dispatcher_ids", "_aws_creds_dir",
+HELPERS = ("_aws_creds_home", "_dispatcher_ids", "_aws_burst_compose", "_aws_creds_dir",
            "_aws_creds_effective_dir", "_aws_sts_ok",
            "_aws_readable_by_dispatcher", "_aws_creds_status")
 
@@ -203,14 +203,19 @@ def test_the_probe_reports_no_only_on_an_actual_no(tmp_path: Path) -> None:
     assert out == "RC1", out
 
 
-@pytest.mark.parametrize("stub", [
-    {},                                                   # no setpriv
-    {"setpriv": "exit 1\n", "sudo": "exit 1\n"},          # sudo -n refused
-])
-def test_a_probe_that_cannot_run_is_unknown(tmp_path: Path, stub: dict[str, str]) -> None:
+@pytest.mark.parametrize("hide_setpriv", [True, False])
+def test_a_probe_that_cannot_run_is_unknown(tmp_path: Path, hide_setpriv: bool) -> None:
+    """Both stubbed: the host's own setpriv/sudo must never be what answers."""
     d = _creds(tmp_path)
-    out = _run(tmp_path, f'_aws_readable_by_dispatcher {d}/credentials && echo RC0 || echo RC$?',
-               stub=stub)
+    call = f'_aws_readable_by_dispatcher {d}/credentials && echo RC0 || echo RC$?'
+    if hide_setpriv:
+        # A setpriv that would say YES if reached, behind a `have` that denies it.
+        call = ('have() { [ "$1" != setpriv ] && command -v "$1" >/dev/null 2>&1; }\n'
+                + call)
+        stub = {"setpriv": SETPRIV_RECORDER, "sudo": '[ "$1" = -n ] && shift; exec "$@"\n'}
+    else:
+        stub = {"setpriv": SETPRIV_RECORDER, "sudo": "exit 1\n"}   # sudo -n refused
+    out = _run(tmp_path, call, stub=stub, env={"REC": str(tmp_path / "rec")})
     assert out == "RC2", out
 
 
@@ -238,7 +243,8 @@ def test_compose_resolves_the_mount_with_the_deploy_users_home(tmp_path: Path) -
     script = "\n".join([
         'have() { command -v "$1" >/dev/null 2>&1; }',
         f"REPO_ROOT={str(repo)!r}", "DEPLOY_USER=nobody-here",
-        _block("_aws_creds_home"), _block("_aws_creds_dir"), "_aws_creds_dir",
+        _block("_aws_creds_home"), _block("_aws_burst_compose"), _block("_aws_creds_dir"),
+        "_aws_creds_dir",
     ])
     base = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
 
@@ -263,3 +269,93 @@ def test_the_overlay_still_mounts_the_credentials_read_only() -> None:
     text = (DOCKER_DIR / "docker-compose.aws-burst.yml").read_text()
     assert re.search(r"\$\{AWS_CREDS_DIR:\?[^}]*\}:/aws:ro", text)
     assert "AWS_SHARED_CREDENTIALS_FILE=/aws/credentials" in text
+
+
+# ── round-1 review findings ────────────────────────────────────────────────
+
+def _compose(d: Path, *, profile: str = "default", key: str = "") -> dict[str, str]:
+    """A docker stub standing in for `docker compose config --format json`."""
+    import json
+    doc = {"services": {"dispatcher-aws-burst": {
+        "volumes": [{"target": "/aws", "source": str(d)}],
+        "environment": {"BLASTBOX_AWS_PROFILE": profile, "AWS_ACCESS_KEY_ID": key}}}}
+    return {"docker": f"cat <<'JSON'\n{json.dumps(doc)}\nJSON\n"}
+
+
+def test_an_unreadable_guess_does_not_lead_with_valid(tmp_path: Path) -> None:
+    _creds(tmp_path)
+    out = _run(tmp_path, "_aws_creds_status", probe="return 1")
+    assert out.startswith("NOT CONFIRMED"), out
+
+
+def test_a_non_numeric_worker_uid_is_named_as_the_cause(tmp_path: Path) -> None:
+    d = _creds(tmp_path)
+    out = _run(tmp_path, "_aws_creds_status", stub=_resolved(d), repo_root=tmp_path,
+               env={"REDTUSK_WORKER_UID": "redtusk"})
+    assert "NOT CONFIRMED" in out and "REDTUSK_WORKER_UID" in out, out
+    assert "needs setpriv" not in out, out
+
+
+def test_a_directory_the_caller_cannot_enter_is_not_reported_absent(tmp_path: Path) -> None:
+    """The owned-copy remediation leaves a 0500 dir the non-root caller cannot
+    enter; that is a reason to re-run under sudo, not 'absent'."""
+    d = _creds(tmp_path)
+    d.chmod(0)
+    try:
+        if os.access(d, os.X_OK):
+            pytest.skip("running with DAC override")
+        out = _run(tmp_path, "_aws_creds_status", stub=_resolved(d), repo_root=tmp_path,
+                   probe="return 0")
+    finally:
+        d.chmod(0o700)
+    assert "absent" not in out and "invalid" not in out, out
+    assert "NOT CONFIRMED" in out and "sudo" in out, out
+
+
+def test_sts_ignores_the_callers_own_aws_environment(tmp_path: Path) -> None:
+    """An exported key or profile beats the files for the CLI, so sts could pass
+    on credentials the container never sees."""
+    d = _creds(tmp_path)
+    rec = tmp_path / "aws-env"
+    out = _run(tmp_path, "_aws_sts_ok && echo OK",
+               stub={**_compose(d, profile="burst"),
+                     "aws": f'env | grep -E "^AWS_(ACCESS|SECRET|SESSION|PROFILE)" > "{rec}"; '
+                            'exit 0\n'},
+               repo_root=tmp_path,
+               env={"AWS_ACCESS_KEY_ID": "x", "AWS_SECRET_ACCESS_KEY": "y",
+                    "AWS_SESSION_TOKEN": "z", "AWS_PROFILE": "mine"})
+    assert out == "OK"
+    assert rec.read_text().strip() == "AWS_PROFILE=burst", rec.read_text()
+
+
+def test_keys_supplied_through_compose_are_reported_not_checked(tmp_path: Path) -> None:
+    d = tmp_path / "empty"
+    d.mkdir()
+    out = _run(tmp_path, "_aws_creds_status", stub=_compose(d, key="AKIAEXAMPLE"),
+               repo_root=tmp_path, probe="return 1")
+    assert "AWS_ACCESS_KEY_ID" in out and "absent" not in out, out
+    assert "AKIAEXAMPLE" not in out
+
+
+def test_the_provisioning_gate_reports_the_dispatcher_verdict() -> None:
+    text = SCRIPT.read_text()
+    gate = text[text.index("# Provision-time entitlement check"):]
+    gate = gate[:gate.index("\nfi\n")]
+    assert "_aws_creds_status" in gate, gate
+    assert "entitlement OK" not in gate
+
+
+def test_the_headers_say_the_dispatcher_uid_must_read_the_mount() -> None:
+    for f in (DOCKER_DIR / "docker-compose.aws-burst.yml", SCRIPT):
+        head = "\n".join(f.read_text().splitlines()[:45])
+        assert "AWS_CREDS_DIR" in head and "10001" in head, f
+
+
+def test_a_symlink_reason_is_not_overwritten_by_a_later_untestable_file(tmp_path: Path) -> None:
+    d = _creds(tmp_path, config=True)
+    real = tmp_path / "elsewhere"
+    (d / "credentials").rename(real)
+    (d / "credentials").symlink_to(real)
+    out = _run(tmp_path, "_aws_creds_status", stub=_resolved(d), repo_root=tmp_path,
+               probe="return 2")
+    assert "symlink" in out, out
