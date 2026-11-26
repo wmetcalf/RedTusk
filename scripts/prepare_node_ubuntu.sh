@@ -439,7 +439,7 @@ if [ "$AWS_BURST" -eq 1 ]; then
     # whether the dispatcher uid can read the mounted files.
     _creds_status="$(_aws_creds_status)"
     case "$_creds_status" in
-        *"NOT CONFIRMED"*) warn "aws creds: $_creds_status — re-run --check with sudo to confirm" ;;
+        *"NOT CONFIRMED"*) warn "aws creds: $_creds_status — address the reason given, then re-run --check" ;;
         valid*) log "aws creds: $_creds_status" ;;
         *)      warn "aws creds: $_creds_status — fix, then re-run --check" ;;
     esac

@@ -393,6 +393,9 @@ def test_the_provisioning_gate_warns_on_an_unconfirmed_verdict() -> None:
     ])
     out = subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
     assert out.startswith("WARN"), out
+    # The verdict says what to do (set AWS_CREDS_DIR, re-run under sudo, ...);
+    # the gate must not append advice that contradicts it.
+    assert "sudo" not in out, out
 
 
 def test_the_uid_override_note_survives_sudo() -> None:
