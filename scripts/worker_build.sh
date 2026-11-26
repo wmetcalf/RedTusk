@@ -55,7 +55,10 @@ if [ "$GOAL" = "shell" ]; then
 else
     INNER=(bash -lc "trap 'chown -R $HOST_UID:$HOST_GID /build/worker_jvm/target 2>/dev/null || true' EXIT; cd /build/worker_jvm && mvn -B $GOAL")
 fi
+# REDTUSK_PINNED_TIKA=1 satisfies worker_jvm/pom.xml's pinned-Tika guard: this container's
+# ~/.m2 is the stage's, built from TIKA_FORK_SHA, so the claim is true here and nowhere else.
 docker run --rm "${TTY_FLAGS[@]}" \
+    -e REDTUSK_PINNED_TIKA=1 \
     -v "$REPO/worker_jvm:/build/worker_jvm" \
     -w /build \
     "$STAGE_IMAGE" "${INNER[@]}"

@@ -6,7 +6,7 @@
 # This wires the existing pieces into that single path, with a gate at each end:
 #
 #   pre-gate   scripts/deploy_inventory.sh        -- know the current state before touching it
-#   1. test    mvn test                           -- fast feedback before a long image build
+#   1. test    worker_build.sh test               -- fast feedback before a long image build
 #   2. image   Dockerfile.localtika               -- builds the jar from source AND regenerates
 #                                                    the AOT cache from it (record -> create)
 #   3. audit   jar/AOT consistency in the image   -- the stale-AOT trap, caught before deploy
@@ -66,7 +66,8 @@ else
 fi
 
 step "1. test the engine before spending a long image build on it"
-run mvn -f "$REPO/worker_jvm/pom.xml" test \
+# In the pinned-Tika stage, never against the host ~/.m2 (worker_jvm/pom.xml refuses that).
+run "$REPO/scripts/worker_build.sh" test \
     || die "java tests failed — not building an image from this"
 run python3 -m pytest "$REPO/tests" -q --ignore="$REPO/tests/http" --ignore="$REPO/tests/docker" \
     || die "python tests failed — not building an image from this"
@@ -171,7 +172,7 @@ print(",".join(sorted(names)) or "EMPTY")' 2>/dev/null)
     echo "  checking the AOT cache maps under the production JVM flags..."
     aot_errs=$(docker run --rm --entrypoint sh "$COLD_IMAGE" -c '
         java -XX:AOTCache=/app/redtusk.aot -Djava.library.path=/app -XX:+UseSerialGC \
-             -XX:TieredStopAtLevel=1 -Xms800m -Xmx800m --enable-native-access=ALL-UNNAMED \
+             -XX:TieredStopAtLevel=1 -XX:-UseBASE64Intrinsics -Xms800m -Xmx800m --enable-native-access=ALL-UNNAMED \
              -jar /app/redtusk-worker.jar --appcds-warmup /nonexistent 2>&1 | grep -ci "error.*aot" ')
     # ...and DIE on it. This used to only echo "!!", so the one thing it checked could fail and
     # the release still walked past it.

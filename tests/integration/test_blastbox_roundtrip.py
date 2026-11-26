@@ -31,6 +31,7 @@ from blastbox.limits import Limits
 from blastbox.worker.harness import run_detonation
 
 from redtusk.engine import _DEFAULT_WORKER_JAR, RedTuskEngine, _build_tree
+from tests.engine_contract import conform
 
 pytestmark = pytest.mark.integration
 
@@ -41,6 +42,13 @@ pytestmark = pytest.mark.integration
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _run_detonation(engine: Any, *, input_path: Path, output_dir: Path, limits: Limits) -> int:
+    """The harness, plus a contract check of the envelope it sealed."""
+    rc = run_detonation(engine, input_path=input_path, output_dir=output_dir, limits=limits)
+    conform(json.loads((output_dir / "metadata.json").read_text()))
+    return rc
 
 
 def _worker_jar() -> str:
@@ -98,7 +106,7 @@ def test_run_detonation_exits_zero(simple_txt: Path, tmp_path: Path) -> None:
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
 
-    rc = run_detonation(
+    rc = _run_detonation(
         cast(Any, engine),
         input_path=simple_txt,
         output_dir=outdir,
@@ -120,7 +128,7 @@ def test_validate_worker_output_accepts_ok(simple_txt: Path, tmp_path: Path) -> 
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
-    rc = run_detonation(
+    rc = _run_detonation(
         cast(Any, engine),
         input_path=simple_txt,
         output_dir=outdir,
@@ -146,7 +154,7 @@ def test_validate_worker_output_finds_embedded_resource(simple_txt: Path, tmp_pa
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
-    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
+    _run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
     env = validate_worker_output(
         output_dir=outdir,
         input_sha256=input_sha256,
@@ -170,7 +178,7 @@ def test_validate_worker_output_finds_extracted_text(simple_txt: Path, tmp_path:
     outdir = tmp_path / "out"
     input_sha256 = _sha256(simple_txt.read_bytes())
 
-    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
+    _run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
     env = validate_worker_output(
         output_dir=outdir,
         input_sha256=input_sha256,
@@ -192,7 +200,7 @@ def test_validate_worker_output_rejects_wrong_sha(simple_txt: Path, tmp_path: Pa
     engine = RedTuskEngine()
     outdir = tmp_path / "out"
 
-    run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
+    _run_detonation(cast(Any, engine), input_path=simple_txt, output_dir=outdir, limits=Limits())
 
     wrong_sha = "a" * 64
     with pytest.raises(OutputTrustError):
@@ -403,3 +411,34 @@ def test_build_tree_empty_entries() -> None:
     assert isinstance(root, EmbeddedResource)
     assert root.depth == 0
     assert root.children == []
+
+
+@pytest.mark.skipif(_SKIP_LIVE, reason=_SKIP_REASON)
+def test_member_caps_and_thumbnail_namespace_reach_the_envelope(tmp_path: Path) -> None:
+    """The real worker: a member cut at the 50 MiB per-file cap is WARNED in the sealed envelope
+    (Main merges pass-2 warnings into rmeta.warnings[], which the engine maps), and a member
+    named thumbnails/... is declared as an embedded file outside embedded/thumbnails/."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("thumbnails/evil.jpg", b"MZ\x90\x00" + b"\x00" * 64)
+        z.writestr("big.bin", b"\x00" * (51 * 1024 * 1024))
+    src = tmp_path / "in.zip"
+    src.write_bytes(buf.getvalue())
+    outdir = tmp_path / "out"
+    rc = _run_detonation(
+        cast(Any, RedTuskEngine()), input_path=src, output_dir=outdir, limits=Limits()
+    )
+    assert rc == 0
+    env = json.loads((outdir / "metadata.json").read_text())
+    assert env["status"] == "ok", env.get("warnings")
+    codes = [w["code"] for w in env["warnings"]]
+    assert "embedded_file_truncated" in codes, codes
+    kinds = {a["path"]: a["kind"] for a in env["artifacts"]}
+    from redtusk.engine import _embedded_storage_relpath
+
+    evil = "rmeta/embedded/" + _embedded_storage_relpath("/thumbnails/evil.jpg")
+    assert kinds.get(evil) == "embedded_file", kinds
+    assert [p for p, k in kinds.items() if k == "thumbnail"] == [], kinds

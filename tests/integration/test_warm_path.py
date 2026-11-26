@@ -23,6 +23,7 @@ from blastbox.limits import Limits
 from blastbox.worker.engine import DetonationResult
 
 from redtusk.engine import _DEFAULT_WORKER_JAR, RedTuskEngine
+from tests.engine_contract import conform
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DOCX = _ROOT / "deploy" / "docker" / "appcds-warmup-corpus" / "qr_fixture.docx"
@@ -48,7 +49,9 @@ pytestmark = pytest.mark.integration
 
 def _detonate(engine: RedTuskEngine) -> DetonationResult:
     with tempfile.TemporaryDirectory() as td:
-        return engine.detonate(_DOCX, Path(td), Limits.from_env())
+        res = engine.detonate(_DOCX, Path(td), Limits.from_env())
+        conform(res, td)
+        return res
 
 
 @pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")

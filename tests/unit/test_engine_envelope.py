@@ -22,6 +22,7 @@ import pytest
 from blastbox.limits import Limits
 
 from redtusk.engine import RedTuskEngine, _env_param_overrides
+from tests.engine_contract import conform
 
 
 def _entry(path: str, parent: str | None, depth: int, ct: str, sha: str,
@@ -83,7 +84,9 @@ def _detonate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    return RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
+    res = RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
+    conform(res, out)
+    return res
 
 
 def test_detonate_embeds_rmeta_and_drops_metadata_json(tmp_path: Path,
@@ -98,6 +101,35 @@ def test_detonate_embeds_rmeta_and_drops_metadata_json(tmp_path: Path,
     assert "redtusk_rmeta" in fields, "rmeta not embedded in the envelope"
     embedded = json.loads(fields["redtusk_rmeta"])
     assert embedded["extraction"]["entries"][1]["path"] == "/image3.jpeg"
+
+
+def test_ok_result_always_carries_redtusk_rmeta(tmp_path: Path,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """Contract invariant (blastbox-engine.toml required_root_fields): every ok result's root
+    metadata carries ``redtusk_rmeta``. Drive the serialization-failure branch (unreachable
+    from json.loads output today, so forced here): the field must stay present (empty string,
+    which the UI already treats as "fall back to /rmeta") and a warning must say why, rather
+    than the field being silently dropped from an ok result."""
+    import redtusk.engine as eng
+
+    real_json = json
+
+    def _boom(obj: Any, *a: Any, **k: Any) -> str:
+        # Only the rmeta document fails; other dumps (e.g. embedded_paths) behave normally.
+        if isinstance(obj, dict) and "extraction" in obj:
+            raise TypeError("not serializable")
+        return real_json.dumps(obj, *a, **k)
+
+    monkeypatch.setattr(eng, "json", types.SimpleNamespace(loads=real_json.loads, dumps=_boom))
+    res = _detonate(tmp_path, monkeypatch)
+    assert res.status == "ok"
+    fields = res.payload.metadata.fields
+    assert "redtusk_rmeta" in fields, "ok result silently dropped redtusk_rmeta"
+    assert fields["redtusk_rmeta"] == ""
+    codes = [w.code for w in res.warnings]
+    assert "rmeta_embed_failed" in codes
+    # The rest of the evidence (tree, artifacts) is kept, not dropped with the field.
+    assert "rmeta/embedded/image3.jpeg" in [a.path for a in res.artifacts]
 
 
 def test_detonate_declares_thumbnail_artifacts_servable_by_id(
@@ -267,7 +299,8 @@ def test_env_param_overrides_clamps_out_of_range_limits(monkeypatch: pytest.Monk
     monkeypatch.setenv("REDTUSK_MAX_EMBEDDED_ENTRIES", "999999999999")
     lim = _env_param_overrides()["limits"]
     assert 0 <= lim["max_recursion_depth"] <= 64
-    assert 0 <= lim["max_embedded_entries"] <= 10_000  # aligned to EmbeddedResource.children cap
+    # 2 artifacts per entry (bytes + thumbnail) must stay under blastbox's 16384 seal cap.
+    assert 0 <= lim["max_embedded_entries"] <= 8_000
     # a legit in-range override is preserved unchanged
     monkeypatch.setenv("REDTUSK_MAX_RECURSION_DEPTH", "20")
     monkeypatch.setenv("REDTUSK_MAX_EMBEDDED_ENTRIES", "5000")
@@ -297,6 +330,7 @@ def test_detonate_clips_huge_truncated_warning(tmp_path: Path,
     out.mkdir()
     # must NOT raise
     res = RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
+    conform(res, out)
     tw = [w for w in res.warnings if w.code == "truncated"]
     assert tw and len(tw[0].message) <= 2000
 
@@ -329,6 +363,7 @@ def test_detonate_clips_unbounded_rmeta_strings(tmp_path: Path,
     out.mkdir()
     # must NOT raise
     res = RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))
+    conform(res, out)
     assert len(res.detected.mime) <= 255
 
 
@@ -352,7 +387,7 @@ def test_detonate_bounds_record_key_count(tmp_path: Path, monkeypatch: pytest.Mo
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))  # must NOT raise
+    conform(RedTuskEngine().detonate(inp, out, Limits(timeout_s=10)), out)  # must NOT raise
 
 
 def test_detonate_clamps_out_of_range_entry_depth(tmp_path: Path,
@@ -377,4 +412,4 @@ def test_detonate_clamps_out_of_range_entry_depth(tmp_path: Path,
     inp.write_bytes(b"x")
     out = tmp_path / "out"
     out.mkdir()
-    RedTuskEngine().detonate(inp, out, Limits(timeout_s=10))  # must NOT raise
+    conform(RedTuskEngine().detonate(inp, out, Limits(timeout_s=10)), out)  # must NOT raise

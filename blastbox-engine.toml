@@ -1,0 +1,316 @@
+# RedTusk engine output contract (blastbox-engine-contract/1).
+#
+# Describes what src/redtusk/engine.py (RedTuskEngine.detonate) and the JVM worker it drives
+# actually emit TODAY, on this branch. It is not a wish list: where the output cannot be mapped
+# cleanly by a consumer, that is recorded under [[gaps]] rather than fixed here.
+#
+# Validate:  python -m blastbox.contract.engine_contract validate blastbox-engine.toml
+# Check one: python -m blastbox.contract.engine_contract check blastbox-engine.toml metadata.json
+schema = "blastbox-engine-contract/1"
+
+[engine]
+name = "redtusk"
+formats = ["*"]
+# The JVM runs in-process inside the socket-less cold worker; nothing in the engine needs egress
+# (tests/integration/test_no_network_egress.py pins that under strace).
+network = ["none"]
+# No max_input_bytes: the engine enforces none (it reads the whole input into memory); the size
+# cap is the host's Limits / the consumer's accept policy.
+# The engine returns only "ok"; any exception (worker crash, timeout, missing or schema-invalid
+# rmeta) propagates and the harness seals it as engine_error. There is no precheck, so the
+# harness never produces "rejected" for this engine.
+statuses = ["ok", "engine_error"]
+
+# --- Declared artifacts ------------------------------------------------------------------------
+# Every file the JVM writes under <outdir>/rmeta/ is declared, except rmeta/metadata.json (its
+# content is embedded in the payload as redtusk_rmeta) and the draft-snapshot temp
+# rmeta/.metadata.json.draft.tmp (a superseded partial copy, never evidence). A cold fallback
+# after a failed CRaC/warm attempt starts from an emptied rmeta/, so nothing the failed attempt
+# wrote is declared. The id is the path with every character outside [A-Za-z0-9._-] mapped to
+# "_" (so normally "rmeta_..."), but an over-long path keeps only its tail plus a 16-hex hash and
+# collisions get a "_N" suffix, so ids are matched with "*".
+# Kind comes from _infer_artifact_kind(path, entries): the file's ROLE in the layout, never its
+# name. rmeta/thumbnail.jpg and rmeta/embedded/thumbnails/*.jpg are "thumbnail"; everything else
+# under rmeta/embedded/ is "embedded_file". Every embedded entry is stored at
+# rmeta/embedded/objects/<sha256(entry path without the leading "/")>/content, so resource names
+# never become filesystem structure and no entry can land in (or overwrite) embedded/thumbnails/,
+# which only writeThumbnail uses. Results from earlier workers used sanitized-name paths; the
+# engine still reads those. The root's embedded_paths field (a JSON object string) maps each
+# entry path to its declared file. On a gVisor C/R-restored worker with a stale directory view
+# the set is rebuilt from the rmeta entries, which include archive members, so it matches cold.
+# fnmatch "*" crosses "/". The checker matches a family on id, path AND kind, so the thumbnail
+# family never claims an embedded_file; listing the specific families first keeps it readable.
+
+[[artifacts]]
+id = "*"
+path = "rmeta/embedded/thumbnails/*.jpg"
+kind = "thumbnail"
+# 2 per entry: when pass 1 (image capture) and pass 2 name the same entry differently, both
+# copies are saved (gap cr-tier-pass2-only-files; #66 unifies the identity). Entries are clamped
+# to 8000, so 2 x 8000 per family; the sealable total (16384) is the binding limit.
+max_count = 16000
+role = "embedded_thumbnail"
+description = "256px JPEG thumbnail of an embedded image, at embedded/thumbnails/<embedded rel path>.jpg. Only when enable_thumbnails (default on)."
+
+[[artifacts]]
+id = "*"
+path = "rmeta/thumbnail.jpg"
+kind = "thumbnail"
+max_count = 1
+role = "root_thumbnail"
+description = "Thumbnail of the submitted file itself, only when the root content type is image/* and decodes."
+
+[[artifacts]]
+id = "*"
+path = "rmeta/embedded/*"
+kind = "embedded_file"
+# 2 per entry: when pass 1 (image capture) and pass 2 name the same entry differently, both
+# copies are saved (gap cr-tier-pass2-only-files; #66 unifies the identity). Entries are clamped
+# to 8000, so 2 x 8000 per family; the sealable total (16384) is the binding limit.
+max_count = 16000
+max_bytes = 52428800
+role = "embedded_file"
+description = "Raw bytes of one embedded resource (pass-1 image capture or pass-2 SavingExtractor), at objects/<sha256(entry path)>/content (earlier workers: a sanitized path mirroring the entry path). Read capped at 50 MiB per file and 256 MiB per pass. Pass 2 warns (embedded_file_truncated / extracted_bytes_budget); a pass-1 image capture cut at 50 MiB is not warned (gap pass1-image-cap-silent)."
+
+# --- Payload -----------------------------------------------------------------------------------
+
+[payload]
+# The tree rebuilt from rmeta extraction.entries[] (depth-ordered, depth-stack assembly). The root
+# is the submitted file ("/", depth 0); each entry's non-empty text is an ExtractedText child.
+# Per-entry scalars (sha256, md5, sha1, size_bytes, language, error, phash, colorhash) and the
+# Tika metadata keys live in EmbeddedResource.metadata (a Record, not a child node); the scalars
+# win over a same-named Tika key. The root's metadata also carries redtusk_rmeta, the full rmeta
+# document as a JSON string.
+# Engine-derived per-entry evidence is on every node's metadata under a "redtusk:" namespace. A
+# document cannot spoof it: Tika keys starting "redtusk:" / "redtusk_" (and embedded_paths) are
+# dropped, so an engine field that is absent is really absent. redtusk:parent_path,
+# redtusk:has_thumbnail, redtusk:thumbnail_skipped, redtusk:qr (Record of parallel lists data /
+# format / position / raw_bytes plus skipped) and redtusk:ocr (Record text, at most 16384 chars
+# with text_truncated set when cut (the full text is the node's ExtractedText child) / language /
+# duration_ms / skipped), each only when there is a result or an unusual skip reason: the
+# routine reasons "disabled" and "no_images" are omitted, not attached to every node. A truncated
+# result also carries redtusk:truncated (Record reason / limit / observed) on the root.
+root = "embedded_resource"
+# "record" is the metadata Record (and the redtusk:* Records nested in it), not a child node.
+node_types = ["embedded_resource", "extracted_text", "record"]
+# Checked on the root EmbeddedResource's metadata Record (ok results only). size_bytes: the rmeta
+# schema requires an integer size_bytes on the root entry and _build_tree copies it whenever it is
+# not None. redtusk_rmeta: detonate() sets it unconditionally on every ok result; if the rmeta
+# doc cannot be serialized the value is "" and the result carries warning rmeta_embed_failed
+# (tests/unit/test_engine_envelope.py drives that branch). No schema_version: neither field
+# carries one.
+required_root_fields = ["size_bytes", "redtusk_rmeta"]
+
+# --- Findings a consumer is expected to turn into detections -----------------------------------
+# RedTusk is an extractor. Its findings are (a) two envelope warnings with stable codes and
+# (b) Tika-fork / RTF-scanner metadata keys with stable NAMES on EmbeddedResource.metadata.fields.
+# For (b) the code below is the metadata key; the value is evidence (URL, path, list, flag or,
+# for ExploitClass, free text).
+
+[[detections]]
+code = "truncated"
+severity = "medium"
+source = "envelope warnings[] code=truncated (context = reason); structured reason/limit/observed on root EmbeddedResource.metadata.fields['redtusk:truncated']"
+description = "Extraction stopped at max_embedded_entries / max_recursion_depth / max_extracted_bytes; the tree is incomplete."
+
+[[detections]]
+code = "partial_extraction"
+severity = "medium"
+source = "envelope warnings[] code=partial_extraction (context = entry path); root EmbeddedResource.metadata.fields.error carries the parser exception"
+description = "The parser crashed mid-document; the entries emitted before the crash were salvaged. Also raised (no context) when the embedded-file pass stops at a member a container parser cannot read: later members have no declared file."
+
+[[detections]]
+code = "embedded_file_truncated"
+severity = "low"
+source = "envelope warnings[] code=embedded_file_truncated (context = entry path)"
+description = "An embedded file was cut at the 50 MiB per-file cap; its declared bytes, hashes and size describe the truncated prefix."
+
+[[detections]]
+code = "embedded_entries_capped"
+severity = "medium"
+source = "envelope warnings[] code=embedded_entries_capped (one per result; count in the message)"
+description = "Pass 2 stopped writing embedded files at max_embedded_entries; later entries (for archives, possibly ones pass 1 never listed) have no declared file."
+
+[[detections]]
+code = "resource_path_collision"
+severity = "low"
+source = "envelope warnings[] code=resource_path_collision (context = the shared entry path; at most 50 per result)"
+description = "Two embedded entries normalise to one identity (e.g. 'a\\\\b' and 'a/b'); the later is kept as '<path>#N', so both are declared, but only the first maps to its pass-1 entry."
+
+[[detections]]
+code = "extracted_bytes_budget"
+severity = "medium"
+source = "envelope warnings[] code=extracted_bytes_budget (one per result; count in the message)"
+description = "Pass 2 stopped writing embedded files once the 256 MiB per-pass budget was spent; those entries are in the tree but have no declared file."
+
+[[detections]]
+code = "metadata_keys_capped"
+severity = "info"
+source = "envelope warnings[] code=metadata_keys_capped (context = entry path)"
+description = "An entry carried more than 4000 Tika metadata keys; the typed tree has the first 4000, redtusk_rmeta has all."
+
+[[detections]]
+code = "rmeta_embed_failed"
+severity = "low"
+source = "envelope warnings[] code=rmeta_embed_failed"
+description = "The rmeta document could not be serialized, so redtusk_rmeta is the empty string (the typed tree is unaffected)."
+
+[[detections]]
+code = "rtf:templateUrl"
+severity = "high"
+source = "root EmbeddedResource.metadata.fields['rtf:templateUrl'] (RtfIocScanner, root RTF only)"
+description = "Remote (UNC / http / ftp) attached template: the template-injection delivery technique."
+
+[[detections]]
+code = "rtf:protocolHandler"
+severity = "high"
+source = "root EmbeddedResource.metadata.fields['rtf:protocolHandler']"
+description = "ms-msdt: / search-ms: / mhtml: / smb:// protocol-handler URI in the RTF (Follina class)."
+
+[[detections]]
+code = "rtf:nullByteUrl"
+severity = "high"
+source = "root EmbeddedResource.metadata.fields['rtf:nullByteUrl']"
+description = "URL or UNC path hidden behind null-byte obfuscation."
+
+[[detections]]
+code = "rtf:uncPath"
+severity = "medium"
+source = "root EmbeddedResource.metadata.fields['rtf:uncPath']"
+description = "UNC path reference (NTLM-leak / remote-load vector)."
+
+[[detections]]
+code = "rtf:hyperlinkUrl"
+severity = "low"
+source = "root EmbeddedResource.metadata.fields['rtf:hyperlinkUrl']"
+description = "HYPERLINK field target URL."
+
+[[detections]]
+code = "rtf:objdataMixedCase"
+severity = "medium"
+source = "root EmbeddedResource.metadata.fields['rtf:objdataMixedCase']"
+description = "Mixed-case \\objdata control word, an evasion of naive OLE-object signatures."
+
+[[detections]]
+code = "ExploitClass"
+severity = "high"
+source = "any EmbeddedResource.metadata.fields['ExploitClass'] (Tika fork parsers; also the Unicode-art QR decoder)"
+description = "Tika-fork exploit / evasion classification. The KEY is stable; the value is free text (gap exploitclass-free-text)."
+
+[[detections]]
+code = "msoffice:ooxml:ole-suspicious-progids"
+severity = "medium"
+source = "any EmbeddedResource.metadata.fields['msoffice:ooxml:ole-suspicious-progids'] (list of ProgIDs)"
+description = "OOXML embeds an OLE object with a ProgID on the fork's suspicious list."
+
+[[detections]]
+code = "msoffice:excel:has-xls4-macros"
+severity = "medium"
+source = "any EmbeddedResource.metadata.fields['msoffice:excel:has-xls4-macros'] (names in msoffice:excel:xls4-macro-sheet-names)"
+description = "Legacy XLS4 / XLM macro sheets present."
+
+[[detections]]
+code = "msoffice:xlsx:has-xlm-macros"
+severity = "medium"
+source = "any EmbeddedResource.metadata.fields['msoffice:xlsx:has-xlm-macros']"
+description = "XLM macro sheets present in an OOXML (XLSX/XLSM) workbook."
+
+[[detections]]
+code = "msoffice:xlsb:has-xlm-macros"
+severity = "medium"
+source = "any EmbeddedResource.metadata.fields['msoffice:xlsb:has-xlm-macros']"
+description = "XLM macro sheets present in a binary (XLSB) workbook; set by the Tika fork's XSSFBExcelExtractorDecorator."
+
+[[detections]]
+code = "qr_code"
+severity = "info"
+source = "any EmbeddedResource.metadata.fields['redtusk:qr'].fields.data[] (format[] parallel)"
+description = "Decoded QR / barcode payload (commonly a phishing URL)."
+
+# --- Gaps --------------------------------------------------------------------------------------
+# What remains is either a decision for the owner (each says why) or Loadout-consumer-side.
+
+[[gaps]]
+id = "contract-cannot-require-rmeta-field"
+description = "redtusk_rmeta is required (checked on the root's metadata fields), but its value is unchecked: a JSON string with no schema version, and it is \"\" (with warning rmeta_embed_failed) if json.dumps raises TypeError/ValueError. That fallback is unreachable today (the input is json.loads output, so no cycles or non-str keys; default=str; allow_nan stays True) but is enforced in code and tested, so a consumer must treat \"\" as absent rather than parse it. A RecursionError propagates as engine_error, never an ok result. Other root fields (sha256 may be null, Tika keys vary by format) cannot be required. Left: versioning the rmeta document is an owner decision (it is also the UI's and the /rmeta route's format)."
+
+[[gaps]]
+id = "exploitclass-free-text"
+description = "ExploitClass is a single free-text string (e.g. 'Decoded N Unicode-art QR code(s) ...'); a later setter overwrites an earlier one, and there is no stable sub-code a consumer can key severity on. Left: it is set by the Tika fork (wmetcalf/tika), not this repo, and needs an owner-chosen code namespace there."
+
+[[gaps]]
+id = "detections-are-metadata-keys"
+description = "Every finding except the warnings is a Tika metadata key mixed in with thousands of ordinary keys on EmbeddedResource.metadata; there is no findings list, severity or code namespace, and the RTF keys are emitted only for the root entry. Left: a findings channel (shape, severities, who assigns them) is an owner design decision; this contract's [[detections]] is the interim map."
+
+[[gaps]]
+id = "detected-is-root-mime"
+description = "detected is the root content type with confidence 1.0 on every result; it is identification, not a verdict, and says nothing about the findings. Left: that is blastbox's meaning of Detection (file identification); turning it into a verdict is an owner/blastbox decision, not an engine defect."
+
+[[gaps]]
+id = "cr-tier-pass2-only-files"
+description = "On a gVisor C/R-restored worker the stale directory view forces the declared set to be rebuilt from the rmeta entries (both storage layouts), so only files with an rmeta entry are declared there; cold and Firecracker declare every file. Pass 2 now derives each entry's identity exactly as pass 1 does (container path + normalised resource name) and both passes use the job's limits, so archive members, renamed attachments and nested-container members are covered. Files pass 2 still writes with no matching entry: a later duplicate identity kept as '<path>#N' (warning resource_path_collision), and, in a timeout-salvaged draft, members whose container never finished (their provenance path is kept, but the container has no entry). Left: these need entry-id (not path) keyed storage."
+
+[[gaps]]
+id = "pass1-image-cap-silent"
+description = "Pass 1 (Pass1ImageCapture) buffers an image at most 50 MiB and saves that prefix with the prefix's hashes, but emits no embedded_file_truncated warning; that matters only where pass 2 never reaches the entry (e.g. an image inside a PDF inside an Office file). Left: adding a pass-1 warning needs the probe-one-more-byte change pass 2 got; deferred as a small follow-up."
+
+[[gaps]]
+id = "duplicate-member-attribution"
+description = "Main merges pass-2 hashes onto pass-1 entries by path. Two members with the same identity (a repeated zip name, or a top-level 'a.zip/b.txt' next to a.zip containing b.txt) are both kept on disk (the later as '<path>#N', warning resource_path_collision), but both pass-1 entries report the FIRST member's sha256/size. Left: keying storage and the merge by EMBEDDED_ID_PATH instead of path is a worker-format change for the owner."
+
+[[gaps]]
+id = "rar5-per-member-fallback"
+description = "Rar5Parser lists the archive once (NTFS alternate streams included, -sns; each is extracted as a member of its own, 'file:stream', by name, so a CVE-2025-8088-style stream payload is hashed and parsed) and, for archives of at least 16 files whose listing describes the decoded stream exactly (only regular files and folders; every file with a listed CRC32 and its own data: Packed Size > 0 or Size 0, no 'Link' characteristic, no Unix symlink mode; and the whole archive passing `7zz t`), decodes it with ONE bounded 7zz run (x -so -sns-): each member is read by its listed size into memory (at most 50 MiB, one at a time), checked against its listed CRC32, and published in order; nothing is staged on disk. Smaller archives (the single run's `7zz t` + `x` would decode them twice under one deadline), archives with link or alternate-stream entries or without CRCs, and the rest of an archive whose single run stops matching (short stream, CRC mismatch, non-zero exit), use the old one-7zz-run-per-member path, which is O(N^2) on many members; each parse keeps its 40 s deadline and pass 1 and pass 2 each decode the archive, so a large archive on that path can still be refused with 'RAR5 decoder deadline exceeded'. Left: covering link-bearing archives with the single run needs an exact model of their -so bytes (7zz writes 0 bytes for a data-less symlink whatever its listed size)."
+
+[[gaps]]
+id = "crac-format-gate-engine-path-only"
+description = "The worker-format record (redtusk-worker-format) is checked only where the engine restores a checkpoint itself (_crac_restore_worker, redtusk-cold-worker:crac); whatever made a restore fail (a stale format record, or no markers at all), the job falls back to a cold JVM only if that jar reports the engine's format (--worker-format; its answer, including 'no format', is cached per engine process; a query that times out or cannot start is retried), else it fails closed. Restore paths with no engine in the process (Dockerfile.crac-worker run directly, Dockerfile.crac / deploy/firecracker init*, Dockerfile.high-density criu) do not check it; none of them is in blastbox-images.toml, and the live FC/gVisor warm tiers boot engine and jar from one rootfs. Left: legacy images, not worth a launcher-side check until one is revived."
+
+[[gaps]]
+id = "rar5-fail-closed-archive"
+description = "Rar5Parser refuses the WHOLE archive when any member is over 50 MiB, encrypted or split, has a control-character or duplicate name, or the listing exceeds the entry/byte budget; no member is extracted and the root carries the error. ZipParser instead records the odd member and continues (and pass 2 truncates an over-cap member with embedded_file_truncated), so a padded payload in a RAR5 hides its siblings where the same zip would not. Left: per-member skip versus fail-closed is an owner policy decision."
+
+# Loadout-side mismatches (consumer = backend/loadout/engines.py in loadout_handoff_package).
+# Left here for the Loadout side to close; nothing in this engine causes them.
+
+[[gaps]]
+id = "loadout-embedded-paths-unread"
+description = "The engine now emits payload.metadata.fields.embedded_paths (a JSON object string: entry path -> declared rmeta/embedded/objects/<sha256>/content). redtusk_map_outputs must parse it as JSON and must stop falling back to rmeta/embedded/<entry path>, which no longer exists for current workers; until it does, entry-to-file mapping relies on unique-sha256 correlation."
+
+[[gaps]]
+id = "loadout-envelope-drops-findings"
+description = "With an envelope Loadout sets dets=[] for redtusk and never reads ExploitClass, rtf:*, msoffice:*, redtusk:qr or the warnings (partial_extraction, embedded_file_truncated, extracted_bytes_budget, metadata_keys_capped); extraction_evidence only marks coverage incomplete on 'truncated' and fields.error. redtusk_status_to_detections reads the legacy result.extraction shape and only runs without an envelope."
+
+[[gaps]]
+id = "loadout-ignores-rmeta-and-qr"
+description = "Loadout never reads redtusk:qr / redtusk:ocr / redtusk:parent_path (now on every node) nor parses redtusk_rmeta, so QR-decoded URLs and OCR text are lost; URLs are only regex-scraped from ExtractedText. The manifest also does not list qr_code in emits."
+
+[[gaps]]
+id = "loadout-thumbnails-as-resources"
+description = "redtusk_map_outputs keys only on the rmeta/embedded/ path prefix (never on kind, which now says thumbnail vs embedded_file): embedded thumbnails are ingested as tika_resource file artifacts with embedded_path '/thumbnails/...', and rmeta/thumbnail.jpg is ingested as a plain file artifact."
+
+[[gaps]]
+id = "loadout-caps-below-engine"
+description = "redtusk_map_outputs refuses the WHOLE result past 256 declarations, any artifact over 25 MiB (engine allows 50 MiB), 100 MiB combined, ExtractedText over 1 MiB (engine allows 10M chars), 256 text nodes, or 10000 tree nodes; the engine legitimately produces up to 8000 entries plus their text nodes and thumbnails."
+
+[[gaps]]
+id = "loadout-emits-script-never-produced"
+description = "Loadout's EngineManifest emits 'script' for redtusk, but redtusk_map_outputs only creates file, text_message and url artifacts (macro parts arrive as plain files or text)."
+
+[[gaps]]
+id = "loadout-param-bounds"
+description = "Loadout's config fields allow REDTUSK_MAX_EMBEDDED_ENTRIES up to 100000 (default 1000) and depth up to 50; the engine clamps entries to [0,8000] (default 5000; 2 artifacts per entry must fit blastbox's 16384-artifact seal) and depth to [0,64] (default 10), so values above 8000 are silently clamped."
+
+# --- Consumers ---------------------------------------------------------------------------------
+
+[[consumers]]
+name = "loadout"
+engine = "redtusk"
+mapper = "backend/loadout/engines.py:redtusk_map_outputs"
+emits = ["file", "text_message", "script", "url", "detection"]
+
+[[consumers]]
+name = "loadout"
+engine = "redtusk"
+mapper = "backend/loadout/engines.py:redtusk_status_to_detections"
+emits = ["detection"]

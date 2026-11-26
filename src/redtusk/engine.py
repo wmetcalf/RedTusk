@@ -29,10 +29,12 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,8 +82,17 @@ _WARM_STDERR_LOG = "warm-stderr.log"
 # failure path.
 _WARM_STDERR_TAIL_BYTES = 64 * 1024
 
+# CVE-2026-114938 ("Java4Shell"): heap overflow in HotSpot's AVX-512 VBMI Base64 decode
+# intrinsic (JDK 17.0.6+ .. 27). Hostile documents reach java.util.Base64 inside the worker,
+# so the intrinsic is OFF for every worker JVM. java.util.Base64 still works (pure-Java path);
+# only the assembly stub is disabled. It is part of the default bundle (so the AOT cache and
+# the warm FC/gVisor JVMs are booted with it) AND forced onto a REDTUSK_JAVA_OPTS override --
+# an operator flag bundle must not be able to silently re-enable the vulnerable stub.
+_BASE64_INTRINSICS_OFF = "-XX:-UseBASE64Intrinsics"
+
 _DEFAULT_JVM_FLAGS: tuple[str, ...] = (
     "-XX:+UseSerialGC",
+    _BASE64_INTRINSICS_OFF,
     "-XX:TieredStopAtLevel=1",
     "-Xms800m",
     "-Xmx800m",
@@ -170,11 +181,12 @@ def _env_param_overrides() -> dict[str, Any]:
     depth = _int("REDTUSK_MAX_RECURSION_DEPTH", 0, 64)
     if depth is not None:
         limits["max_recursion_depth"] = depth
-    # Ceiling is the contract's EmbeddedResource.children cap (max_length=10000): a flat archive
-    # maps every entry as a direct child of one node, so allowing more would build a tree the
-    # host's envelope re-parse rejects. The mapper's post-construction .append doesn't re-validate,
-    # so the only place to bound it is here (and at the worker's own extraction limit).
-    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES", 0, 10_000)
+    # Ceiling: every saved entry can declare TWO artifacts (its bytes and its thumbnail), and
+    # blastbox seals at most 16384 artifacts (Envelope.artifacts), so 2 * 8000 + the root
+    # thumbnail stays sealable. (It is also below the contract's EmbeddedResource.children cap of
+    # 10000, which a flat archive would otherwise hit.) Above it, an image-heavy archive ended
+    # as engine_error with every artifact lost.
+    entries = _int("REDTUSK_MAX_EMBEDDED_ENTRIES", 0, _MAX_EMBEDDED_ENTRIES)
     if entries is not None:
         limits["max_embedded_entries"] = entries
     if limits:
@@ -226,24 +238,66 @@ def _make_record(raw: dict[str, Any]) -> Record:
     return Record(fields=fields)
 
 
+# Metadata keys only the engine may set. A Tika key with one of these names is dropped.
+_ENGINE_KEY_PREFIXES: tuple[str, ...] = ("redtusk:", "redtusk_")
+_ENGINE_ROOT_KEYS: frozenset[str] = frozenset({"embedded_paths"})
+
+# redtusk:ocr carries at most this much text per node. The full text is already in the node's
+# ExtractedText child and in redtusk_rmeta; a third uncapped copy could push an OCR-heavy result
+# past blastbox's metadata size limit.
+_OCR_TEXT_CAP = 16384
+
+# Upper bound for REDTUSK_MAX_EMBEDDED_ENTRIES; see _env_param_overrides.
+_MAX_EMBEDDED_ENTRIES = 8_000
+
+# Skip reasons the worker puts on (nearly) every entry: OCR is off by default and most entries
+# are not images. Reporting them would hang an empty Record on every node, so they count as
+# "nothing to say"; any other reason (a timeout, a size cap) is evidence and is kept.
+_ROUTINE_SKIPS: frozenset[str | None] = frozenset({None, "disabled", "no_images"})
+
+
+def _engine_entry_fields(e: dict[str, Any]) -> dict[str, Any]:
+    """The rmeta entry's own (non-Tika) evidence as ``redtusk:*`` Record fields.
+
+    QR decodes and OCR text are the IOC-bearing ones (a decoded QR is commonly a phishing URL);
+    parent_path and the thumbnail state let a consumer walk and explain the tree without parsing
+    the rmeta string. Empty results are omitted so 10k-entry trees do not carry 10k empty bags.
+    """
+    out: dict[str, Any] = {"redtusk:parent_path": _coerce_metadata_value(e.get("parent_path"))}
+    if "has_thumbnail" in e:
+        out["redtusk:has_thumbnail"] = bool(e.get("has_thumbnail"))
+    if e.get("thumbnail_skipped") is not None:
+        out["redtusk:thumbnail_skipped"] = str(e["thumbnail_skipped"])
+    qr = e.get("qr")
+    if isinstance(qr, dict):
+        codes = [c for c in (qr.get("codes") or []) if isinstance(c, dict)]
+        if codes or qr.get("skipped") not in _ROUTINE_SKIPS:
+            out["redtusk:qr"] = Record(fields={
+                "data": [_coerce_metadata_value(c.get("data")) for c in codes],
+                "format": [_coerce_metadata_value(c.get("format")) for c in codes],
+                "position": [_coerce_metadata_value(c.get("position")) for c in codes],
+                "raw_bytes": [_coerce_metadata_value(c.get("raw_bytes")) for c in codes],
+                "skipped": _coerce_metadata_value(qr.get("skipped")),
+            })
+    ocr = e.get("ocr")
+    if isinstance(ocr, dict) and (ocr.get("text") or ocr.get("skipped") not in _ROUTINE_SKIPS):
+        text = str(ocr.get("text") or "")
+        out["redtusk:ocr"] = Record(fields={
+            "text": text[:_OCR_TEXT_CAP],
+            "text_truncated": len(text) > _OCR_TEXT_CAP,
+            "language": _coerce_metadata_value(ocr.get("language")),
+            "duration_ms": _coerce_metadata_value(ocr.get("duration_ms")),
+            "skipped": _coerce_metadata_value(ocr.get("skipped")),
+        })
+    return out
+
+
 def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
-    """Reconstruct the recursive ``EmbeddedResource`` tree from a flat list.
+    """Reconstruct resource ancestry by path, independent of completion order.
 
-    The ``extraction.entries[]`` list is depth-ordered (parent always appears
-    before its children) and each entry carries a ``depth`` integer.  We use a
-    *depth-stack* to attach each entry as a child of the most-recent entry
-    whose depth is one less than the current entry's depth.
-
-    Algorithm:
-    - ``stack`` is a list of ``(depth, EmbeddedResource)`` pairs, representing
-      the "open" ancestry at any point.
-    - For each entry, pop entries from the stack whose depth >= current depth
-      (they are closed siblings or ancestors that are now fully processed).
-    - Attach the new node to the top of the stack (its parent).
-    - Push the new node.
-
-    Text: each entry with non-empty ``text`` gets an ``ExtractedText`` child
-    appended immediately after the ``EmbeddedResource`` is created.
+    Tika's recursive wrapper can emit children before their container. Paths and
+    parent_path, rather than adjacency, preserve that relationship. Invalid or
+    missing parents remain explicit evidence gaps attached to the root.
     """
     if not entries:
         # Synthesize a minimal root node when the worker produced nothing.
@@ -269,11 +323,22 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
             val = e.get(scalar_key)
             if val is not None:
                 extra[scalar_key] = _coerce_metadata_value(val)
-        combined: dict[str, Any] = {**extra}
+        combined: dict[str, Any] = {}
         if isinstance(meta_raw, dict):
-            # cap key COUNT (see _MAX_RECORD_KEYS)
+            # cap key COUNT (see _MAX_RECORD_KEYS); the drop is reported by detonate()
             for k, v in list(meta_raw.items())[:_MAX_RECORD_KEYS]:
-                combined[str(k)] = _coerce_metadata_value(v)
+                key = str(k)
+                # A document chooses its own metadata keys. Keys in the engine's namespace are
+                # dropped outright: applying the engine's fields afterwards is not enough when
+                # the engine OMITS one (no OCR text, no truncation), which would leave the
+                # document's forged value standing.
+                if key.startswith(_ENGINE_KEY_PREFIXES) or key in _ENGINE_ROOT_KEYS:
+                    continue
+                combined[key] = _coerce_metadata_value(v)
+        # The worker's own per-entry scalars (hashes, size, ...) and engine-derived evidence win
+        # over any same-named Tika key.
+        combined.update(extra)
+        combined.update(_engine_entry_fields(e))
         # Clip to the contract field bounds (which RAISE, not truncate): rmeta entry path /
         # content_type / text are schema-valid at ANY length (no maxLength), so an attacker's
         # container entry name (ZIP allows 64KiB names) would overflow embedded_path (4096) /
@@ -295,24 +360,22 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
     # Build all nodes first.
     nodes = [_make_node(e) for e in entries]
 
-    # Depth-stack tree assembly.
-    # stack: list of (node_depth, node) open ancestors
+    # Tika emits embedded-document completion in postorder: children can precede
+    # their parents. Resolve explicit resource paths after building all nodes.
     root = nodes[0]
-    if len(nodes) == 1:
-        return root
-
-    stack: list[tuple[int, EmbeddedResource]] = [(root.depth, root)]
-
-    for node in nodes[1:]:
-        # Pop until the top of the stack is the correct parent
-        # (depth == node.depth - 1), or we're back to root.
-        while len(stack) > 1 and stack[-1][0] >= node.depth:
-            stack.pop()
-        # Attach as child of the current stack top.
-        parent = stack[-1][1]
+    # Keyed by the FULL entry path: embedded_path is clipped to 4096, and two long paths that
+    # share a 4096-char prefix (a long-named container and its own child) would collide.
+    by_path = {str(e.get("path") or "/"): node for e, node in zip(entries, nodes, strict=True)}
+    for entry, node in zip(entries[1:], nodes[1:], strict=True):
+        parent_path = entry.get("parent_path")
+        if not isinstance(parent_path, str) or not parent_path:
+            parent_path = str(entry.get("path") or "/").rsplit("/", 1)[0] or "/"
+        parent = by_path.get(parent_path)
+        if parent is None or parent is node or parent.depth >= node.depth:
+            parent = root
+            if parent_path != root.embedded_path and node.metadata is not None:
+                node.metadata.fields["parent_resolution"] = "missing_or_invalid_parent"
         parent.children.append(node)
-        stack.append((node.depth, node))
-
     return root
 
 
@@ -321,8 +384,119 @@ def _build_tree(entries: list[dict[str, Any]]) -> EmbeddedResource:
 # ---------------------------------------------------------------------------
 
 
+def _reset_rmeta_dir(rmeta_dir: Path) -> None:
+    """Empty *rmeta_dir* before a cold fallback, so the failed attempt's partial files (embedded
+    bytes, a draft temp) are not declared next to the cold result as if the cold JVM wrote them."""
+    try:
+        if rmeta_dir.is_symlink() or rmeta_dir.is_file():
+            rmeta_dir.unlink()
+        elif rmeta_dir.exists():
+            shutil.rmtree(rmeta_dir)
+        return
+    except OSError as exc:
+        # The fallback must still run. A gVisor C/R-restored process can have a stale
+        # directory view (see detonate()), so rmtree may not see the files a crashed warm JVM
+        # wrote and fail with ENOTEMPTY. Move the whole directory aside instead: rename
+        # needs no listing, and only rmeta/ is ever declared.
+        aside = rmeta_dir.with_name(f".{rmeta_dir.name}.failed-{uuid.uuid4().hex[:12]}")
+        logger.warning("redtusk: could not empty %s before cold fallback (%s); moving it to %s",
+                       rmeta_dir, exc, aside.name)
+        rmeta_dir.rename(aside)
+        # Best effort: drop whatever this view CAN see, so the aside tree does not count
+        # twice against the host's output-size cap. On a stale view some files remain;
+        # they are never declared.
+        shutil.rmtree(aside, ignore_errors=True)
+
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _force_base64_intrinsics_off(flags: list[str]) -> list[str]:
+    """Drop any UseBASE64Intrinsics setting from *flags* and append the OFF flag last.
+
+    HotSpot honours the LAST occurrence of a flag, so appending alone would already win;
+    stripping the others keeps the argv unambiguous to a reader of ``ps``/logs.
+    """
+    kept = [f for f in flags if not f.startswith(("-XX:+UseBASE64Intrinsics",
+                                                  "-XX:-UseBASE64Intrinsics"))]
+    return [*kept, _BASE64_INTRINSICS_OFF]
+
+
+# Marker a CRaC checkpoint image carries when the JVM that baked it ran with the intrinsic
+# OFF (written by the image build after the checkpoint succeeds; the worker refuses to
+# checkpoint with the intrinsic on). A restore keeps the checkpointed JVM's flags, so a
+# checkpoint without it -- one baked before the mitigation -- is never restored.
+_CRAC_BASE64_OFF_MARKER = "redtusk-base64-intrinsics-off"
+
+# The rmeta/output layout the worker jar writes (io.redtusk.worker.WorkerFormat.VERSION). A
+# CRaC restore resumes the jar that was checkpointed at image-build time, so the checkpoint
+# image records the format of THAT jar (``redtusk-worker --worker-format``) in this file, and a
+# checkpoint whose record is missing (baked before the engine output contract, #64) or names
+# another format is never restored. Bump both constants together whenever the worker's output
+# layout changes in a way this engine depends on.
+_WORKER_FORMAT = 2
+_CRAC_WORKER_FORMAT_MARKER = "redtusk-worker-format"
+
+
+_COLD_JAR_FORMATS: dict[tuple[str, str], str | None] = {}
+
+
+def _cold_jar_worker_format(timeout: float = 30.0) -> str | None:
+    """Ask the jar a cold fallback would boot which output format it writes (None if unknown).
+
+    Only run when a checkpoint was refused for its format: redtusk-cold-worker:crac boots the
+    very jar that was checkpointed, so a cold fallback there would write the same stale
+    layout. A jar from before ``--worker-format`` existed exits non-zero (usage) -> None.
+    """
+    java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
+    jar = os.environ.get("REDTUSK_WORKER_JAR", _DEFAULT_WORKER_JAR)
+    key = (java_bin, jar)
+    if key in _COLD_JAR_FORMATS:  # a jar cannot change under a running engine
+        return _COLD_JAR_FORMATS[key]
+    try:
+        result = subprocess.run(
+            [java_bin, _BASE64_INTRINSICS_OFF, "-jar", jar, "--worker-format"],
+            capture_output=True, text=True, timeout=timeout, check=False,
+            env=_jvm_env(dict(os.environ)),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None  # not cached: a timeout may be transient
+    found = (result.stdout.strip()[:32] or None) if result.returncode == 0 else None
+    _COLD_JAR_FORMATS[key] = found
+    return found
+
+
+def _check_checkpoint_worker_format(checkpoint_dir: str) -> None:
+    """Raise unless the checkpoint records this engine's worker output format."""
+    marker = Path(checkpoint_dir) / _CRAC_WORKER_FORMAT_MARKER
+    try:
+        recorded = marker.read_text(encoding="ascii", errors="replace").strip()[:32]
+    except OSError:
+        recorded = None
+    if recorded != str(_WORKER_FORMAT):
+        found = "is missing" if recorded is None else f"records format {recorded!r}"
+        raise RuntimeError(
+            f"CRaC checkpoint {checkpoint_dir}: {_CRAC_WORKER_FORMAT_MARKER} {found}, but this "
+            f"engine reads worker format {_WORKER_FORMAT}; the checkpointed worker would write "
+            "output this engine misreads. Rebuild redtusk-worker:crac and "
+            "redtusk-cold-worker:crac"
+        )
+
+
+def _jvm_env(env: dict[str, str]) -> dict[str, str]:
+    """Return *env* with any ``_JAVA_OPTIONS`` forced to end in the OFF flag.
+
+    HotSpot reads ``_JAVA_OPTIONS`` AFTER the command line, so an inherited
+    ``_JAVA_OPTIONS=-XX:+UseBASE64Intrinsics`` beats the argv's trailing OFF flag. Appending
+    the OFF flag to it restores "the last occurrence is OFF". ``JAVA_TOOL_OPTIONS`` and
+    ``JDK_JAVA_OPTIONS`` are read before the command line, so the argv already wins over them.
+    Used for JVMs that boot; NOT for a CRaC restore (see _crac_restore_worker).
+    """
+    java_options = env.get("_JAVA_OPTIONS")
+    if java_options is not None:
+        env["_JAVA_OPTIONS"] = f"{java_options} {_BASE64_INTRINSICS_OFF}".strip()
+    return env
 
 
 def _java_worker_argv(scratch: Path) -> list[str]:
@@ -336,7 +510,9 @@ def _java_worker_argv(scratch: Path) -> list[str]:
     - ``REDTUSK_AOT_CACHE``         AOT cache; only added when the file exists
     - ``REDTUSK_JAVA_LIBRARY_PATH`` native lib dir (default ``/app``)
     - ``REDTUSK_JAVA_OPTS``         full JVM-flag override (shlex-split), replacing
-                                    the default flag bundle entirely
+                                    the default flag bundle -- except
+                                    ``-XX:-UseBASE64Intrinsics`` (CVE-2026-114938),
+                                    which is always forced on
     """
     java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
     jar = os.environ.get("REDTUSK_WORKER_JAR", _DEFAULT_WORKER_JAR)
@@ -345,7 +521,7 @@ def _java_worker_argv(scratch: Path) -> list[str]:
 
     opts_override = os.environ.get("REDTUSK_JAVA_OPTS")
     if opts_override is not None:
-        jvm_flags = shlex.split(opts_override)
+        jvm_flags = _force_base64_intrinsics_off(shlex.split(opts_override))
     else:
         jvm_flags = [f"-Djava.library.path={lib_path}", *_DEFAULT_JVM_FLAGS]
         # The AOT cache is flag-sensitive and baked into the cold-worker image;
@@ -460,6 +636,7 @@ def _run_worker(
             # something the operator setting it on a container would ever expect.
             "REDTUSK_PREWARM": "0",
         }
+        _jvm_env(env)
 
         logger.debug("RedTusk JVM worker cmd: %s", " ".join(cmd))
         # Set once the JVM has exited: nothing will read the go-signal after that, and the
@@ -552,6 +729,15 @@ def _crac_restore_worker(
     re-announces ready, sees the go signal, processes one job, writes
     metadata.json, exits.
     """
+    if not (Path(checkpoint_dir) / _CRAC_BASE64_OFF_MARKER).is_file():
+        # Raise before staging anything: the caller falls back to a cold JVM, which gets the
+        # OFF flag from _java_worker_argv.
+        raise RuntimeError(
+            f"CRaC checkpoint {checkpoint_dir} has no {_CRAC_BASE64_OFF_MARKER} marker: it was "
+            "baked before the CVE-2026-114938 mitigation and would restore with the Base64 "
+            "intrinsic on; rebuild redtusk-worker:crac and redtusk-cold-worker:crac"
+        )
+    _check_checkpoint_worker_format(checkpoint_dir)
     input_bytes = input_path.read_bytes()
     filename_hint = input_path.name or "input"
     scratch = Path(scratch_dir)
@@ -580,6 +766,11 @@ def _crac_restore_worker(
 
     java_bin = os.environ.get("REDTUSK_JAVA_BIN", _DEFAULT_JAVA_BIN)
     cmd = [java_bin, f"-XX:CRaCRestoreFrom={checkpoint_dir}"]
+    # Not _jvm_env: a restore keeps the checkpoint's VM flags, and CRaC refuses any
+    # non-restore-settable option at restore ("VM option 'UseBASE64Intrinsics' is not
+    # restore-settable"), so appending the OFF flag would only make every restore fail. An
+    # inherited -XX:+UseBASE64Intrinsics is refused the same way, so it cannot re-enable the
+    # intrinsic either; the checkpoint's flags are vouched for by the marker checked above.
     env = {
         **os.environ,
         "REDTUSK_LOG_LEVEL": os.environ.get("REDTUSK_LOG_LEVEL", "WARNING"),
@@ -643,6 +834,7 @@ class RedTuskEngine:
                 # with scripts/verify_warm_tier.sh before enabling it anywhere.
                 "REDTUSK_PREWARM": os.environ.get("REDTUSK_PREWARM", "0"),
             }
+            _jvm_env(env)
             started = time.monotonic()
             # FILES, not pipes. Nothing reads this process's output until communicate() at the
             # FIRST JOB, so everything it emits before then -- boot, Tika class loading, and
@@ -770,7 +962,20 @@ class RedTuskEngine:
                 )
                 return
             except Exception as exc:  # noqa: BLE001
+                # In redtusk-cold-worker:crac the cold JVM boots the very jar that was
+                # checkpointed, so whatever made the restore fail (a stale format record, or a
+                # checkpoint so old it has no markers at all), fall back only to a jar that
+                # writes this engine's format; otherwise fail closed.
+                started = time.monotonic()
+                cold = _cold_jar_worker_format(min(30.0, timeout))
+                if cold != str(_WORKER_FORMAT):
+                    raise RuntimeError(
+                        f"{exc}; the cold-fallback jar reports worker format {cold!r}, "
+                        f"not {_WORKER_FORMAT}, so it cannot stand in"
+                    ) from exc
+                timeout = max(1.0, timeout - (time.monotonic() - started))
                 logger.warning("redtusk CRaC restore failed (%s); cold fallback", exc)
+                _reset_rmeta_dir(rmeta_dir)
                 _run_worker(input, rmeta_dir, timeout=timeout)
                 return
 
@@ -867,6 +1072,7 @@ class RedTuskEngine:
             # JVM produces the rmeta into the same dir. Pinned by
             # tests/integration/test_warm_path.py.
             logger.warning("redtusk warm detonation failed (%s); cold fallback", exc)
+            _reset_rmeta_dir(rmeta_dir)
             _run_worker(input, rmeta_dir, timeout=timeout)
             return
         finally:
@@ -942,18 +1148,29 @@ class RedTuskEngine:
         # (mirrors ClippyShot's ``clippyshot_metadata``): the host UI reads the
         # extraction tree straight from the sealed envelope, so we no longer ship a
         # separate ``rmeta/metadata.json`` artifact (which collided by name with the
-        # blastbox ENVELOPE metadata.json at the zip root). Fail-open: a
-        # serialization hiccup must never fail the job — the UI falls back to /rmeta.
+        # blastbox ENVELOPE metadata.json at the zip root).
+        #
+        # Contract (blastbox-engine.toml required_root_fields): every ok result's root metadata
+        # carries redtusk_rmeta. A serialization failure must not fail the job (the typed tree and
+        # artifacts are still good evidence) NOR silently drop the field: the field stays present
+        # as "" (the UI already treats that as "fall back to /rmeta") and a warning says why.
+        # Unreachable today (rmeta is json.loads output, default=str, allow_nan on), but enforced
+        # here rather than by that argument. RecursionError is not caught: it propagates as
+        # engine_error, never an ok result.
+        rmeta_embed_warning: Warning | None = None
         try:
             rmeta_json = json.dumps(rmeta, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             rmeta_json = ""
-        if rmeta_json and payload.metadata is not None:
-            try:
-                # frozen models still allow mutating the contained fields dict
-                payload.metadata.fields["redtusk_rmeta"] = rmeta_json
-            except Exception:  # noqa: BLE001
-                pass
+            rmeta_embed_warning = Warning(
+                code="rmeta_embed_failed",
+                message=f"rmeta document could not be serialized into redtusk_rmeta: "
+                        f"{type(exc).__name__}: {exc}"[:2000],
+            )
+        # _build_tree always gives the root a Record; frozen models still allow mutating the
+        # contained fields dict. No guard/except: a failure here is a bug and must surface.
+        assert payload.metadata is not None
+        payload.metadata.fields["redtusk_rmeta"] = rmeta_json
 
         # Detection from root content-type. Both contract fields RAISE past their bound and
         # root_content_type is schema-valid at any length (no maxLength), so clip label to 64
@@ -994,22 +1211,69 @@ class RedTuskEngine:
         # stale-view sentinel above, but drop it from the DECLARED set so it isn't a
         # second metadata.json in the sealed /result zip. Sentinel check stays intact
         # (it ran on the unfiltered rglob result).
-        rel_paths = [p for p in rel_paths if p != "rmeta/metadata.json"]
+        # The draft-snapshot temp is a superseded partial copy of metadata.json (orphaned only
+        # when a JVM is killed between write and rename); never evidence, never declared.
+        rel_paths = [p for p in rel_paths
+                     if p not in ("rmeta/metadata.json", "rmeta/" + _DRAFT_TMP_NAME)]
+        taken = _current_objects(entries)
+        known_embedded = frozenset(
+            "rmeta/embedded/" + rel
+            for e in entries if str(e.get("path") or "").lstrip("/")
+            for rel in _legacy_layouts(str(e.get("path") or ""), taken)
+        )
         artifacts: list[DeclaredArtifact] = []
         used_ids: set[str] = set()
         for rel_str in rel_paths:
             artifact_id = _safe_artifact_id(rel_str, used_ids)
-            kind = _infer_artifact_kind(rel_str)
+            kind = _infer_artifact_kind(rel_str, known_embedded)
             artifacts.append(DeclaredArtifact(id=artifact_id, path=rel_str, kind=kind))
+
+        if payload.metadata is not None:
+            declared_paths = set(rel_paths)
+            entry_paths: dict[str, str] = {}
+            for entry in entries:
+                ep = entry.get("path") or ""
+                if not ep.lstrip("/"):
+                    continue
+                for relative in _legacy_layouts(ep, taken):
+                    candidate = "rmeta/embedded/" + relative
+                    if candidate in declared_paths:
+                        entry_paths[ep] = candidate
+                        break
+            payload.metadata.fields["embedded_paths"] = json.dumps(entry_paths, ensure_ascii=False)
 
         # Map rmeta warnings
         warnings: list[Warning] = []
+        if rmeta_embed_warning is not None:
+            warnings.append(rmeta_embed_warning)
         for w in rmeta.get("warnings", []):
             code = str(w.get("code") or "redtusk_warning")[:64]
             detail = str(w.get("detail") or "")[:2000]
-            warnings.append(Warning(code=code, message=detail))
+            entry_path = w.get("entry_path")
+            warnings.append(Warning(
+                code=code, message=detail,
+                context=str(entry_path)[:255] if entry_path is not None else None,
+            ))
+        # Record key cap (_MAX_RECORD_KEYS): say which entries lost metadata keys, not just drop.
+        for e in entries:
+            meta_raw = e.get("metadata")
+            if isinstance(meta_raw, dict) and len(meta_raw) > _MAX_RECORD_KEYS:
+                warnings.append(Warning(
+                    code="metadata_keys_capped",
+                    message=(f"entry metadata has {len(meta_raw)} keys; only the first "
+                             f"{_MAX_RECORD_KEYS} are in the typed tree (all are in "
+                             f"redtusk_rmeta)")[:2000],
+                    context=str(e.get("path") or "/")[:255],
+                ))
         if rmeta.get("truncated"):
             tr = rmeta["truncated"]
+            # Structured on the root as well as in the message, so a consumer can key on the
+            # reason / limit without parsing text.
+            payload.metadata.fields["redtusk:truncated"] = Record(fields={
+                "reason": _coerce_metadata_value(tr.get("reason")),
+                "limit": _coerce_metadata_value(tr.get("limit")),
+                "observed": _coerce_metadata_value(tr.get("observed")),
+            })
             # Clip like the rmeta-warnings loop above: truncated.limit/observed are schema-valid
             # but UNBOUNDED integers, and Warning.message is Field(max_length=2000) (pydantic
             # RAISES, not truncates), so an unclipped f-string crashes the mapping.
@@ -1017,6 +1281,7 @@ class RedTuskEngine:
                 code="truncated",
                 message=(f"Extraction truncated: reason={tr.get('reason')}, "
                          f"limit={tr.get('limit')}, observed={tr.get('observed')}")[:2000],
+                context=str(tr.get("reason"))[:255],
             ))
 
         return DetonationResult(
@@ -1034,13 +1299,34 @@ _EMBEDDED_NAME_DISALLOWED = re.compile(r"[^a-zA-Z0-9._+\- ]")
 
 
 def _sanitize_embedded_component(part: str) -> str:
-    """Sanitize ONE path component exactly like the JVM EmbeddedFileExtractor.resolveOutFile."""
+    """Sanitize a component using the historical JVM storage layout."""
     cleaned = _EMBEDDED_NAME_DISALLOWED.sub("_", part).strip()
     return cleaned if cleaned not in ("", ".", "..") else "_"
 
 
+def _legacy_layouts(entry_path: str, taken: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """Storage paths to try for an entry: the current object layout, then the sanitized-name
+    layout of earlier workers -- unless that legacy path is some entry's CURRENT object
+    (*taken*), which an entry named objects/<sha>/content would otherwise alias."""
+    legacy = _embedded_disk_relpath(entry_path)
+    current = _embedded_storage_relpath(entry_path)
+    return (current,) if legacy in taken else (current, legacy)
+
+
+def _current_objects(entries: list[dict[str, Any]]) -> frozenset[str]:
+    """Every entry's current-layout storage path (see _legacy_layouts)."""
+    return frozenset(_embedded_storage_relpath(str(e.get("path") or ""))
+                     for e in entries if str(e.get("path") or "").lstrip("/"))
+
+
+def _embedded_storage_relpath(entry_path: str) -> str:
+    """Current JVM layout: stable bounded paths independent of resource names."""
+    digest = hashlib.sha256(entry_path.lstrip("/").encode("utf-8")).hexdigest()
+    return f"objects/{digest}/content"
+
+
 def _embedded_disk_relpath(entry_path: str) -> str:
-    """Map an rmeta entry path (e.g. ``/sub/évil*.png``) to the embedded file's ON-DISK relative
+    """Read the historical sanitized-name layout. Map an rmeta entry path to its relative
     path under ``rmeta/embedded/`` — a FULL replication of the JVM EmbeddedFileExtractor's
     ``resolveOutFile`` + ``disambiguate``: each component is sanitized; if ANY component was altered
     (``lossy``) the FINAL component is suffixed with a 16-hex (64-bit) prefix of SHA-256(original
@@ -1053,6 +1339,9 @@ def _embedded_disk_relpath(entry_path: str) -> str:
     lossy = False
     for i, original in enumerate(parts):
         part = _sanitize_embedded_component(original)
+        if i == 0 and part == "thumbnails":
+            # EmbeddedFileExtractor.resolveOutFile reserves embedded/thumbnails/ for thumbnails.
+            part = "thumbnails_"
         if part != original:
             lossy = True
         if lossy and i == len(parts) - 1:
@@ -1075,11 +1364,24 @@ def _reconstruct_rmeta_artifact_paths(
     if (rmeta_dir / "metadata.json").is_file():
         paths.add("rmeta/metadata.json")
     emb_root = rmeta_dir / "embedded"
+    taken = _current_objects(entries)
+    cands: list[Path] = []
     for e in entries:
         ep = e.get("path") or ""
         if not ep.lstrip("/"):
+            # The root entry's thumbnail (Main.tryGenerateRootThumbnail) is rmeta/thumbnail.jpg.
+            if e.get("has_thumbnail"):
+                cands.append(rmeta_dir / "thumbnail.jpg")
             continue
-        cand = emb_root / _embedded_disk_relpath(ep)
+        # Current workers separate resource provenance from filesystem layout
+        # (objects/<sha256(path)>/content); earlier workers used sanitized names. Both are
+        # read, so a result from either worker is declared.
+        for rel in _legacy_layouts(ep, taken):
+            cands.append(emb_root / rel)
+            if e.get("has_thumbnail"):
+                # EmbeddedFileExtractor.writeThumbnail: embedded/thumbnails/<embedded rel>.jpg
+                cands.append(emb_root / "thumbnails" / (rel + ".jpg"))
+    for cand in cands:
         try:
             if cand.is_file():
                 paths.add(cand.relative_to(outdir).as_posix())
@@ -1113,13 +1415,27 @@ def _safe_artifact_id(rel_str: str, used: set[str]) -> str:
     return candidate
 
 
-def _infer_artifact_kind(rel_path: str) -> str:
-    """Infer a ``DeclaredArtifact.kind`` from the relative output path."""
-    lower = rel_path.lower()
-    if "thumbnail" in lower or lower.endswith(".jpg") or lower.endswith(".jpeg"):
-        return "thumbnail"
-    if lower.startswith("embedded/") or lower.startswith("embedded\\"):
+_DRAFT_TMP_NAME = ".metadata.json.draft.tmp"  # DraftSnapshotWriter.DRAFT_TMP_NAME
+
+
+def _infer_artifact_kind(rel_path: str, known_embedded: frozenset[str] = frozenset()) -> str:
+    """``DeclaredArtifact.kind`` from the file's ROLE in the rmeta layout, never its name.
+
+    ``rmeta/thumbnail.jpg`` is the root thumbnail; ``rmeta/embedded/thumbnails/*.jpg`` are entry
+    thumbnails; everything else under ``rmeta/embedded/`` is an embedded file -- including one
+    whose own name ends .jpg or .txt. The worker never writes an embedded file under
+    ``embedded/thumbnails/``: current workers store every entry at
+    ``embedded/objects/<sha256(path)>/content`` (EmbeddedFileExtractor.resolveOutFile, mirrored
+    by _embedded_storage_relpath), and the previous sanitized-name layout saved a top-level
+    ``thumbnails`` entry as ``thumbnails_/...`` (_embedded_disk_relpath). *known_embedded* (the
+    rmeta entries' paths in both layouts) is a second guard for the same thing.
+    """
+    if rel_path in known_embedded:
         return "embedded_file"
-    if lower.endswith(".txt"):
-        return "text"
+    if rel_path == "rmeta/thumbnail.jpg":
+        return "thumbnail"
+    if rel_path.startswith("rmeta/embedded/thumbnails/") and rel_path.endswith(".jpg"):
+        return "thumbnail"
+    if rel_path.startswith("rmeta/embedded/"):
+        return "embedded_file"
     return "output"

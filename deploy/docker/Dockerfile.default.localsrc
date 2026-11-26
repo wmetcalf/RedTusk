@@ -145,7 +145,10 @@ WORKDIR /build
 
 # Maven fat JAR
 COPY worker_jvm/ ./worker_jvm/
-RUN cd worker_jvm && mvn package -DskipTests -q
+# REDTUSK_PINNED_TIKA: this stage's ~/.m2 holds the fork built above from .tika-src (local-source
+# variant: its provenance is recorded above, it is not TIKA_FORK_SHA), never a host ~/.m2
+# (worker_jvm/pom.xml refuses to build without it; see the enforcer comment there).
+RUN cd worker_jvm && REDTUSK_PINNED_TIKA=1 mvn package -DskipTests -q
 
 # JNI native helpers (KSM + CapDropper)
 RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" && \
@@ -165,6 +168,15 @@ RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" 
 # --------------------------------------------------------------------------
 FROM eclipse-temurin:25-jre-jammy AS runtime
 
+# CVE-2026-114938 ("Java4Shell"): heap overflow in HotSpot's AVX-512 VBMI Base64
+# decode intrinsic (JDK 17.0.6+ .. 27). Attacker-controlled document content reaches
+# java.util.Base64 here, so the intrinsic is switched off for EVERY JVM this image
+# starts. Base64 keeps working via the pure-Java path; only the assembly stub goes.
+# JAVA_TOOL_OPTIONS is the catch-all for any `java` launched in this image; every
+# launch path ALSO passes the flag explicitly (ENTRYPOINT, AOT bake, engine.py argv)
+# because `docker export` drops ENV for the warm FC/gVisor rootfs.
+ENV JAVA_TOOL_OPTIONS="-XX:-UseBASE64Intrinsics"
+
 # Carry provenance into the SHIPPED image. It is written in the tika-build stage, and
 # runtime starts from a fresh base -- without this COPY the record exists only in an
 # intermediate layer, so the delivered image still cannot say which Tika it contains.
@@ -174,8 +186,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-eng \
         libheif-examples \
-        libwps-tools \
+        libwps-tools libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
+
+# Keep Java visible under Blastbox warm workers restricted PATH.
+RUN if [ ! -x /usr/local/bin/java ]; then ln -s "$(command -v java)" /usr/local/bin/java; fi
+
+# Pinned modern RAR decoder; no archive-controlled filesystem extraction.
+ADD --checksum=sha256:22cf82fcc6eb7474f1d5bb4f02c0f8ebd573a718089d6833dc30f8350a3b232e https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz /tmp/7zip.tar.xz
+RUN bsdtar -xOf /tmp/7zip.tar.xz 7zzs > /usr/local/bin/7zz \
+    && chmod 755 /usr/local/bin/7zz && rm /tmp/7zip.tar.xz
 
 # ZXingReader may be under /build/zxing/ or /build/zxing/example/ depending on version.
 # Install as ZXingReader.real; the wrapper below adapts v3.x JSON (Type→Format) for the Tika fork.
@@ -241,6 +261,7 @@ RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \
@@ -250,6 +271,7 @@ RUN java \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar && \
@@ -270,6 +292,7 @@ ENV REDTUSK_LOG_LEVEL=INFO
 ENTRYPOINT ["java", \
     "-XX:AOTCache=/app/redtusk.aot", \
     "-XX:+UseSerialGC", \
+    "-XX:-UseBASE64Intrinsics", \
     "-XX:TieredStopAtLevel=1", \
     "-Xms800m", \
     "-Xmx800m", \

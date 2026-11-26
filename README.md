@@ -775,8 +775,13 @@ docker build -f deploy/docker/Dockerfile.api -t redtusk-api:dev .
 # Pure unit + HTTP — no JVM, no Docker required
 pytest tests/unit tests/http
 
-# Java worker unit tests
-cd worker_jvm && mvn test
+# Java worker unit tests / the worker jar -- built inside the PINNED Tika stage, never against
+# your ~/.m2 (a plain `mvn` in worker_jvm/ refuses to run; see the enforcer note in its pom.xml)
+scripts/worker_build.sh test
+scripts/worker_build.sh package          # -> worker_jvm/target/redtusk-worker.jar
+
+# Live-JVM Python tests (tests/integration) use that jar; without it they skip
+REDTUSK_WORKER_JAR=$PWD/worker_jvm/target/redtusk-worker.jar PYTHONPATH=src pytest
 
 # Docker image tests — needs built images + Docker daemon
 pytest tests/docker -m docker
@@ -784,6 +789,26 @@ pytest tests/docker -m docker
 # Full pipeline — needs live stack + sandbox
 pytest tests/integration -m integration
 ```
+
+---
+
+## Engine contract
+
+[`blastbox-engine.toml`](blastbox-engine.toml) states what the `redtusk` blastbox engine emits
+today: its statuses, every declared artifact family under `rmeta/`, the payload tree
+(`embedded_resource` root, `extracted_text` children), the findings a consumer is expected to
+turn into detections, Loadout's mapper, and the gaps where the output cannot be mapped cleanly.
+It describes current behaviour, not intended behaviour. Change it in the same commit as any
+engine change that alters the output.
+
+```sh
+python -m blastbox.contract.engine_contract validate blastbox-engine.toml
+python -m blastbox.contract.engine_contract check blastbox-engine.toml <envelope metadata.json>
+```
+
+The tests check every result they already produce against it (`tests/engine_contract.py`), and
+`tests/unit/test_engine_contract.py` validates the file. The checker ships in a blastbox newer
+than the pinned release, so on the pinned blastbox those checks are skipped.
 
 ---
 

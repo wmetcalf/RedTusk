@@ -27,11 +27,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Runtime tools the worker may shell out to (OCR/QR are off by default but the
 # binaries must exist). tesseract via apt; ZXingReader copied from the default image.
 RUN apt-get update -qq \
-    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng libheif-examples libwps-tools \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng libheif-examples libwps-tools libarchive-tools \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 10001 redtusk \
     && useradd  -r -u 10001 -g redtusk -s /usr/sbin/nologin redtusk
 
+COPY --from=artifacts /usr/local/bin/7zz /usr/local/bin/7zz
 COPY --from=artifacts /app/redtusk-worker.jar /app/redtusk-worker.jar
 COPY --from=artifacts /app/libksm_helper.so   /app/libksm_helper.so
 COPY --from=artifacts /app/libcap_dropper.so  /app/libcap_dropper.so
@@ -54,10 +55,19 @@ WORKDIR /app
 # the file-IPC scratch, then Core.checkpointRestore() dumps the warm JVM to
 # /app/checkpoint and exits. (warp may exit non-zero by design on some builds; the
 # `test` confirms the image was actually written, which is the real success gate.)
+# The marker tells the engine this checkpoint's JVM ran with the Base64 intrinsic OFF
+# (CVE-2026-114938; the worker refuses to checkpoint with it on). The engine will not
+# restore a checkpoint without it, so a pre-mitigation image falls back to a cold JVM.
+# redtusk-worker-format records the output layout of the jar that was checkpointed (asked of
+# that same jar); the engine restores only a checkpoint whose format matches its own, so an
+# image baked before the output contract (#64) also falls back to a cold JVM.
 RUN java -XX:CRaCEngine=warp -XX:CRaCCheckpointTo=/app/checkpoint \
+        -XX:-UseBASE64Intrinsics \
         --enable-native-access=ALL-UNNAMED -Djava.library.path=/app \
         -jar /app/redtusk-worker.jar --checkpoint ${REDTUSK_CRAC_SCRATCH} \
     ; test -s /app/checkpoint/core.img \
+    && touch /app/checkpoint/redtusk-base64-intrinsics-off \
+    && java -XX:-UseBASE64Intrinsics -jar /app/redtusk-worker.jar --worker-format > /app/checkpoint/redtusk-worker-format \
     && echo "warp checkpoint baked at ${REDTUSK_CRAC_SCRATCH}: $(du -sh /app/checkpoint | cut -f1)"
 
 # Runtime: warp restore. The JVM resumes at the point Core.checkpointRestore()

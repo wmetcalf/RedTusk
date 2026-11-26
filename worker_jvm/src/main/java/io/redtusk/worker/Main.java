@@ -25,6 +25,7 @@ import org.apache.tika.parser.ParseContext;
  *   --appcds-warmup <corpus-dir>   parse corpus files to warm parser classes (for AppCDS)
  *   --checkpoint <scratch-dir>     no-op stub (CRaC added in Plan 6)
  *   --run <scratch-dir>            production: fifo-wait → parse → write metadata.json → exit
+ *   --worker-format                print WorkerFormat.VERSION (the output layout) and exit
  *
  * Exit codes: 0=success, 1=parse error, 2=fatal
  */
@@ -35,10 +36,18 @@ public final class Main {
 
     public static void main(String[] args) {
         configureLogging();
+        if (args.length == 1 && "--worker-format".equals(args[0])) {
+            // Parses nothing: the CRaC image build records this next to the checkpoint.
+            System.out.println(WorkerFormat.VERSION);
+            return;
+        }
         if (args.length < 2) {
-            System.err.println("Usage: redtusk-worker [--appcds-warmup|--checkpoint|--run] <path>");
+            System.err.println("Usage: redtusk-worker [--appcds-warmup|--checkpoint|--run] <path> | --worker-format");
             System.exit(2);
         }
+        // Before any mode runs: no input is parsed, and no CRaC checkpoint is baked, by a JVM
+        // that has the CVE-2026-114938 Base64 intrinsic on.
+        Base64IntrinsicGuard.requireOff();
         String mode = args[0];
         File path = new File(args[1]);
 
@@ -295,11 +304,20 @@ public final class Main {
         long durationMs = System.currentTimeMillis() - start;
 
         // Second pass: save embedded file bytes to outDir/embedded/ and compute digests.
-        var fileHashes = new EmbeddedFileExtractor(
+        var pass2 = new EmbeddedFileExtractor(
             job.limits().maxRecursionDepth(),
             job.limits().maxEmbeddedEntries(),
             job.enableThumbnails()
-        ).extract(inputFile, outDir.toPath());
+        ).useJobLimits(job.limits());
+        var fileHashes = pass2.extract(inputFile, outDir.toPath());
+        // Pass 2's size-cap events (file cut at the per-file cap, entries skipped past the byte
+        // budget) join the result's warnings instead of living only in the worker log.
+        var pass2Warnings = pass2.warnings();
+        if (!pass2Warnings.isEmpty()) {
+            var merged = new java.util.ArrayList<>(result.warnings());
+            merged.addAll(pass2Warnings);
+            result = new ParseResult(result.entries(), merged, result.truncated());
+        }
 
         // Merge per-file digests (sha256/md5/sha1/size) back into the entry results.
         // Always run this loop so we can also mark image entries that Pass 2 missed

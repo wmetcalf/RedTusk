@@ -57,7 +57,16 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # RedTusk worker; metadata-field-inventory CI green on the branch.
 # Bumped 2026-08-19 to the current deploy-branch head. The old pin (f2b166c6f) was 210 commits
 # behind and, because of the bug fixed below, was never what actually shipped anyway.
-ARG TIKA_FORK_SHA=1ed7b37d11c4363fdf92f62a38947918803522ed
+# Bumped 2026-11-18 to 99deda72bb: 1ed7b37 + "fix(archives): retain caller context for embedded
+# extractors" (wmetcalf/tika fix/archive-caller-context-on-pin). Replaces the git-apply'd
+# tika-archive-extractor-context.patch, which the pin gate rightly rejects. Until that branch is
+# merged into 4.0-upstream-office-links, the commit is reachable only through it (the clone below
+# fetches all heads, so the checkout works either way).
+# Bumped 2026-11-19 to af39b2d88a (merge of wmetcalf/tika#50 into 4.0-upstream-office-links):
+# the archive caller-context fixes (0a04b498ee, #49) plus the iWork member-evasion fixes (#50:
+# no iWork route drops a zip member silently; local-header accounting against shadow/truncated
+# central directories).
+ARG TIKA_FORK_SHA=af39b2d88a4c108858b1f1d8317c681f96143b23
 RUN git clone \
         --branch 4.0-upstream-office-links \
         https://github.com/wmetcalf/tika.git \
@@ -87,6 +96,15 @@ RUN cd /src/tika && \
         -pl '!tika-grpc' \
         -q
 # JARs installed to /root/.m2/repository/org/apache/tika/
+
+# The same pinned 7-Zip the runtime stage ships, so the worker_jvm tests run here
+# (scripts/worker_build.sh, the CI worker-jvm job) can exercise Rar5Parser. After the Tika
+# compile on purpose: a layer above it would invalidate that cache on every 7-Zip bump.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends libarchive-tools \
+    && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:22cf82fcc6eb7474f1d5bb4f02c0f8ebd573a718089d6833dc30f8350a3b232e https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz /tmp/7zip.tar.xz
+RUN bsdtar -xOf /tmp/7zip.tar.xz 7zzs > /usr/local/bin/7zz \
+    && chmod 755 /usr/local/bin/7zz && rm /tmp/7zip.tar.xz
 
 # --------------------------------------------------------------------------
 # Stage 1: build — compile fat JAR and JNI native libraries
@@ -131,7 +149,9 @@ WORKDIR /build
 
 # Maven fat JAR
 COPY worker_jvm/ ./worker_jvm/
-RUN cd worker_jvm && mvn package -DskipTests -q
+# REDTUSK_PINNED_TIKA: this stage's ~/.m2 holds the fork built above at TIKA_FORK_SHA
+# (worker_jvm/pom.xml refuses to build without it; see the enforcer comment there).
+RUN cd worker_jvm && REDTUSK_PINNED_TIKA=1 mvn package -DskipTests -q
 
 # JNI native helpers (KSM + CapDropper)
 RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" && \
@@ -151,12 +171,29 @@ RUN JDK_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}" 
 # --------------------------------------------------------------------------
 FROM eclipse-temurin:25-jre-jammy AS runtime
 
+# CVE-2026-114938 ("Java4Shell"): heap overflow in HotSpot's AVX-512 VBMI Base64
+# decode intrinsic (JDK 17.0.6+ .. 27). Attacker-controlled document content reaches
+# java.util.Base64 here, so the intrinsic is switched off for EVERY JVM this image
+# starts. Base64 keeps working via the pure-Java path; only the assembly stub goes.
+# JAVA_TOOL_OPTIONS is the catch-all for any `java` launched in this image; every
+# launch path ALSO passes the flag explicitly (ENTRYPOINT, AOT bake, engine.py argv)
+# because `docker export` drops ENV for the warm FC/gVisor rootfs.
+ENV JAVA_TOOL_OPTIONS="-XX:-UseBASE64Intrinsics"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-eng \
         libheif-examples \
-        libwps-tools \
+        libwps-tools libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
+
+# Keep Java visible under Blastbox warm workers restricted PATH.
+RUN if [ ! -x /usr/local/bin/java ]; then ln -s "$(command -v java)" /usr/local/bin/java; fi
+
+# Pinned modern RAR decoder; no archive-controlled filesystem extraction.
+ADD --checksum=sha256:22cf82fcc6eb7474f1d5bb4f02c0f8ebd573a718089d6833dc30f8350a3b232e https://github.com/ip7z/7zip/releases/download/26.05/7z2605-linux-x64.tar.xz /tmp/7zip.tar.xz
+RUN bsdtar -xOf /tmp/7zip.tar.xz 7zzs > /usr/local/bin/7zz \
+    && chmod 755 /usr/local/bin/7zz && rm /tmp/7zip.tar.xz
 
 # ZXingReader may be under /build/zxing/ or /build/zxing/example/ depending on version.
 # Install as ZXingReader.real; the wrapper below adapts v3.x JSON (Type→Format) for the Tika fork.
@@ -222,6 +259,7 @@ RUN java \
     --enable-native-access=ALL-UNNAMED \
     -XX:AOTMode=record -XX:AOTConfiguration=/app/redtusk.aotconf \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar \
@@ -231,6 +269,7 @@ RUN java \
     -XX:AOTMode=create -XX:AOTConfiguration=/app/redtusk.aotconf -XX:AOTCache=/app/redtusk.aot \
     -XX:+AOTClassLinking \
     -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    -XX:-UseBASE64Intrinsics \
     -Xms800m -Xmx800m -XX:+AlwaysPreTouch \
     -Djava.library.path=/app \
     -jar /app/redtusk-worker.jar && \
@@ -251,6 +290,7 @@ ENV REDTUSK_LOG_LEVEL=INFO
 ENTRYPOINT ["java", \
     "-XX:AOTCache=/app/redtusk.aot", \
     "-XX:+UseSerialGC", \
+    "-XX:-UseBASE64Intrinsics", \
     "-XX:TieredStopAtLevel=1", \
     "-Xms800m", \
     "-Xmx800m", \

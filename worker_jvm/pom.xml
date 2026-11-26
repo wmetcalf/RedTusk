@@ -16,6 +16,8 @@
     <tika.version>4.0.0-SNAPSHOT</tika.version>
     <jackson.version>2.18.3</jackson.version>
     <junit.version>5.11.4</junit.version>
+    <!-- Escape hatch for the pinned-Tika guard below; see the enforcer comment. -->
+    <redtusk.allowHostTika>false</redtusk.allowHostTika>
   </properties>
 
   <dependencies>
@@ -101,6 +103,37 @@
 
   <build>
     <plugins>
+      <!-- Pinned-Tika guard. tika.version is a SNAPSHOT of the fork, so a plain `mvn` on a
+           developer box resolves whatever ~/.m2 happens to hold. That has bitten twice: green
+           tests against Tika 3.0.0 while the image shipped 4.0.0-SNAPSHOT (2026-08-19), and a
+           jar linked against a half-updated 4.0.0-SNAPSHOT that died at runtime with
+           NoSuchFieldError: Metadata.CONTENT_TYPE (2026-11-18). Every build that has the pinned
+           fork in its ~/.m2 (scripts/worker_build.sh, the Dockerfiles' build stages) sets
+           REDTUSK_PINNED_TIKA=1; anything else fails here, loudly, before compiling.
+           Deliberate host build: mvn -Dredtusk.allowHostTika=true ... (you own the result). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>3.6.2</version>
+        <executions>
+          <execution>
+            <id>require-pinned-tika</id>
+            <phase>validate</phase>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <skip>${redtusk.allowHostTika}</skip>
+              <rules>
+                <requireEnvironmentVariable>
+                  <variableName>REDTUSK_PINNED_TIKA</variableName>
+                  <!-- Defined is not enough: REDTUSK_PINNED_TIKA=0 or an empty export must fail. -->
+                  <regex>1</regex>
+                  <message>worker_jvm must be built against the PINNED Tika fork, not whatever ~/.m2 holds. Use scripts/worker_build.sh package|test (builds inside the pinned tika-build stage). Override with -Dredtusk.allowHostTika=true only if you know your ~/.m2 matches TIKA_FORK_SHA.</message>
+                </requireEnvironmentVariable>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <!-- Compiler configuration -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -119,7 +152,9 @@
           <environmentVariables>
             <REDTUSK_TEST_SCRATCH>${project.build.directory}/test-scratch</REDTUSK_TEST_SCRATCH>
           </environmentVariables>
-          <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+          <!-- The worker's own guard (Base64IntrinsicGuard, CVE-2026-114938) exits when the
+               Base64 intrinsic is on, so tests that call Main run with the production flag. -->
+          <argLine>--enable-native-access=ALL-UNNAMED -XX:-UseBASE64Intrinsics</argLine>
         </configuration>
       </plugin>
       <!-- Fat JAR for running standalone.
