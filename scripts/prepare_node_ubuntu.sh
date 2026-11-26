@@ -136,10 +136,12 @@ _dispatcher_ids() {
 # is the deploy user's (`AWS_CREDS_DIR=${HOME}/.aws` is a valid .env value and
 # this runs under sudo). Placeholders stand in for the overlay's OTHER required
 # variables so an unfinished .env still resolves; they cannot affect these values.
-# Prints two lines -- the /aws mount source and BLASTBOX_AWS_PROFILE -- or nothing
-# when compose cannot be asked (no docker yet on a fresh node). Keys passed through
-# .env do not replace the files: blastbox always runs `aws --profile <that>`, and
-# an explicit profile reads the mounted files.
+# Prints three lines -- the /aws mount source, BLASTBOX_AWS_PROFILE, and `1` when
+# .env passes the container a non-empty AWS_ACCESS_KEY_ID (never the key itself) --
+# or nothing when compose cannot be asked (no docker yet on a fresh node). Those keys
+# do not replace the files: blastbox always runs `aws --profile <that>`, and an
+# explicit profile reads the mounted files -- unless the profile itself says
+# `credential_source = Environment`.
 _aws_burst_compose() {
     have docker && have python3 || return 0
     ( cd "$REPO_ROOT/deploy/docker" &&
@@ -152,7 +154,8 @@ if isinstance(env, list):
     env = dict(e.split("=", 1) if "=" in e else (e, "") for e in env)
 src = [m.get("source", "") for m in svc.get("volumes", []) if m.get("target") == "/aws"]
 if src and src[0]:
-    print(src[0]); print(env.get("BLASTBOX_AWS_PROFILE") or "default")' ) 2>/dev/null || true
+    print(src[0]); print(env.get("BLASTBOX_AWS_PROFILE") or "default")
+    print(1 if env.get("AWS_ACCESS_KEY_ID") else 0)' ) 2>/dev/null || true
 }
 
 _aws_creds_dir() {
@@ -233,7 +236,17 @@ _aws_creds_status() {
         return
     fi
     [ -f "$creds" ] || { echo "absent — place $creds$guess"; return; }
-    _aws_sts_ok || { echo "invalid — $creds present but 'aws sts get-caller-identity' failed$guess"; return; }
+    if ! _aws_sts_ok; then
+        # sts runs WITHOUT any keys (they are secrets this script does not
+        # handle), so a profile that sources them from the environment fails
+        # here while working in the container.
+        if [ "$(_aws_burst_compose | sed -n 3p)" = 1 ]; then
+            echo "NOT CONFIRMED — 'aws sts get-caller-identity' failed against $creds, but .env also passes the container AWS_ACCESS_KEY_ID, which a credential_source=Environment profile uses and --check does not$guess"
+        else
+            echo "invalid — $creds present but 'aws sts get-caller-identity' failed$guess"
+        fi
+        return
+    fi
     # The overlay sets AWS_CONFIG_FILE=/aws/config too, and a role profile does not
     # resolve without it: absent is fine, present-but-unreadable is not.
     for f in "$creds" "$dir/config"; do

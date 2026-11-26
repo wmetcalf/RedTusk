@@ -214,6 +214,8 @@ def test_a_probe_that_cannot_run_is_unknown(tmp_path: Path, hide_setpriv: bool) 
                 + call)
         stub = {"setpriv": SETPRIV_RECORDER, "sudo": '[ "$1" = -n ] && shift; exec "$@"\n'}
     else:
+        if os.geteuid() == 0:
+            pytest.skip("root never goes through sudo")
         stub = {"setpriv": SETPRIV_RECORDER, "sudo": "exit 1\n"}   # sudo -n refused
     out = _run(tmp_path, call, stub=stub, env={"REC": str(tmp_path / "rec")})
     assert out == "RC2", out
@@ -397,3 +399,17 @@ def test_the_uid_override_note_survives_sudo() -> None:
     """sudo strips an exported REDTUSK_WORKER_UID, so the note must show passing it
     THROUGH sudo, or a custom image is probed as 10001."""
     assert "sudo REDTUSK_WORKER_UID=" in SCRIPT.read_text()
+
+
+def test_failed_sts_with_compose_keys_is_not_called_invalid(tmp_path: Path) -> None:
+    """A credential_source=Environment profile needs the keys .env passes the
+    container, which --check deliberately does not handle -- so a failing sts
+    there is not proof the files are wrong."""
+    d = _creds(tmp_path)
+    out = _run(tmp_path, "_aws_creds_status", stub=_compose(d, key="AKIAEXAMPLE"),
+               repo_root=tmp_path, probe="return 0", sts_rc=1)
+    assert out.startswith("NOT CONFIRMED") and "AWS_ACCESS_KEY_ID" in out, out
+    assert "AKIAEXAMPLE" not in out
+    out = _run(tmp_path, "_aws_creds_status", stub=_compose(d), repo_root=tmp_path,
+               probe="return 0", sts_rc=1)
+    assert out.startswith("invalid"), out
