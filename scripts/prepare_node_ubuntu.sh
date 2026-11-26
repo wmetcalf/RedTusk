@@ -38,8 +38,9 @@
 # --aws-burst installs the AWS CLI v2 so THIS node can run the control-plane burst
 # dispatcher (BLASTBOX_POOL_RUNTIME=aws-*, the demand-driven AWS scale-out tier). It
 # installs tooling ONLY — AWS credentials are NEVER written by this script; place them
-# at ~/.aws/credentials on the burst node yourself, and the burst overlay mounts them
-# read-only. The AWS tiers fail closed unless `aws sts get-caller-identity` passes.
+# in a directory named by AWS_CREDS_DIR in deploy/docker/.env, which the burst overlay
+# mounts read-only. The dispatcher runs as uid 10001 and must be able to READ them,
+# which a 0700 ~/.aws is not. The AWS tiers fail closed unless `aws sts` passes.
 set -euo pipefail
 
 # ── config / args ──────────────────────────────────────────────────────────
@@ -121,24 +122,169 @@ _aws_creds_home() {
     echo "${AWS_CREDS_HOME:-$home}"
 }
 
+# The uid and gid the burst dispatcher runs as: Dockerfile.host's `USER 10001:10001`,
+# or REDTUSK_WORKER_UID/GID for a ${REDTUSK_IMAGE} that runs as someone else.
+# Prints `uid gid`.
+_dispatcher_ids() {
+    local uid="${REDTUSK_WORKER_UID:-10001}"
+    echo "$uid ${REDTUSK_WORKER_GID:-$uid}"
+}
+
+# What the burst dispatcher will be given, ASKED OF COMPOSE: it owns the
+# environment-over-.env precedence, ${VAR} interpolation and relative paths, so
+# re-deriving them here would be a second resolver to drift from the first. HOME
+# is the deploy user's (`AWS_CREDS_DIR=${HOME}/.aws` is a valid .env value and
+# this runs under sudo). Placeholders stand in for the overlay's OTHER required
+# variables so an unfinished .env still resolves; they cannot affect these values.
+# Prints three lines -- the /aws mount source, BLASTBOX_AWS_PROFILE, and `1` when
+# .env passes the container a non-empty AWS_ACCESS_KEY_ID (never the key itself) --
+# or nothing when compose cannot be asked (no docker yet on a fresh node). Those keys
+# do not replace the files: blastbox always runs `aws --profile <that>`, and an
+# explicit profile reads the mounted files -- unless that profile says
+# `credential_source = Environment`.
+_aws_burst_compose() {
+    have docker && have python3 || return 0
+    ( cd "$REPO_ROOT/deploy/docker" &&
+      env HOME="$(_aws_creds_home)" POSTGRES_PASSWORD=placeholder BLASTBOX_AWS_REGION=placeholder \
+          docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml config --format json |
+      python3 -c 'import json, sys
+svc = json.load(sys.stdin)["services"]["dispatcher-aws-burst"]
+env = svc.get("environment") or {}
+if isinstance(env, list):
+    env = dict(e.split("=", 1) if "=" in e else (e, "") for e in env)
+src = [m.get("source", "") for m in svc.get("volumes", []) if m.get("target") == "/aws"]
+if src and src[0]:
+    print(src[0]); print(env.get("BLASTBOX_AWS_PROFILE") or "default")
+    print(1 if env.get("AWS_ACCESS_KEY_ID") else 0)' ) 2>/dev/null || true
+}
+
+_aws_creds_dir() {
+    _aws_burst_compose | sed -n 1p
+}
+
+# The directory every consumer below uses: what compose mounts, else the deploy
+# user's ~/.aws. Returns 1 for the fallback, so a verdict can say it is a guess.
+_aws_creds_effective_dir() {
+    local dir; dir="$(_aws_creds_dir)"
+    if [ -n "$dir" ]; then printf '%s' "$dir"; return 0; fi
+    printf '%s' "$(_aws_creds_home)/.aws"; return 1
+}
+
 _aws_sts_ok() {
-    # `aws sts get-caller-identity` against the DEPLOY user's credentials.
-    local home; home="$(_aws_creds_home)"
-    AWS_SHARED_CREDENTIALS_FILE="$home/.aws/credentials" \
-    AWS_CONFIG_FILE="$home/.aws/config" \
-    aws sts get-caller-identity >/dev/null 2>&1
+    # Against the credentials the overlay will MOUNT and the profile it selects,
+    # as the caller -- WITHOUT the caller's own AWS_* environment, which the CLI
+    # prefers over the files and the container never sees.
+    local dir profile
+    dir="$(_aws_creds_effective_dir)" || true
+    profile="$(_aws_burst_compose | sed -n 2p)"
+    (
+        # EVERY AWS_* variable, not a list of the ones known today: endpoint, SSO
+        # and container-credential variables all change what sts answers.
+        while read -r v; do unset "$v"; done < <(compgen -e | grep '^AWS_' || true)
+        AWS_PROFILE="${profile:-default}" \
+        AWS_SHARED_CREDENTIALS_FILE="$dir/credentials" \
+        AWS_CONFIG_FILE="$dir/config" \
+        aws sts get-caller-identity >/dev/null 2>&1
+    )
+}
+
+# Can the DISPATCHER read this file? `aws sts` above runs as the deploy user or
+# root; the container runs as $(_dispatcher_ids) with `cap_drop: ALL` and
+# no-new-privileges, and a normal ~/.aws is 0700/0600 owned by the deploy user.
+# So the OS is asked, as that uid and gid, with no supplementary groups and no
+# capabilities (root keeping CAP_DAC_OVERRIDE would read anything). setpriv takes
+# raw ids, which matters: 10001 has no passwd entry on the host, so `sudo -u
+# '#10001'` fails before testing anything. The test runs from INSIDE the
+# directory on a relative name, because docker binds the directory itself and
+# the container never traverses its parents.
+#
+# Returns 0 readable, 1 NOT readable, 2 could not test -- a probe that cannot run
+# is not evidence either way.
+_aws_readable_by_dispatcher() {
+    local file="$1" uid gid pre="" out=""
+    read -r uid gid <<< "$(_dispatcher_ids)"
+    case "$uid$gid" in ""|*[!0-9]*) return 2 ;; esac
+    have setpriv || return 2
+    if [ "$(id -u)" != 0 ]; then have sudo || return 2; pre="sudo -n"; fi
+    out="$(cd "$(dirname "$file")" 2>/dev/null &&
+           $pre setpriv --reuid="$uid" --regid="$gid" --clear-groups \
+               --bounding-set=-all --inh-caps=-all --ambient-caps=-all --nnp \
+               sh -c 'test -r "$1" && echo YES || echo NO' _ "$(basename "$file")" 2>/dev/null)" || true
+    case "$out" in
+        YES) return 0 ;;
+        NO)  return 1 ;;
+        *)   return 2 ;;
+    esac
 }
 
 _aws_creds_status() {
-    local home creds
-    home="$(_aws_creds_home)"   # ONE source of truth; see _aws_creds_home
-    creds="$home/.aws/credentials"
+    local dir guess="" creds f rc uid gid why="" bad="" envsrc="" sts="sts ok"
     have aws || { echo "n/a (no aws cli)"; return; }
-    [ -f "$creds" ] || { echo "absent — place $creds"; return; }
-    if _aws_sts_ok; then
-        echo "valid (sts ok, $creds)"
+    if ! dir="$(_aws_creds_effective_dir)"; then
+        guess=" [compose could not resolve AWS_CREDS_DIR; this is the deploy user's ~/.aws]"
+    fi
+    creds="$dir/credentials"
+    if [ -e "$dir" ] && [ ! -d "$dir" ]; then
+        echo "invalid — $dir is not a directory; AWS_CREDS_DIR must name the directory holding credentials$guess"
+        return
+    fi
+    read -r uid gid <<< "$(_dispatcher_ids)"
+    # A dispatcher-owned copy (the first remediation below) is one the CALLER may
+    # not be able to see into; that is not the same as absent or invalid.
+    if [ -e "$dir" ] && { [ ! -x "$dir" ] ||
+            { [ -e "$creds" ] && [ ! -r "$creds" ]; } ||
+            { [ -e "$dir/config" ] && [ ! -r "$dir/config" ]; }; }; then
+        echo "NOT CONFIRMED — $(id -un) cannot read $dir; re-run with sudo$guess"
+        return
+    fi
+    [ -f "$creds" ] || { echo "absent — place $creds$guess"; return; }
+    if ! _aws_sts_ok; then
+        # sts runs WITHOUT any keys (they are secrets this script does not
+        # handle), so a profile that sources them from the environment fails
+        # here while working in the container.
+        # A profile with `credential_source = Environment` uses the keys .env
+        # passes the container, which --check deliberately does not handle, so
+        # with keys in .env a failure here is not proof. Which profile does that
+        # is the CLI's config grammar to decide, not this script's -- the same
+        # reason the mount is asked of compose. The probe below still runs.
+        if [ "$(_aws_burst_compose | sed -n 3p)" = 1 ]; then
+            envsrc=1
+            sts="sts failed without keys, but .env passes the container AWS_ACCESS_KEY_ID, which a credential_source=Environment profile would use"
+        else
+            echo "invalid — $creds present but 'aws sts get-caller-identity' failed$guess"
+            return
+        fi
+    fi
+    # The overlay sets AWS_CONFIG_FILE=/aws/config too, and a role profile does not
+    # resolve without it: absent is fine, present-but-unreadable is not.
+    for f in "$creds" "$dir/config"; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        if [ -L "$f" ]; then
+            # The directory is bind-mounted ALONE and link text is not rewritten,
+            # so a link can resolve on the host and dangle in the container.
+            why="${why:-$f is a symlink; copy the real file in}"; continue
+        fi
+        case "$uid$gid" in
+            ""|*[!0-9]*) why="REDTUSK_WORKER_UID/GID must be numeric (got '$uid:$gid')"; break ;;
+        esac
+        rc=0; _aws_readable_by_dispatcher "$f" || rc=$?
+        case "$rc" in
+            1) bad="$f"; break ;;
+            2) why="${why:-uid $uid could not be tested (needs setpriv, and root or sudo -n)}" ;;
+        esac
+    done
+    # Every verdict about a GUESSED directory leads with NOT CONFIRMED: the overlay
+    # requires AWS_CREDS_DIR, so the real mount may be somewhere else entirely.
+    if [ -n "$bad" ] && [ -z "$guess" ]; then
+        echo "UNUSABLE — uid $uid (the dispatcher) cannot read $bad; the burst tier will fail closed ($sts for $creds as $(id -un)). See the burst notes."
+    elif [ -n "$guess" ]; then
+        echo "NOT CONFIRMED — $sts for $creds, and $([ -n "$bad" ] && echo "uid $uid cannot read $bad" || echo "${why:-uid $uid can read it}"), but that is only a guess at the mount$guess"
+    elif [ -n "$envsrc" ]; then
+        echo "NOT CONFIRMED — $sts; ${why:-uid $uid can read $creds and the config}"
+    elif [ -n "$why" ]; then
+        echo "valid (sts ok, $creds; NOT CONFIRMED — $why)$guess"
     else
-        echo "invalid — $creds present but 'aws sts get-caller-identity' failed"
+        echo "valid (sts ok, $creds; readable by uid $uid)$guess"
     fi
 }
 
@@ -156,9 +302,8 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
     done
     printf '  fc assets   : %s\n' "$([ -f "$REDTUSK_FC_DIR/vmlinux" ] && [ -f "$REDTUSK_FC_DIR/redtusk-rootfs.ext4" ] && echo present || echo INCOMPLETE)"
     printf '  aws cli     : %s\n' "$(aws --version 2>/dev/null | head -1 || echo 'MISSING (--aws-burst)')"
-    # Explicitly the DEPLOY user's credentials, not the caller's. This script is documented
-    # to run under sudo, where HOME is /root: the probe then reads /root/.aws, finds nothing,
-    # and reports the operator's correctly-placed ~/.aws/credentials as absent.
+    # The directory compose mounts at /aws (the deploy user's ~/.aws only as a flagged
+    # guess), validated with sts and probed for readability as the dispatcher uid.
     printf '  aws creds   : %s\n' "$(_aws_creds_status)"
     exit 0
 fi
@@ -290,13 +435,14 @@ if [ "$AWS_BURST" -eq 1 ]; then
     fi
     # Provision-time entitlement check — friendlier than discovering it at first burst
     # (the runtime ALSO fails closed on this). Warn, don't die: creds may be placed later.
-    if [ ! -r "${AWS_CREDS_HOME:-/home/$DEPLOY_USER}/.aws/credentials" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
-        warn "no AWS credentials yet — place ~/.aws/credentials on this node, then re-run --check"
-    elif _aws_sts_ok; then
-        log "aws entitlement OK (sts get-caller-identity passed)"
-    else
-        warn "AWS credentials present but 'aws sts get-caller-identity' FAILED — the burst tier will fail closed"
-    fi
+    # The same verdict --check gives: sts passing as root says nothing about
+    # whether the dispatcher uid can read the mounted files.
+    _creds_status="$(_aws_creds_status)"
+    case "$_creds_status" in
+        *"NOT CONFIRMED"*) warn "aws creds: $_creds_status — address the reason given, then re-run --check" ;;
+        valid*) log "aws creds: $_creds_status" ;;
+        *)      warn "aws creds: $_creds_status — fix, then re-run --check" ;;
+    esac
 fi
 
 # ── 7. standard dirs (owned by the deploy user/group) ──────────────────────
@@ -422,6 +568,21 @@ AWS burst tier (this is the control-plane node):
   2. Add this line to deploy/docker/.env -- the overlay mounts the directory and
      REQUIRES the variable, so 'docker compose up' aborts without it:
        AWS_CREDS_DIR=$(_aws_creds_home)/.aws
+     (Put it in .env rather than exporting it: sudo strips an exported value, so
+     --check would resolve a different directory than your 'docker compose up'.)
+     The dispatcher runs as uid:gid $(_dispatcher_ids | tr ' ' :), and a normal ~/.aws is
+     0700/0600 -- mounting it is not enough, that uid must READ it. (A custom
+     REDTUSK_IMAGE running as another uid: pass it THROUGH sudo, which strips exports:
+       sudo REDTUSK_WORKER_UID=<uid> REDTUSK_WORKER_GID=<gid> scripts/prepare_node_ubuntu.sh --check) 'aws creds' above says UNUSABLE when it cannot.
+     Either give it a copy it owns (this script never writes credentials itself):
+       sudo install -d -m 0500 -o $(_dispatcher_ids | cut -d' ' -f1) /etc/redtusk/aws
+       sudo install -m 0400 -o $(_dispatcher_ids | cut -d' ' -f1) $(_aws_creds_home)/.aws/credentials /etc/redtusk/aws/
+       (and the same for config, if you have one), then AWS_CREDS_DIR=/etc/redtusk/aws
+     or grant it narrow ACLs on the existing files (the home directory itself need not
+     be widened -- the overlay mounts .aws directly):
+       sudo setfacl -m u:$(_dispatcher_ids | cut -d' ' -f1):x $(_aws_creds_home)/.aws
+       sudo setfacl -m u:$(_dispatcher_ids | cut -d' ' -f1):r $(_aws_creds_home)/.aws/credentials   (and config)
+     Use real files, not symlinks: the directory is mounted alone, link text unchanged.
   3. Deploy the burst dispatcher with the overlay:
        docker compose -f docker-compose.yml -f docker-compose.aws-burst.yml up -d dispatcher-aws-burst
   4. Set the AWS resource ids + tier in deploy/docker/.env (see the overlay header:

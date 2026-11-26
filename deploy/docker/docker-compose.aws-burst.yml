@@ -10,7 +10,10 @@
 #
 # PREREQS (once, on THIS control-plane node)
 #   1. scripts/prepare_node_ubuntu.sh --aws-burst   # installs the AWS CLI system-wide
-#   2. ~/.aws/credentials placed by the operator     # mounted read-only below; never scripted
+#   2. AWS credentials placed by the operator in AWS_CREDS_DIR (.env); never scripted.
+#      Mounted read-only below for a dispatcher running as uid 10001, which must be
+#      able to READ them -- a normal 0700/0600 ~/.aws is not. `prepare_node_ubuntu.sh
+#      --check` says UNUSABLE when it cannot, and `--aws-burst` prints the remediations.
 #   3. AWS-side resources for the chosen tier (AMI/SG/IAM for EC2; ECR image + exec-role
 #      for Lambda). See the per-tier env below.
 #
@@ -51,7 +54,7 @@ services:
       # No default: the documented `~/.aws/credentials` is /home/ubuntu/.aws on a normal
       # deploy user, and a default naming one developer's home silently mounts the wrong
       # directory -- the STS check then fails closed and reads as bad credentials rather
-      # than a wrong path. prepare_node_ubuntu.sh --status prints the path it expects.
+      # than a wrong path. prepare_node_ubuntu.sh --check prints the path it resolves.
       - ${AWS_CREDS_DIR:?set AWS_CREDS_DIR to the deploy user's .aws dir, e.g. /home/ubuntu/.aws}:/aws:ro
     tmpfs:
       # General scratch. `read_only: true` makes the image's own /tmp unwritable, and the
