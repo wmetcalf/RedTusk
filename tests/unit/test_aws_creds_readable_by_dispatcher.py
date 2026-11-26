@@ -421,3 +421,48 @@ def test_failed_sts_with_compose_keys_is_not_called_invalid(tmp_path: Path) -> N
     out = _run(tmp_path, "_aws_creds_status", stub=_compose(d), repo_root=tmp_path,
                probe="return 0", sts_rc=1)
     assert out.startswith("invalid"), out
+
+
+@pytest.mark.parametrize("conf,profile", [
+    # A repeated section, which the CLI merges and a strict parser rejects.
+    ("[profile b]\ncredential_source = Environment\n[profile b]\nregion = x\n", "b"),
+    ("[profile default]\ncredential_source = Environment\n", "default"),
+])
+def test_environment_sourcing_is_read_the_way_the_cli_reads_it(
+    tmp_path: Path, conf: str, profile: str,
+) -> None:
+    c = tmp_path / "config"
+    c.write_text(conf)
+    out = _run(tmp_path, f'_aws_profile_sources_env {c} {profile} && echo YES || echo NO')
+    assert out == "YES", out
+
+
+def test_a_quoted_profile_section_is_recognised(tmp_path: Path) -> None:
+    c = tmp_path / "config"
+    c.write_text('[profile "b"]\ncredential_source = Environment\n')
+    out = _run(tmp_path, f'_aws_profile_sources_env {c} b && echo YES || echo NO')
+    assert out == "YES", out
+
+
+def test_an_environment_sourced_profile_is_still_probed(tmp_path: Path) -> None:
+    """Excusing sts must not skip the readability probe: the dispatcher still
+    needs the config to find credential_source at all."""
+    d = _creds(tmp_path)
+    (d / "config").write_text("[profile b]\ncredential_source = Environment\n")
+    probe = 'case "$1" in */config) return 1 ;; esac; return 0'
+    out = _run(tmp_path, "_aws_creds_status", stub=_compose(d, profile="b", key="AKIAEXAMPLE"),
+               repo_root=tmp_path, probe=probe, sts_rc=1)
+    assert out.startswith("UNUSABLE") and str(d / "config") in out, out
+
+
+def test_a_config_the_caller_cannot_read_is_not_confirmed(tmp_path: Path) -> None:
+    d = _creds(tmp_path, config=True)
+    (d / "config").chmod(0)
+    try:
+        if os.access(d / "config", os.R_OK):
+            pytest.skip("running with DAC override")
+        out = _run(tmp_path, "_aws_creds_status", stub=_resolved(d), repo_root=tmp_path,
+                   probe="return 0", sts_rc=1)
+    finally:
+        (d / "config").chmod(0o600)
+    assert out.startswith("NOT CONFIRMED") and "sudo" in out, out

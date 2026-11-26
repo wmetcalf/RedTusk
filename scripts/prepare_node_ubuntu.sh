@@ -223,17 +223,18 @@ _aws_readable_by_dispatcher() {
 _aws_profile_sources_env() {
     local conf="$1" profile="$2"
     [ -r "$conf" ] && have python3 || return 1
+    # Lenient like the CLI: repeated sections merge, `[profile default]` counts.
     python3 -c 'import configparser, sys
-c = configparser.RawConfigParser()
+c = configparser.RawConfigParser(strict=False)
 c.read(sys.argv[1])
 p = sys.argv[2]
-sec = "default" if p == "default" else "profile " + p
-src = c.get(sec, "credential_source", fallback="") if c.has_section(sec) else ""
-sys.exit(0 if src.strip().lower() == "environment" else 1)' "$conf" "$profile" 2>/dev/null
+secs = ["profile " + p, "profile \"%s\"" % p] + (["default"] if p == "default" else [])
+src = [c.get(s, "credential_source", fallback="") for s in secs if c.has_section(s)]
+sys.exit(0 if any(v.strip().lower() == "environment" for v in src) else 1)' "$conf" "$profile" 2>/dev/null
 }
 
 _aws_creds_status() {
-    local dir guess="" creds f rc uid gid why="" bad=""
+    local dir guess="" creds f rc uid gid why="" bad="" envsrc="" sts="sts ok"
     have aws || { echo "n/a (no aws cli)"; return; }
     if ! dir="$(_aws_creds_effective_dir)"; then
         guess=" [compose could not resolve AWS_CREDS_DIR; this is the deploy user's ~/.aws]"
@@ -246,7 +247,9 @@ _aws_creds_status() {
     read -r uid gid <<< "$(_dispatcher_ids)"
     # A dispatcher-owned copy (the first remediation below) is one the CALLER may
     # not be able to see into; that is not the same as absent or invalid.
-    if [ -e "$dir" ] && { [ ! -x "$dir" ] || { [ -e "$creds" ] && [ ! -r "$creds" ]; }; }; then
+    if [ -e "$dir" ] && { [ ! -x "$dir" ] ||
+            { [ -e "$creds" ] && [ ! -r "$creds" ]; } ||
+            { [ -e "$dir/config" ] && [ ! -r "$dir/config" ]; }; }; then
         echo "NOT CONFIRMED — $(id -un) cannot read $dir; re-run with sudo$guess"
         return
     fi
@@ -255,13 +258,16 @@ _aws_creds_status() {
         # sts runs WITHOUT any keys (they are secrets this script does not
         # handle), so a profile that sources them from the environment fails
         # here while working in the container.
+        # The readability probe below still runs: the dispatcher needs the
+        # config to find credential_source at all.
         if [ "$(_aws_burst_compose | sed -n 3p)" = 1 ] &&
            _aws_profile_sources_env "$dir/config" "$(_aws_burst_compose | sed -n 2p)"; then
-            echo "NOT CONFIRMED — 'aws sts get-caller-identity' failed against $creds, but .env also passes the container AWS_ACCESS_KEY_ID, which a credential_source=Environment profile uses and --check does not$guess"
+            envsrc=1
+            sts="sts not testable: the profile uses credential_source=Environment with the AWS_ACCESS_KEY_ID .env passes the container, which --check does not handle"
         else
             echo "invalid — $creds present but 'aws sts get-caller-identity' failed$guess"
+            return
         fi
-        return
     fi
     # The overlay sets AWS_CONFIG_FILE=/aws/config too, and a role profile does not
     # resolve without it: absent is fine, present-but-unreadable is not.
@@ -284,9 +290,11 @@ _aws_creds_status() {
     # Every verdict about a GUESSED directory leads with NOT CONFIRMED: the overlay
     # requires AWS_CREDS_DIR, so the real mount may be somewhere else entirely.
     if [ -n "$bad" ] && [ -z "$guess" ]; then
-        echo "UNUSABLE — $creds passes sts as $(id -un) but uid $uid (the dispatcher) cannot read $bad; the burst tier will fail closed. See the burst notes."
+        echo "UNUSABLE — uid $uid (the dispatcher) cannot read $bad; the burst tier will fail closed ($sts for $creds as $(id -un)). See the burst notes."
     elif [ -n "$guess" ]; then
-        echo "NOT CONFIRMED — sts ok for $creds, and $([ -n "$bad" ] && echo "uid $uid cannot read $bad" || echo "${why:-uid $uid can read it}"), but that is only a guess at the mount$guess"
+        echo "NOT CONFIRMED — $sts for $creds, and $([ -n "$bad" ] && echo "uid $uid cannot read $bad" || echo "${why:-uid $uid can read it}"), but that is only a guess at the mount$guess"
+    elif [ -n "$envsrc" ]; then
+        echo "NOT CONFIRMED — $sts; ${why:-uid $uid can read $creds and the config}"
     elif [ -n "$why" ]; then
         echo "valid (sts ok, $creds; NOT CONFIRMED — $why)$guess"
     else
