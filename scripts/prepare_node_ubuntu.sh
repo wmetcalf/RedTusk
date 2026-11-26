@@ -174,12 +174,15 @@ _aws_sts_ok() {
     local dir profile
     dir="$(_aws_creds_effective_dir)" || true
     profile="$(_aws_burst_compose | sed -n 2p)"
-    env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
-        -u AWS_DEFAULT_PROFILE -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE \
+    (
+        # EVERY AWS_* variable, not a list of the ones known today: endpoint, SSO
+        # and container-credential variables all change what sts answers.
+        while read -r v; do unset "$v"; done < <(compgen -e | grep '^AWS_' || true)
         AWS_PROFILE="${profile:-default}" \
         AWS_SHARED_CREDENTIALS_FILE="$dir/credentials" \
         AWS_CONFIG_FILE="$dir/config" \
         aws sts get-caller-identity >/dev/null 2>&1
+    )
 }
 
 # Can the DISPATCHER read this file? `aws sts` above runs as the deploy user or
@@ -276,9 +279,8 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
     done
     printf '  fc assets   : %s\n' "$([ -f "$REDTUSK_FC_DIR/vmlinux" ] && [ -f "$REDTUSK_FC_DIR/redtusk-rootfs.ext4" ] && echo present || echo INCOMPLETE)"
     printf '  aws cli     : %s\n' "$(aws --version 2>/dev/null | head -1 || echo 'MISSING (--aws-burst)')"
-    # Explicitly the DEPLOY user's credentials, not the caller's. This script is documented
-    # to run under sudo, where HOME is /root: the probe then reads /root/.aws, finds nothing,
-    # and reports the operator's correctly-placed ~/.aws/credentials as absent.
+    # The directory compose mounts at /aws (the deploy user's ~/.aws only as a flagged
+    # guess), validated with sts and probed for readability as the dispatcher uid.
     printf '  aws creds   : %s\n' "$(_aws_creds_status)"
     exit 0
 fi
@@ -545,9 +547,10 @@ AWS burst tier (this is the control-plane node):
        AWS_CREDS_DIR=$(_aws_creds_home)/.aws
      (Put it in .env rather than exporting it: sudo strips an exported value, so
      --check would resolve a different directory than your 'docker compose up'.)
-     The dispatcher runs as uid:gid $(_dispatcher_ids | tr ' ' :) (override with REDTUSK_WORKER_UID/GID
-     for a custom REDTUSK_IMAGE), and a normal ~/.aws is 0700/0600 -- mounting it is
-     not enough, that uid must READ it. 'aws creds' above says UNUSABLE when it cannot.
+     The dispatcher runs as uid:gid $(_dispatcher_ids | tr ' ' :), and a normal ~/.aws is
+     0700/0600 -- mounting it is not enough, that uid must READ it. (A custom
+     REDTUSK_IMAGE running as another uid: pass it THROUGH sudo, which strips exports:
+       sudo REDTUSK_WORKER_UID=<uid> REDTUSK_WORKER_GID=<gid> scripts/prepare_node_ubuntu.sh --check) 'aws creds' above says UNUSABLE when it cannot.
      Either give it a copy it owns (this script never writes credentials itself):
        sudo install -d -m 0500 -o $(_dispatcher_ids | cut -d' ' -f1) /etc/redtusk/aws
        sudo install -m 0400 -o $(_dispatcher_ids | cut -d' ' -f1) $(_aws_creds_home)/.aws/credentials /etc/redtusk/aws/

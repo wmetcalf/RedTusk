@@ -319,11 +319,13 @@ def test_sts_ignores_the_callers_own_aws_environment(tmp_path: Path) -> None:
     rec = tmp_path / "aws-env"
     out = _run(tmp_path, "_aws_sts_ok && echo OK",
                stub={**_compose(d, profile="burst"),
-                     "aws": f'env | grep -E "^AWS_(ACCESS|SECRET|SESSION|PROFILE)" > "{rec}"; '
-                            'exit 0\n'},
+                     "aws": 'env | grep -E "^AWS_" '
+                            '| grep -vE "^AWS_(SHARED_CREDENTIALS|CONFIG)_FILE=" '
+                            f'> "{rec}"; exit 0\n'},
                repo_root=tmp_path,
                env={"AWS_ACCESS_KEY_ID": "x", "AWS_SECRET_ACCESS_KEY": "y",
-                    "AWS_SESSION_TOKEN": "z", "AWS_PROFILE": "mine"})
+                    "AWS_SESSION_TOKEN": "z", "AWS_PROFILE": "mine",
+                    "AWS_ENDPOINT_URL": "http://127.0.0.1:9", "AWS_SSO_SESSION": "s"})
     assert out == "OK"
     assert rec.read_text().strip() == "AWS_PROFILE=burst", rec.read_text()
 
@@ -389,3 +391,9 @@ def test_the_provisioning_gate_warns_on_an_unconfirmed_verdict() -> None:
     ])
     out = subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
     assert out.startswith("WARN"), out
+
+
+def test_the_uid_override_note_survives_sudo() -> None:
+    """sudo strips an exported REDTUSK_WORKER_UID, so the note must show passing it
+    THROUGH sudo, or a custom image is probed as 10001."""
+    assert "sudo REDTUSK_WORKER_UID=" in SCRIPT.read_text()
