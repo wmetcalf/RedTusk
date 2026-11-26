@@ -140,7 +140,7 @@ _dispatcher_ids() {
 # .env passes the container a non-empty AWS_ACCESS_KEY_ID (never the key itself) --
 # or nothing when compose cannot be asked (no docker yet on a fresh node). Those keys
 # do not replace the files: blastbox always runs `aws --profile <that>`, and an
-# explicit profile reads the mounted files -- unless the profile itself says
+# explicit profile reads the mounted files -- unless that profile says
 # `credential_source = Environment`.
 _aws_burst_compose() {
     have docker && have python3 || return 0
@@ -217,22 +217,6 @@ _aws_readable_by_dispatcher() {
     esac
 }
 
-# Does PROFILE in this config file take its credentials from the environment
-# (`credential_source = Environment`)? Only then do keys passed through .env stand
-# in for the mounted files. Reads the config, never the credentials file.
-_aws_profile_sources_env() {
-    local conf="$1" profile="$2"
-    [ -r "$conf" ] && have python3 || return 1
-    # Lenient like the CLI: repeated sections merge, `[profile default]` counts.
-    python3 -c 'import configparser, sys
-c = configparser.RawConfigParser(strict=False)
-c.read(sys.argv[1])
-p = sys.argv[2]
-secs = ["profile " + p, "profile \"%s\"" % p] + (["default"] if p == "default" else [])
-src = [c.get(s, "credential_source", fallback="") for s in secs if c.has_section(s)]
-sys.exit(0 if any(v.strip().lower() == "environment" for v in src) else 1)' "$conf" "$profile" 2>/dev/null
-}
-
 _aws_creds_status() {
     local dir guess="" creds f rc uid gid why="" bad="" envsrc="" sts="sts ok"
     have aws || { echo "n/a (no aws cli)"; return; }
@@ -258,12 +242,14 @@ _aws_creds_status() {
         # sts runs WITHOUT any keys (they are secrets this script does not
         # handle), so a profile that sources them from the environment fails
         # here while working in the container.
-        # The readability probe below still runs: the dispatcher needs the
-        # config to find credential_source at all.
-        if [ "$(_aws_burst_compose | sed -n 3p)" = 1 ] &&
-           _aws_profile_sources_env "$dir/config" "$(_aws_burst_compose | sed -n 2p)"; then
+        # A profile with `credential_source = Environment` uses the keys .env
+        # passes the container, which --check deliberately does not handle, so
+        # with keys in .env a failure here is not proof. Which profile does that
+        # is the CLI's config grammar to decide, not this script's -- the same
+        # reason the mount is asked of compose. The probe below still runs.
+        if [ "$(_aws_burst_compose | sed -n 3p)" = 1 ]; then
             envsrc=1
-            sts="sts not testable: the profile uses credential_source=Environment with the AWS_ACCESS_KEY_ID .env passes the container, which --check does not handle"
+            sts="sts failed without keys, but .env passes the container AWS_ACCESS_KEY_ID, which a credential_source=Environment profile would use"
         else
             echo "invalid — $creds present but 'aws sts get-caller-identity' failed$guess"
             return

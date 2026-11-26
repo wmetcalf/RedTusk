@@ -26,8 +26,7 @@ DOCKER_DIR = REPO_ROOT / "deploy" / "docker"
 
 HELPERS = ("_aws_creds_home", "_dispatcher_ids", "_aws_burst_compose", "_aws_creds_dir",
            "_aws_creds_effective_dir", "_aws_sts_ok",
-           "_aws_readable_by_dispatcher", "_aws_profile_sources_env",
-           "_aws_creds_status")
+           "_aws_readable_by_dispatcher", "_aws_creds_status")
 
 
 def _block(name: str) -> str:
@@ -404,44 +403,16 @@ def test_the_uid_override_note_survives_sudo() -> None:
 
 def test_failed_sts_with_compose_keys_is_not_called_invalid(tmp_path: Path) -> None:
     """A credential_source=Environment profile needs the keys .env passes the
-    container, which --check deliberately does not handle -- so a failing sts
-    there is not proof the files are wrong."""
+    container, which --check deliberately does not handle -- so with keys in .env
+    a failing sts is not proof the files are wrong. Without them it is."""
     d = _creds(tmp_path)
-    # A STATIC profile reads the file, so keys in .env do not excuse a failure.
     out = _run(tmp_path, "_aws_creds_status", stub=_compose(d, key="AKIAEXAMPLE"),
                repo_root=tmp_path, probe="return 0", sts_rc=1)
-    assert out.startswith("invalid"), out
-    (d / "config").write_text("[profile burst]\nrole_arn = arn:aws:iam::1:role/x\n"
-                              "credential_source = Environment\n")
-    out = _run(tmp_path, "_aws_creds_status",
-               stub=_compose(d, profile="burst", key="AKIAEXAMPLE"),
-               repo_root=tmp_path, probe="return 0", sts_rc=1)
     assert out.startswith("NOT CONFIRMED") and "AWS_ACCESS_KEY_ID" in out, out
-    assert "AKIAEXAMPLE" not in out
+    assert "AKIAEXAMPLE" not in out and "sts ok" not in out
     out = _run(tmp_path, "_aws_creds_status", stub=_compose(d), repo_root=tmp_path,
                probe="return 0", sts_rc=1)
     assert out.startswith("invalid"), out
-
-
-@pytest.mark.parametrize("conf,profile", [
-    # A repeated section, which the CLI merges and a strict parser rejects.
-    ("[profile b]\ncredential_source = Environment\n[profile b]\nregion = x\n", "b"),
-    ("[profile default]\ncredential_source = Environment\n", "default"),
-])
-def test_environment_sourcing_is_read_the_way_the_cli_reads_it(
-    tmp_path: Path, conf: str, profile: str,
-) -> None:
-    c = tmp_path / "config"
-    c.write_text(conf)
-    out = _run(tmp_path, f'_aws_profile_sources_env {c} {profile} && echo YES || echo NO')
-    assert out == "YES", out
-
-
-def test_a_quoted_profile_section_is_recognised(tmp_path: Path) -> None:
-    c = tmp_path / "config"
-    c.write_text('[profile "b"]\ncredential_source = Environment\n')
-    out = _run(tmp_path, f'_aws_profile_sources_env {c} b && echo YES || echo NO')
-    assert out == "YES", out
 
 
 def test_an_environment_sourced_profile_is_still_probed(tmp_path: Path) -> None:
