@@ -136,9 +136,10 @@ _dispatcher_ids() {
 # is the deploy user's (`AWS_CREDS_DIR=${HOME}/.aws` is a valid .env value and
 # this runs under sudo). Placeholders stand in for the overlay's OTHER required
 # variables so an unfinished .env still resolves; they cannot affect these values.
-# Prints three lines -- the /aws mount source, BLASTBOX_AWS_PROFILE, and `1` when
-# AWS_ACCESS_KEY_ID is non-empty (never the key) -- or nothing when compose cannot
-# be asked (no docker yet on a fresh node).
+# Prints two lines -- the /aws mount source and BLASTBOX_AWS_PROFILE -- or nothing
+# when compose cannot be asked (no docker yet on a fresh node). Keys passed through
+# .env do not replace the files: blastbox always runs `aws --profile <that>`, and
+# an explicit profile reads the mounted files.
 _aws_burst_compose() {
     have docker && have python3 || return 0
     ( cd "$REPO_ROOT/deploy/docker" &&
@@ -151,8 +152,7 @@ if isinstance(env, list):
     env = dict(e.split("=", 1) if "=" in e else (e, "") for e in env)
 src = [m.get("source", "") for m in svc.get("volumes", []) if m.get("target") == "/aws"]
 if src and src[0]:
-    print(src[0]); print(env.get("BLASTBOX_AWS_PROFILE") or "default")
-    print(1 if env.get("AWS_ACCESS_KEY_ID") else 0)' ) 2>/dev/null || true
+    print(src[0]); print(env.get("BLASTBOX_AWS_PROFILE") or "default")' ) 2>/dev/null || true
 }
 
 _aws_creds_dir() {
@@ -214,15 +214,14 @@ _aws_readable_by_dispatcher() {
 _aws_creds_status() {
     local dir guess="" creds f rc uid gid why="" bad=""
     have aws || { echo "n/a (no aws cli)"; return; }
-    if [ "$(_aws_burst_compose | sed -n 3p)" = 1 ]; then
-        # The CLI prefers environment keys over the mounted files.
-        echo "n/a — the overlay passes AWS_ACCESS_KEY_ID from .env, which overrides the mounted files; not checked"
-        return
-    fi
     if ! dir="$(_aws_creds_effective_dir)"; then
         guess=" [compose could not resolve AWS_CREDS_DIR; this is the deploy user's ~/.aws]"
     fi
     creds="$dir/credentials"
+    if [ -e "$dir" ] && [ ! -d "$dir" ]; then
+        echo "invalid — $dir is not a directory; AWS_CREDS_DIR must name the directory holding credentials$guess"
+        return
+    fi
     read -r uid gid <<< "$(_dispatcher_ids)"
     # A dispatcher-owned copy (the first remediation below) is one the CALLER may
     # not be able to see into; that is not the same as absent or invalid.
@@ -250,10 +249,12 @@ _aws_creds_status() {
             2) why="${why:-uid $uid could not be tested (needs setpriv, and root or sudo -n)}" ;;
         esac
     done
+    # Every verdict about a GUESSED directory leads with NOT CONFIRMED: the overlay
+    # requires AWS_CREDS_DIR, so the real mount may be somewhere else entirely.
     if [ -n "$bad" ] && [ -z "$guess" ]; then
         echo "UNUSABLE — $creds passes sts as $(id -un) but uid $uid (the dispatcher) cannot read $bad; the burst tier will fail closed. See the burst notes."
-    elif [ -n "$bad" ]; then
-        echo "NOT CONFIRMED — sts ok, but uid $uid cannot read $bad, and that is only a guess at the mount$guess"
+    elif [ -n "$guess" ]; then
+        echo "NOT CONFIRMED — sts ok for $creds, and $([ -n "$bad" ] && echo "uid $uid cannot read $bad" || echo "${why:-uid $uid can read it}"), but that is only a guess at the mount$guess"
     elif [ -n "$why" ]; then
         echo "valid (sts ok, $creds; NOT CONFIRMED — $why)$guess"
     else
@@ -413,6 +414,7 @@ if [ "$AWS_BURST" -eq 1 ]; then
     # whether the dispatcher uid can read the mounted files.
     _creds_status="$(_aws_creds_status)"
     case "$_creds_status" in
+        *"NOT CONFIRMED"*) warn "aws creds: $_creds_status — re-run --check with sudo to confirm" ;;
         valid*) log "aws creds: $_creds_status" ;;
         *)      warn "aws creds: $_creds_status — fix, then re-run --check" ;;
     esac

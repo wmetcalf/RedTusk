@@ -143,7 +143,7 @@ def test_an_unresolved_mount_is_never_convicted(tmp_path: Path) -> None:
     unreadable guess must not be reported as a definitive UNUSABLE."""
     _creds(tmp_path)
     out = _run(tmp_path, "_aws_creds_status", probe="return 1")
-    assert not out.startswith("UNUSABLE") and "NOT CONFIRMED" in out, out
+    assert out.startswith("NOT CONFIRMED"), out
     assert "compose could not resolve" in out
 
 
@@ -328,13 +328,30 @@ def test_sts_ignores_the_callers_own_aws_environment(tmp_path: Path) -> None:
     assert rec.read_text().strip() == "AWS_PROFILE=burst", rec.read_text()
 
 
-def test_keys_supplied_through_compose_are_reported_not_checked(tmp_path: Path) -> None:
-    d = tmp_path / "empty"
-    d.mkdir()
+def test_keys_in_compose_do_not_skip_the_file_check(tmp_path: Path) -> None:
+    """blastbox always passes `--profile` (compose defaults it to `default`), and an
+    explicit profile reads the mounted files, not AWS_ACCESS_KEY_ID."""
+    d = _creds(tmp_path)
     out = _run(tmp_path, "_aws_creds_status", stub=_compose(d, key="AKIAEXAMPLE"),
                repo_root=tmp_path, probe="return 1")
-    assert "AWS_ACCESS_KEY_ID" in out and "absent" not in out, out
+    assert out.startswith("UNUSABLE"), out
     assert "AKIAEXAMPLE" not in out
+    assert re.search(r"BLASTBOX_AWS_PROFILE=\$\{BLASTBOX_AWS_PROFILE:-default\}",
+                     (DOCKER_DIR / "docker-compose.aws-burst.yml").read_text())
+
+
+def test_a_guessed_mount_never_leads_with_valid(tmp_path: Path) -> None:
+    _creds(tmp_path)
+    out = _run(tmp_path, "_aws_creds_status", probe="return 0")
+    assert out.startswith("NOT CONFIRMED") and "compose could not resolve" in out, out
+
+
+def test_a_mount_source_that_is_not_a_directory_is_invalid(tmp_path: Path) -> None:
+    f = tmp_path / "notadir"
+    f.write_text("x")
+    out = _run(tmp_path, "_aws_creds_status", stub=_resolved(f), repo_root=tmp_path,
+               probe="return 0")
+    assert out.startswith("invalid") and "not a directory" in out, out
 
 
 def test_the_provisioning_gate_reports_the_dispatcher_verdict() -> None:
@@ -359,3 +376,16 @@ def test_a_symlink_reason_is_not_overwritten_by_a_later_untestable_file(tmp_path
     out = _run(tmp_path, "_aws_creds_status", stub=_resolved(d), repo_root=tmp_path,
                probe="return 2")
     assert "symlink" in out, out
+
+
+def test_the_provisioning_gate_warns_on_an_unconfirmed_verdict() -> None:
+    text = SCRIPT.read_text()
+    gate = text[text.index("# Provision-time entitlement check"):]
+    gate = gate[:gate.index("\nfi\n")]
+    script = "\n".join([
+        'log() { echo "LOG $*"; }', 'warn() { echo "WARN $*"; }',
+        '_aws_creds_status() { echo "valid (sts ok, x; NOT CONFIRMED — y)"; }',
+        gate,
+    ])
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
+    assert out.startswith("WARN"), out
