@@ -26,7 +26,8 @@ DOCKER_DIR = REPO_ROOT / "deploy" / "docker"
 
 HELPERS = ("_aws_creds_home", "_dispatcher_ids", "_aws_burst_compose", "_aws_creds_dir",
            "_aws_creds_effective_dir", "_aws_sts_ok",
-           "_aws_readable_by_dispatcher", "_aws_creds_status")
+           "_aws_readable_by_dispatcher", "_aws_profile_sources_env",
+           "_aws_creds_status")
 
 
 def _block(name: str) -> str:
@@ -406,7 +407,14 @@ def test_failed_sts_with_compose_keys_is_not_called_invalid(tmp_path: Path) -> N
     container, which --check deliberately does not handle -- so a failing sts
     there is not proof the files are wrong."""
     d = _creds(tmp_path)
+    # A STATIC profile reads the file, so keys in .env do not excuse a failure.
     out = _run(tmp_path, "_aws_creds_status", stub=_compose(d, key="AKIAEXAMPLE"),
+               repo_root=tmp_path, probe="return 0", sts_rc=1)
+    assert out.startswith("invalid"), out
+    (d / "config").write_text("[profile burst]\nrole_arn = arn:aws:iam::1:role/x\n"
+                              "credential_source = Environment\n")
+    out = _run(tmp_path, "_aws_creds_status",
+               stub=_compose(d, profile="burst", key="AKIAEXAMPLE"),
                repo_root=tmp_path, probe="return 0", sts_rc=1)
     assert out.startswith("NOT CONFIRMED") and "AWS_ACCESS_KEY_ID" in out, out
     assert "AKIAEXAMPLE" not in out
